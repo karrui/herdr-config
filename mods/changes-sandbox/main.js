@@ -353,7 +353,8 @@ export default class Changes extends View {
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`))
         .child(div().flex_1()).child(div().text_size(11).text_color(t.ansi2).child(`+${add}`)).child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)))
       .when(Boolean(this.detail), (e) => e.child(div().h(26).flex_none().px(14).flex().items_center().border_b(1).border_color(t.border).text_size(11).text_color(t.muted).child(div().min_w(0).truncate().child(this.detail))))
-      .child(v_flex().id("changes-list").flex_none().h(Math.min(200, Math.max(44, this.files.length * 28 + 12))).overflow_y_scrollbar().p(6).border_b(1).border_color(t.border).children(this.files.map((f) => {
+      // Empty, it fits its message, which can wrap to two lines.
+      .child((this.files.length ? v_flex().id("changes-list").h(Math.min(200, this.files.length * 28 + 12)).overflow_y_scrollbar() : v_flex().id("changes-list").min_h(44)).flex_none().p(6).border_b(1).border_color(t.border).children(this.files.map((f) => {
         const parts = f.path.split("/"), name = parts.pop();
         return h_flex().id(`change-${f.path}`).h(28).flex_none().px(8).gap(8).items_center().rounded(7).cursor_pointer().when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f.path, cx))
           .child(div().w(14).text_size(11).text_color(f.status === "A" ? t.ansi2 : f.status === "D" ? t.ansi1 : f.status === "U" ? t.ansi1 : t.blocked).child(f.status))

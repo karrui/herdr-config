@@ -1,0 +1,217 @@
+#!/bin/bash
+# Herdr's worktree setup and teardown. Each repo's are in Herdr's config, not the repo:
+# ~/.config/herdr-app/worktrees/<repo>.yaml, with
+#   repo: ~/path/to/main/checkout
+#   copy: [files copied in from the main checkout]
+#   setup: |      run in a new worktree's Setup pane, before its agent
+#   teardown: |   run in the worktree before Remove worktree deletes it
+# The first time a repo needs one, it's written from the repo's .termic.yaml and
+# .worktreeinclude (what Termic, Conductor and Codex read); after that only Herdr's copy
+# counts, and the two can differ. A repo with neither gets no file and nothing done.
+#   worktree start <path> [-- command...]     a new worktree's first pane: opens a Setup
+#                                             pane beside it, waits for it, runs the command
+#   worktree setup <path>                     the Setup pane: copy files, run the setup;
+#                                             Enter runs it again
+#   worktree remove <path> <space> [--force]  run the teardown, then close the space and
+#                                             remove the worktree; output to logs/<space>.log
+#   worktree resources <path> [stop|start|remove]
+#                                             the containers and volumes its setup started
+#   worktree config <path>                    the repo's file and settings, as JSON
+#   worktree save <path> <json>               write {copy, setup, teardown} to that file
+# Setup and teardown run outside the sandbox (they install, start Docker); an agent
+# started after them doesn't. Sandboxed agents can't edit Herdr's config.
+set -uo pipefail
+cmd="$1"; dir="$2"; shift 2
+here="$(cd "$(dirname "$0")" && pwd)"
+self="$here/$(basename "$0")"
+configs="$(dirname "$here")/worktrees"
+cd "$dir" || exit 1
+# running, done or failed: in the worktree's own git folder, out of its files.
+state="$(git rev-parse --path-format=absolute --git-dir)/herdr-setup"
+main="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+repo="${main/#$HOME/~}"
+
+# This repo's file: <name>.yaml, or <name>-<hash>.yaml when that name is another repo's.
+config_file() {
+  local name f
+  name="$(basename "$main")"
+  for f in "$configs/$name.yaml" "$configs/$name-$(printf %s "$main" | shasum | cut -c1-6).yaml"; do
+    if [ ! -e "$f" ] || [ "$(get "$f" repo)" = "$repo" ]; then echo "$f"; return; fi
+  done
+}
+
+# One key of a YAML file; a list comes out one item per line.
+get() {
+  /usr/bin/ruby -ryaml -e 'c = YAML.load_file(ARGV[0]) || {}; v = c[ARGV[1]]; puts(v.is_a?(Array) ? v : v.to_s)' "$1" "$2" 2>/dev/null
+}
+
+# Writes Herdr's file: from JSON {copy, setup, teardown} (the editor window's Save), or
+# with "termic" from .termic.yaml and .worktreeinclude, if the repo has them.
+write_config() {
+  mkdir -p "$configs"
+  /usr/bin/ruby -ryaml -rjson -e '
+    file, repo, from = ARGV
+    if from == "termic"
+      t = File.exist?(".termic.yaml") ? (YAML.load_file(".termic.yaml") || {}) : {}
+      s = t["scripts"] || {}
+      include = File.exist?(".worktreeinclude") ? File.readlines(".worktreeinclude").map(&:strip).reject { |l| l.empty? || l.start_with?("#") } : []
+      c = { "copy" => (Array(s["files_to_copy"]).map(&:to_s) + include).uniq, "setup" => s["setup"].to_s, "teardown" => s["archive"].to_s }
+      exit 1 if c["copy"].empty? && c["setup"].strip.empty? && c["teardown"].strip.empty?
+      note = "Copied from its .termic.yaml and .worktreeinclude on #{Time.now.strftime("%Y-%m-%d")}; Herdr reads only this file now."
+    else
+      c = JSON.parse(from)
+      note = "Herdr reads only this file; edit it here or from a folder'"'"'s Edit worktree setup."
+    end
+    copy = Array(c["copy"]).map(&:to_s).map(&:strip).reject(&:empty?)
+    block = lambda { |v| v = v.to_s.strip; v.empty? ? "\"\"" : "|\n" + v.lines.map { |l| "  " + l }.join.chomp }
+    out = ["# Herdr'"'"'s worktree setup and teardown for #{repo}.", "# #{note}",
+           "repo: #{repo.to_json}",
+           "", "# Copied from the main checkout into each new worktree.",
+           copy.empty? ? "copy: []" : "copy:\n" + copy.map { |p| "  - #{p.to_json}" }.join("\n"),
+           "", "# Runs in a new worktree'"'"'s Setup pane, before its agent starts.",
+           "setup: #{block.(c["setup"])}",
+           "", "# Runs in the worktree before Remove worktree deletes it.",
+           "teardown: #{block.(c["teardown"])}"]
+    File.write(file, out.join("\n") + "\n")' "$1" "$repo" "$2" 2>/dev/null
+}
+
+conf="$(config_file)"
+[ -e "$conf" ] || write_config "$conf" termic
+has() { [ -e "$conf" ] && [ -n "$(get "$conf" "$1")" ]; }
+
+setup_once() {
+  echo running > "$state"
+  local f script
+  [ -e "$conf" ] && get "$conf" copy | grep -v '^[[:space:]]*$' | while IFS= read -r f; do
+    [ -e "$main/$f" ] || continue
+    # A pipe left here by an earlier copy is replaced; anything else already here stays.
+    [ -p "$f" ] && rm -f "$f"
+    [ -e "$f" ] && continue
+    mkdir -p "$(dirname "$f")"
+    if [ -p "$main/$f" ]; then
+      # A pipe (1Password's environment files serve secrets this way): what it gives
+      # when read, as a file, since the setup reads and rewrites it. Copying the pipe
+      # itself leaves one nothing answers, and the setup hangs on it.
+      # Secrets: readable by you only, like the pipe; they go when the worktree does.
+      if (umask 077; perl -e 'alarm 20; exec @ARGV' cat "$main/$f" > "$f") 2>/dev/null; then echo "Copied $f (read from a pipe)"
+      else rm -f "$f"; echo "Couldn't read $f: it's a pipe and nothing answered within 20 seconds (is 1Password unlocked?)"; fi
+    else
+      cp -R "$main/$f" "$f" && echo "Copied $f"
+    fi
+  done
+  script="$(get "$conf" setup)"
+  local before
+  before="$(snapshot)"
+  if [ -z "$script" ] || bash -c "$script"; then record "$before"; echo done > "$state"; return 0; fi
+  # A setup that failed partway can still have started things.
+  record "$before"
+  echo failed > "$state"
+  return 1
+}
+
+# What a setup starts: the Docker containers and volumes that weren't there before it
+# ran and belong to this worktree (Compose labels a container with the folder it was
+# started from; volumes go by those containers' Compose project). Kept, across reruns,
+# in the worktree's git folder for Herdr's Resources popup.
+resources="$(git rev-parse --path-format=absolute --git-dir)/herdr-resources.json"
+snapshot() {
+  command -v docker >/dev/null || return 0
+  { docker ps -aq --no-trunc; docker volume ls -q; } 2>/dev/null | sort
+}
+record() {
+  command -v docker >/dev/null || return 0
+  local new here c v p cs=() vs=() ps=()
+  here="$(pwd -P)"
+  new="$(comm -13 <(printf '%s\n' "$1") <(snapshot))"
+  [ -n "$new" ] || return 0
+  for c in $(docker ps -aq --no-trunc 2>/dev/null | grep -Fx -f <(printf '%s\n' "$new")); do
+    p="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{index .Config.Labels "com.docker.compose.project"}}' "$c" 2>/dev/null)"
+    [ "${p%%|*}" = "$here" ] || continue
+    cs+=("$c"); ps+=("${p#*|}")
+  done
+  [ ${#cs[@]} -gt 0 ] || return 0
+  for v in $(docker volume ls -q 2>/dev/null | grep -Fx -f <(printf '%s\n' "$new")); do
+    p="$(docker volume inspect -f '{{index .Labels "com.docker.compose.project"}}' "$v" 2>/dev/null)"
+    printf '%s\n' "${ps[@]}" | grep -Fxq "$p" && vs+=("$v")
+  done
+  jq -n --argjson old "$(cat "$resources" 2>/dev/null || echo '{}')" \
+    --arg c "$(printf '%s\n' "${cs[@]}")" --arg v "$(printf '%s\n' "${vs[@]:-}")" \
+    '{ containers: (($old.containers // []) + ($c | split("\n") | map(select(length > 0))) | unique),
+       volumes: (($old.volumes // []) + ($v | split("\n") | map(select(length > 0))) | unique) }' \
+    > "$resources.tmp" && mv "$resources.tmp" "$resources"
+  echo "Tracking what this setup started: ${#cs[@]} containers, ${#vs[@]} volumes."
+}
+
+case "$cmd" in
+  start)
+    [ "${1:-}" = "--" ] && shift
+    if has copy || has setup; then
+      echo running > "$state"
+      # Beside this pane: the same space and tab. Not as this terminal's child, which
+      # Herdr would show as a sub-agent instead of a pane.
+      labels="$(hc get "$HC_TERMINAL_ID" --json | jq -r '.labels | "herdr.space=\(.["herdr.space"])", "herdr.tab=\(.["herdr.tab"])"')"
+      if ! env -u HC_TERMINAL_ID -u HC_SCOPE hc run --bg --keep --cwd "$dir" \
+        $(printf -- '--label %s ' $labels) -- "${SHELL:-/bin/zsh}" -lic 'exec "$0" setup "$1"' "$self" "$dir" >/dev/null; then
+        echo "Couldn't open a Setup pane; setting up here."
+        setup_once
+      fi
+      echo "Waiting for this worktree's setup, in the Setup pane. Ctrl-C starts without waiting."
+      trap 'echo; echo "Starting without waiting for setup."; echo done > "$state"' INT
+      while [ "$(cat "$state" 2>/dev/null)" = running ]; do sleep 1; done
+      trap - INT
+      [ "$(cat "$state")" = failed ] && echo "Setup failed; see the Setup pane, where Enter runs it again."
+    fi
+    [ $# -gt 0 ] && exec "$@"
+    ;;
+  setup)
+    # Done, the pane closes; failed, it stays to show why, and Enter runs it again.
+    while :; do
+      echo "Setting up this worktree, from ${conf/#$HOME/~}"
+      setup_once && exit 0
+      echo; echo "Setup failed. Enter runs it again; close this pane to leave it."
+      read -r || exit 0
+    done
+    ;;
+  remove)
+    space="$1"; force="${2:-}"
+    mkdir -p "$here/logs"
+    exec >"$here/logs/$space.log" 2>&1
+    script="$(has teardown && get "$conf" teardown)"
+    [ -z "$script" ] || { echo "Tearing down"; bash -c "$script"; }
+    echo "Removing the worktree"
+    herdr-app do space.close --id "$space" --confirmed true >/dev/null
+    cd "$main" && git worktree remove $force "$dir" && echo "Removed"
+    ;;
+  resources)
+    # What this worktree's setup started, as JSON with each container's state now; or,
+    # with stop, start or remove, do that to all of it (remove also forgets it).
+    [ -f "$resources" ] || { echo '{"containers":[],"volumes":[]}'; exit 0; }
+    ids="$(jq -r '.containers[]' "$resources")"
+    vols="$(jq -r '.volumes[]' "$resources")"
+    case "${1:-}" in
+      stop) [ -z "$ids" ] || docker stop $ids >/dev/null ;;
+      start) [ -z "$ids" ] || docker start $ids >/dev/null ;;
+      remove)
+        [ -z "$ids" ] || docker rm -f $ids >/dev/null 2>&1
+        [ -z "$vols" ] || docker volume rm $vols >/dev/null 2>&1
+        rm -f "$resources" ;;
+    esac
+    [ -f "$resources" ] || { echo '{"containers":[],"volumes":[]}'; exit 0; }
+    # Only these ids: with no --filter at all, docker would list every container.
+    containers="$([ -z "$ids" ] && echo '[]' || docker ps -a --no-trunc $(printf -- '--filter id=%s ' $ids) --format '{{json .}}' |
+      jq -s 'map({ id: .ID, name: .Names, state: .State, status: .Status, ports: .Ports,
+                   project: ((.Labels | capture("com\\.docker\\.compose\\.project=(?<s>[^,]+)") | .s) // null),
+                   service: ((.Labels | capture("com\\.docker\\.compose\\.service=(?<s>[^,]+)") | .s) // null) }) | sort_by(.project // "")')"
+    volumes="$(docker volume ls -q 2>/dev/null | grep -Fx -f <(printf '%s\n' "$vols") | jq -R . | jq -s . || echo '[]')"
+    jq -cn --argjson c "${containers:-[]}" --argjson v "${volumes:-[]}" '{ containers: $c, volumes: $v }'
+    ;;
+  config)
+    # For the editor window: the file and what's in it, as JSON.
+    /usr/bin/ruby -ryaml -rjson -e 'c = File.exist?(ARGV[0]) ? (YAML.load_file(ARGV[0]) || {}) : {}
+      puts({ file: ARGV[0], repo: ARGV[1], copy: Array(c["copy"]), setup: c["setup"].to_s, teardown: c["teardown"].to_s }.to_json)' "$conf" "$repo"
+    ;;
+  save)
+    write_config "$conf" "$1" && echo "Saved ${conf/#$HOME/~}"
+    ;;
+  *) echo "usage: worktree start|setup|remove|config|save <path> ..." >&2; exit 2 ;;
+esac

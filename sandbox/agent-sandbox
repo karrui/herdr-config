@@ -1,0 +1,109 @@
+#!/bin/bash
+# Runs a program (claude, codex, ...) in a macOS seatbelt sandbox that blocks
+# reading $HOME and writing anywhere, except the current folder and allow.txt, and
+# always blocks what deny.txt lists. Both are edited in Herdr's Sandbox lists window.
+# Blocked accesses land in blocked/<tag>.tsv; the `agent-bar` mod shows them.
+set -euo pipefail
+[ $# -gt 0 ] || { echo "usage: agent-sandbox <program> [args...]" >&2; exit 2; }
+
+# Already inside one: macOS can't nest sandboxes, and the outer one still applies.
+[ -n "${HERDR_SANDBOX:-}" ] && exec "$@"
+
+dir="$(cd "$(dirname "$0")" && pwd)"
+allow="$dir/allow.txt"
+deny="$dir/deny.txt"
+blocked="$dir/blocked"
+mkdir -p "$blocked"
+
+term="${HC_TERMINAL_ID:-none}"
+tag="herdr-sbx:${term}-$(date +%s)-$$"
+file="${tag#herdr-sbx:}"
+
+# One logger for every sandboxed agent. It only sees denials carrying our tag.
+if ! { [ -f "$dir/logger.pid" ] && kill -0 "$(cat "$dir/logger.pid")" 2>/dev/null; }; then
+  nohup "$dir/logger" "$blocked" >/dev/null 2>&1 &
+  echo $! > "$dir/logger.pid"
+fi
+# ponytail: logs of past runs are kept a week, then dropped here.
+find "$blocked" -name '*.tsv' -mtime +7 -delete 2>/dev/null || true
+
+# SBPL string literal: escape backslashes and quotes.
+q() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }
+
+# "allow" or "deny" ($1) operations ($2) on a path ($3): a folder with everything under
+# it, a file by prefix, so its siblings like .claude.json.backup / .lock come along.
+# A deny carries the tag, so it shows in the blocked list.
+rule() {
+  local p="${3/#\~/$HOME}" tagged=""
+  p="${p/#\$TMPDIR/${TMPDIR%/}}"
+  [ "$1" = deny ] && tagged=" (with message $(q "$tag"))"
+  [ -d "$p" ] && p="$(cd "$p" && pwd -P)" && echo "($1 $2 (subpath $(q "$p"))$tagged)" && return
+  echo "($1 $2 (prefix $(q "$p"))$tagged)"
+}
+
+home="$(cd "$HOME" && pwd -P)"
+profile="$(mktemp -t agent-sandbox)"
+{
+  echo '(version 1)'
+  echo '(allow default)'
+  # Metadata (stat, realpath) stays readable: blocking it breaks path lookups everywhere.
+  # Allow rules must name the same operations: a specific one (file-read-data)
+  # beats a wildcard (file-read*) whatever the order.
+  echo "(deny file-read-data (subpath $(q "$home")) (with message $(q "$tag")))"
+  echo "(deny file-write* (subpath \"/\") (with message $(q "$tag")))"
+  # Terminals, /dev/null and friends.
+  echo '(allow file-write* (subpath "/dev"))'
+  # ps is setuid root, and a sandbox won't start setuid programs; it only lists
+  # processes, so it runs outside this one. Nothing else does.
+  echo '(allow process-exec (literal "/bin/ps") (with no-sandbox))'
+  # SSH agents hand out keys over a socket, which file rules don't cover: the one
+  # SSH_AUTH_SOCK names now, and macOS's and 1Password's wherever they are.
+  echo "(deny network-outbound (remote unix-socket (path-regex #\"^/private/var/run/com\\.apple\\.launchd\\.[^/]+/Listeners\$\") (path-regex #\"/2BUA8C4S2C\\.com\\.1password/t/agent\\.sock\$\")) (with message $(q "$tag")))"
+  if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -e "$SSH_AUTH_SOCK" ]; then
+    sock="$(cd "$(dirname "$SSH_AUTH_SOCK")" && pwd -P)/$(basename "$SSH_AUTH_SOCK")"
+    echo "(deny network-outbound (remote unix-socket (path-literal $(q "$sock"))) (with message $(q "$tag")))"
+  fi
+  # The starting folder, unless it is $HOME or above it: that would open everything.
+  here="$(pwd -P)"
+  case "$home/" in "${here%/}/"*) ;; *)
+    rule allow "file-read-data file-write*" "$here"
+    # A worktree keeps its git data in the main checkout's .git, outside this folder.
+    common="$(git -C "$here" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    [ -n "$common" ] && rule allow "file-read-data file-write*" "$common"
+    ;;
+  esac
+  if [ -f "$allow" ]; then
+    while read -r mode path; do
+      case "$mode" in
+        rw) rule allow "file-read-data file-write*" "$path" ;;
+        ro) rule allow "file-read-data" "$path" ;;
+      esac
+    done < <(grep -v '^\s*\(#\|$\)' "$allow")
+  fi
+  # deny.txt: blocked whatever allows them, the starting folder included.
+  if [ -f "$deny" ]; then
+    while read -r path; do rule deny "file-read-data file-write*" "$path"; done < <(grep -v '^\s*\(#\|$\)' "$deny")
+  fi
+  # Herdr runs its mods, programs.json and this launcher outside any sandbox, so its
+  # folder is never writable, whatever the lines above say; only the usage feed is.
+  app="$(cd "$dir/.." && pwd -P)"
+  echo "(deny file-write* (subpath $(q "$app")) (with message $(q "$tag")))"
+  echo "(allow file-write* (subpath $(q "$app/usage/claude")))"
+  # What agents run or read from Herdr: the usage feed scripts and Herdr's instructions.
+  echo "(allow file-read-data (subpath $(q "$app/usage")) (subpath $(q "$app/agent")))"
+} > "$profile"
+
+[ "$term" != none ] && hc label "$term" "herdr.sandbox=$file" >/dev/null 2>&1 || true
+status=0
+# Stopped by Ctrl+C or agent-restart: wait for the agent to quit, then clean up below.
+trap true INT TERM
+# Credentials the environment would hand over: the SSH agent's socket and AWS keys.
+scrub=(-u SSH_AUTH_SOCK)
+for v in $(compgen -e | grep '^AWS_' || true); do scrub+=(-u "$v"); done
+HERDR_SANDBOX="$file" env "${scrub[@]}" sandbox-exec -f "$profile" "$@" || status=$?
+# Only our own label: another run may have taken the terminal since.
+if [ "$term" != none ] && [ "$(hc get "$term" --json 2>/dev/null | jq -r '.labels["herdr.sandbox"] // empty')" = "$file" ]; then
+  hc label "$term" "herdr.sandbox=" >/dev/null 2>&1 || true
+fi
+rm -f "$profile"
+exit $status

@@ -1,0 +1,38 @@
+#!/bin/bash
+# Prints, as JSON, the context and plan usage of the Codex session running under
+# terminal process $1. Context comes from the session file (rollout) that Codex keeps
+# open; plan limits are account-wide, so they come from whichever session reported
+# last. Prints nothing when there is no such session.
+root="$1"
+[ -n "$root" ] || exit 0
+
+# The terminal's process and everything under it.
+pids=$(ps -A -o pid=,ppid= | awk -v root="$root" '
+  { parent[$1] = $2 }
+  END { for (p in parent) { x = p; while (x > 1 && x != root) x = parent[x]; if (x == root) printf "%s,", p } }')
+pids="${pids%,}"
+[ -n "$pids" ] || exit 0
+
+rollout=$(lsof -a -p "$pids" -Fn 2>/dev/null | sed -n 's|^n\(.*/\.codex/sessions/.*\.jsonl\)$|\1|p' | sort | tail -1)
+[ -n "$rollout" ] || exit 0
+latest=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -1)
+
+model=$(grep '"type":"turn_context"' "$rollout" | tail -1 | /usr/bin/jq -r '.payload.model // empty')
+limits=$(grep '"type":"token_count"' "${latest:-$rollout}" | grep '"rate_limits":{' | tail -1)
+[ -n "$limits" ] || limits='{}'
+
+# rollout-<time>-<session uuid>.jsonl
+session=$(basename "$rollout" .jsonl | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+
+grep '"type":"token_count"' "$rollout" | tail -1 | /usr/bin/jq -c --arg model "$model" --arg session "$session" --argjson l "$limits" '.payload as $p
+  | ([$l.payload.rate_limits.primary, $l.payload.rate_limits.secondary] | map(select(. != null))) as $w
+  | ($w | map(select(.window_minutes == 300)) | first) as $five
+  | ($w | map(select(.window_minutes == 10080)) | first) as $week
+  | {
+      session: (if $session == "" then null else $session end),
+      model: (if $model == "" then null else $model end),
+      ctx: (if $p.info.model_context_window then $p.info.last_token_usage.total_tokens / $p.info.model_context_window * 100 else null end),
+      ctx_tokens: $p.info.last_token_usage.total_tokens, ctx_size: $p.info.model_context_window,
+      five: $five.used_percent, five_reset: $five.resets_at,
+      week: $week.used_percent, week_reset: $week.resets_at
+    }'

@@ -1,0 +1,14 @@
+#!/bin/bash
+# Follows seatbelt denials tagged by agent-sandbox and appends each to
+# <dir>/<tag>.tsv as: time, process(pid), operation, path.
+dir="$1"
+/usr/bin/log stream --style ndjson \
+  --predicate 'sender == "Sandbox" AND eventMessage CONTAINS "herdr-sbx:"' |
+/usr/bin/jq --unbuffered -rR '
+  fromjson?  # log stream starts with a plain-text header line
+  | .eventMessage
+  | capture("^Sandbox: (?<proc>.+?\\(\\d+\\)) deny\\(\\d+\\) (?<op>\\S+) (?<path>.*)\\nherdr-sbx:(?<tag>\\S+)$")?
+  | [(now | floor | tostring), .tag, .proc, .op, .path] | @tsv' 2>/dev/null |
+while IFS=$'\t' read -r time tag proc op path; do
+  printf '%s\t%s\t%s\t%s\n' "$time" "$proc" "$op" "$path" >> "$dir/$tag.tsv"
+done

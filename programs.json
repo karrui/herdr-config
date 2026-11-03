@@ -1,0 +1,22 @@
+{
+  "programs": {
+    "claude": {
+      "run": ["__HOME__/.config/herdr-app/agent/launch", "--sandbox", "claude"]
+    },
+    "codex": {
+      "run": ["__HOME__/.config/herdr-app/agent/launch", "--sandbox", "codex", "--sandbox", "danger-full-access"]
+    },
+    "claude-unsandboxed": {
+      "name": "Claude Code (no sandbox)",
+      "icon": "icons/claude.svg",
+      "tint": false,
+      "run": ["__HOME__/.config/herdr-app/agent/launch", "claude"]
+    },
+    "codex-unsandboxed": {
+      "name": "Codex (no sandbox)",
+      "icon": "icons/codex.svg",
+      "tint": false,
+      "run": ["__HOME__/.config/herdr-app/agent/launch", "codex"]
+    }
+  }
+}

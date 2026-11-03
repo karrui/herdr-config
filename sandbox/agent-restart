@@ -1,0 +1,72 @@
+#!/bin/bash
+# Restarts the Claude or Codex agent in Herdr terminal $1 with the sandbox "on" or "off" ($2),
+# resuming the same conversation and keeping its other flags. The agent must run in the
+# terminal's shell (as Herdr's + menu starts it), which is what's left once it quits.
+set -euo pipefail
+term="$1"; mode="$2"
+dir="$(cd "$(dirname "$0")" && pwd)"
+usage="$(dirname "$dir")/usage"
+fail() { echo "$1" >&2; exit 1; }
+
+info=$(hc get "$term" --json)
+case "$(jq -r '.argv[0] | split("/") | last' <<<"$info")" in
+  zsh|bash|fish|sh|-zsh|-bash|-fish|-sh) ;;
+  *) fail "This agent isn't running in a shell, so it can't be started again here." ;;
+esac
+app=$(jq -r '.status.app // empty' <<<"$info")
+case "$app" in
+  claude-code) program=claude ;;
+  codex) program=codex ;;
+  *) fail "Only Claude and Codex agents can be restarted." ;;
+esac
+shell_pid=$(jq -r '.pid' <<<"$info")
+fg_pid=$(jq -r '.foreground.pid // empty' <<<"$info")
+[ -n "$fg_pid" ] && [ "$fg_pid" != "$shell_pid" ] || fail "The agent isn't running."
+
+# Its arguments after the program, minus how it was resumed, sandboxed and given
+# Herdr's instructions (the launcher adds those back, read fresh).
+args=()
+while IFS= read -r -d '' a; do args+=("$a"); done < <(jq -j '.foreground.argv[] + "\u0000"' <<<"$info")
+start=1
+[[ "${args[1]:-}" == */agent-sandbox ]] && start=3
+flags=()
+rest=("${args[@]:$start}")
+for ((i = 0; i < ${#rest[@]}; i++)); do
+  a="${rest[$i]}"
+  case "$program:$a" in
+    claude:--resume|claude:-r|claude:--session-id|claude:--append-system-prompt-file|codex:--sandbox|codex:-s) i=$((i + 1)) ;;
+    claude:--continue|claude:-c|codex:resume|codex:--last|codex:--dangerously-bypass-approvals-and-sandbox) ;;
+    codex:-c) if [[ "${rest[$((i + 1))]:-}" == developer_instructions=* ]]; then i=$((i + 1)); else flags+=("$a"); fi ;;
+    codex:*-*-*-*-*) [[ "$a" =~ ^[0-9a-f-]{36}$ ]] || flags+=("$a") ;;
+    *) flags+=("$a") ;;
+  esac
+done
+
+if [ "$program" = claude ]; then
+  session=$(jq -r '.session // empty' "$usage/claude/$term.json" 2>/dev/null || true)
+  cmd=(claude "${flags[@]+"${flags[@]}"}")
+  # The status line names a session before its first message; only a saved one resumes.
+  if [ -n "$session" ] && compgen -G "$HOME/.claude/projects/*/$session.jsonl" >/dev/null; then cmd+=(--resume "$session"); fi
+else
+  session=$("$usage/codex-usage" "$shell_pid" | jq -r '.session // empty')
+  # Codex's own sandbox can't start inside ours; ours stands in for it.
+  [ "$mode" = on ] && flags+=(--sandbox danger-full-access)
+  if [ -n "$session" ]; then cmd=(codex resume "${flags[@]+"${flags[@]}"}" "$session"); else cmd=(codex "${flags[@]+"${flags[@]}"}"); fi
+fi
+launch=("$(dirname "$dir")/agent/launch")
+[ "$mode" = on ] && launch+=(--sandbox)
+cmd=("${launch[@]}" "${cmd[@]}")
+
+# Stop it (the whole foreground job, so the sandbox launcher cleans up too) and wait
+# for the shell to come back: 10 s, then forcefully.
+pgid=$(ps -o pgid= -p "$fg_pid" | tr -d ' ')
+kill -TERM -- "-$pgid" 2>/dev/null || true
+for i in $(seq 1 50); do
+  pgrep -g "$pgid" >/dev/null || break
+  [ "$i" = 50 ] && kill -KILL -- "-$pgid" 2>/dev/null || true
+  sleep 0.2
+done
+sleep 0.3
+
+# Sent from inside a Herdr terminal, hc would wrap the text in <hc from=...> tags for agents.
+env -u HC_TERMINAL_ID -u HC_SCOPE hc send "$term" "$(printf '%q ' "${cmd[@]}")" >/dev/null

@@ -1,0 +1,25 @@
+#!/bin/bash
+# Starts claude or codex the way Herdr's + menu does: with instructions.md added to the
+# agent's own instructions, so they reach agents started from Herdr and nowhere else.
+# usage: launch [--sandbox] claude|codex [args...]
+set -euo pipefail
+dir="$(cd "$(dirname "$0")" && pwd)"
+wrap=()
+if [ "${1:-}" = --sandbox ]; then wrap=("$dir/../sandbox/agent-sandbox"); shift; fi
+program="$1"; shift
+
+case "$program" in
+  # Herdr draws Kitty images, but answers Claude Code's check for them out of order
+  # (the end-of-replies answer comes first), so Claude Code would turn pictures off.
+  # And it can't load an image from a file path (Kitty's t=f: "unsupported medium"),
+  # which the show-your-work plugin uses unless it thinks it's over SSH, where it sends
+  # the image itself. So: "over SSH". Side effects: Claude Code prints URLs instead of
+  # opening the browser, and the plugin mutes video sound. A real SSH session's stays.
+  claude)
+    export CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1
+    export SSH_CONNECTION="${SSH_CONNECTION:-127.0.0.1 0 127.0.0.1 0}"
+    exec ${wrap[@]+"${wrap[@]}"} claude --append-system-prompt-file "$dir/instructions.md" "$@" ;;
+  # Codex takes the text itself, as a TOML string (a JSON string is one).
+  codex) exec ${wrap[@]+"${wrap[@]}"} codex -c "developer_instructions=$(jq -Rs . < "$dir/instructions.md")" "$@" ;;
+  *) exec ${wrap[@]+"${wrap[@]}"} "$program" "$@" ;;
+esac

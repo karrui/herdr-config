@@ -1,0 +1,22 @@
+#!/bin/bash
+# Fed Claude Code's status line payload on stdin (see ~/.claude/statusline-command.sh).
+# Saves this terminal's context and plan usage to claude/<terminal>.json for the
+# `usage` mod. Prints nothing; does nothing outside a Herdr terminal.
+payload=$(cat)
+[ -n "$HC_TERMINAL_ID" ] || exit 0
+dir="$(cd "$(dirname "$0")" && pwd)/claude"
+out="$dir/$HC_TERMINAL_ID.json"
+printf '%s' "$payload" | /usr/bin/jq -c '{
+  at: (now | floor),
+  session: (.session_id // null),
+  model: (.model.display_name // null),
+  ctx: (.context_window.used_percentage // null),
+  ctx_tokens: (.context_window.total_input_tokens // null),
+  ctx_size: (.context_window.context_window_size // null),
+  five: (.rate_limits.five_hour.used_percentage // null),
+  five_reset: (.rate_limits.five_hour.resets_at // null),
+  week: (.rate_limits.seven_day.used_percentage // null),
+  week_reset: (.rate_limits.seven_day.resets_at // null),
+  cost: (.cost.total_cost_usd // null)
+}' > "$out.tmp" 2>/dev/null && mv "$out.tmp" "$out"
+exit 0

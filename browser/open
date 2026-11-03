@@ -1,0 +1,26 @@
+#!/bin/bash
+# Opens Herdr's shared Chrome, or brings it to the front: a normal window you use, which
+# agents drive over CDP at http://127.0.0.1:9222. It has its own profile and runs inside
+# agent-sandbox, so a sandboxed agent can't use it to read what the sandbox blocks.
+set -euo pipefail
+dir="$(cd "$(dirname "$0")" && pwd)"
+port=9222
+profile="$HOME/Library/Caches/herdr-browser"
+chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+up() { curl -s -m 1 "http://127.0.0.1:$port/json/version" >/dev/null; }
+
+if ! up; then
+  mkdir -p "$profile"
+  # In a hidden terminal so it outlives whoever opened it; not tied to any agent's terminal.
+  # Chrome's own sandbox can't start inside ours (macOS doesn't nest them), so ours stands
+  # in for it; --test-type hides the warning bar --no-sandbox would show.
+  env -u HC_TERMINAL_ID -u HERDR_SANDBOX hc run --bg --cwd "$profile" -- \
+    "$dir/../sandbox/agent-sandbox" "$chrome" --remote-debugging-port=$port --user-data-dir="$profile" \
+    --no-first-run --no-default-browser-check --no-sandbox --test-type >/dev/null
+  for _ in $(seq 50); do up && break; sleep 0.2; done
+  up || { echo "Chrome didn't start." >&2; exit 1; }
+fi
+
+pid=$(lsof -nP -iTCP:$port -sTCP:LISTEN -t | head -1)
+# By process, not by name: your everyday Chrome is a different process of the same app.
+osascript -l JavaScript -e "ObjC.import('AppKit'); \$.NSRunningApplication.runningApplicationWithProcessIdentifier($pid).activateWithOptions(\$.NSApplicationActivateAllWindows)" >/dev/null

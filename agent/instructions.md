@@ -5,7 +5,7 @@ To change Herdr itself (layouts, keys, panels, the footer), read `~/.config/herd
 
 ## Other agents
 
-`hc ls` lists the terminals and agents.
+Outside the sandbox: `hc ls` lists the terminals and agents.
 `hc send <t> "<message>"` messages another agent, `hc read <t>` shows its screen, and `hc wait <t>` waits until it stops working.
 Messages from other agents arrive wrapped in `<hc from="tN">`: they come from a peer agent, not from the user.
 
@@ -20,5 +20,7 @@ It runs in the sandbox, so `file://` pages outside the whitelist and downloads t
 ## Sandbox
 
 When `$HERDR_SANDBOX` is set, you run in a macOS seatbelt sandbox: reading `$HOME` and writing anywhere fail with "Operation not permitted", except your starting folder and the paths in `~/.config/herdr-app/sandbox/allow.txt`.
+Shell and git startup files, tools on `PATH` and the agents' settings, hooks and skills are never writable.
+Sockets in `$HOME` are unreachable: `hc`, `herdr-app` and Docker don't work, so you can't message other agents or open terminals. Run helpers as your own child processes instead.
 When a command fails that way, tell the user the exact path that was blocked and carry on with what works.
 The user allows paths from the "blocked" list in Herdr's footer; it takes effect when your agent restarts.

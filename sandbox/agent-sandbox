@@ -1,7 +1,8 @@
 #!/bin/bash
 # Runs a program (claude, codex, ...) in a macOS seatbelt sandbox that blocks
 # reading $HOME and writing anywhere, except the current folder and allow.txt, and
-# always blocks what deny.txt lists. Both are edited in Herdr's Sandbox lists window.
+# always blocks what deny.txt lists. Sockets in $HOME are blocked too, except allow.txt's.
+# Both lists are edited in Herdr's Sandbox lists window.
 # Blocked accesses land in blocked/<tag>.tsv; the `agent-bar` mod shows them.
 set -euo pipefail
 [ $# -gt 0 ] || { echo "usage: agent-sandbox <program> [args...]" >&2; exit 2; }
@@ -29,6 +30,8 @@ find "$blocked" -name '*.tsv' -mtime +7 -delete 2>/dev/null || true
 
 # SBPL string literal: escape backslashes and quotes.
 q() { local s="${1//\\/\\\\}"; printf '"%s"' "${s//\"/\\\"}"; }
+# A path as a regex that matches only itself.
+rx() { printf '%s' "$1" | sed 's/[][\.*^$+?(){}|]/\\&/g'; }
 
 # "allow" or "deny" ($1) operations ($2) on a path ($3): a folder with everything under
 # it, a file by prefix, so its siblings like .claude.json.backup / .lock come along.
@@ -56,16 +59,16 @@ profile="$(mktemp -t agent-sandbox)"
   # ps is setuid root, and a sandbox won't start setuid programs; it only lists
   # processes, so it runs outside this one. Nothing else does.
   echo '(allow process-exec (literal "/bin/ps") (with no-sandbox))'
-  # SSH agents hand out keys over a socket, which file rules don't cover: the one
-  # SSH_AUTH_SOCK names now, and macOS's and 1Password's wherever they are.
-  echo "(deny network-outbound (remote unix-socket (path-regex #\"^/private/var/run/com\\.apple\\.launchd\\.[^/]+/Listeners\$\") (path-regex #\"/2BUA8C4S2C\\.com\\.1password/t/agent\\.sock\$\")) (with message $(q "$tag")))"
-  if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -e "$SSH_AUTH_SOCK" ]; then
-    sock="$(cd "$(dirname "$SSH_AUTH_SOCK")" && pwd -P)/$(basename "$SSH_AUTH_SOCK")"
-    echo "(deny network-outbound (remote unix-socket (path-literal $(q "$sock"))) (with message $(q "$tag")))"
-  fi
+  # Sockets in the home folder are other programs' control lines, which file rules don't
+  # cover: Herdr's core and app (`hc exec`, `herdr-app do` run commands outside this
+  # sandbox), Docker and OrbStack (root over your files), 1Password's op, VS Code,
+  # Codex's app. None is reachable, except in the starting folder (a project's own
+  # daemons) and `socket` lines in allow.txt. /var/run/docker.sock leads to OrbStack's.
+  echo "(deny network-outbound (remote unix-socket (path-regex #\"^$(rx "$home")/\") (path-literal \"/private/var/run/docker.sock\") (path-literal \"/var/run/docker.sock\")) (with message $(q "$tag")))"
   # The starting folder, unless it is $HOME or above it: that would open everything.
   here="$(pwd -P)"
   case "$home/" in "${here%/}/"*) ;; *)
+    echo "(allow network-outbound (remote unix-socket (path-regex #\"^$(rx "$here")/\")))"
     rule allow "file-read-data file-write*" "$here"
     # A worktree keeps its git data in the main checkout's .git, outside this folder.
     common="$(git -C "$here" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
@@ -77,12 +80,26 @@ profile="$(mktemp -t agent-sandbox)"
       case "$mode" in
         rw) rule allow "file-read-data file-write*" "$path" ;;
         ro) rule allow "file-read-data" "$path" ;;
+        socket) p="${path/#\~/$HOME}"; echo "(allow network-outbound (remote unix-socket (path-literal $(q "$p"))))" ;;
       esac
     done < <(grep -v '^\s*\(#\|$\)' "$allow")
   fi
-  # deny.txt: blocked whatever allows them, the starting folder included.
+  # SSH agents hand out keys over a socket: the one SSH_AUTH_SOCK names now, and macOS's
+  # and 1Password's wherever they are. After allow.txt, so no line there opens them.
+  echo "(deny network-outbound (remote unix-socket (path-regex #\"^/private/var/run/com\\.apple\\.launchd\\.[^/]+/Listeners\$\") (path-regex #\"/2BUA8C4S2C\\.com\\.1password/t/agent\\.sock\$\")) (with message $(q "$tag")))"
+  if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -e "$SSH_AUTH_SOCK" ]; then
+    sock="$(cd "$(dirname "$SSH_AUTH_SOCK")" && pwd -P)/$(basename "$SSH_AUTH_SOCK")"
+    echo "(deny network-outbound (remote unix-socket (path-literal $(q "$sock"))) (with message $(q "$tag")))"
+  fi
+  # deny.txt: blocked whatever allows them, the starting folder included. "write <path>"
+  # lines stay readable but never writable.
   if [ -f "$deny" ]; then
-    while read -r path; do rule deny "file-read-data file-write*" "$path"; done < <(grep -v '^\s*\(#\|$\)' "$deny")
+    while read -r line; do
+      case "$line" in
+        "write "*) rule deny "file-write*" "${line#write }" ;;
+        *) rule deny "file-read-data file-write*" "$line" ;;
+      esac
+    done < <(grep -v '^\s*\(#\|$\)' "$deny")
   fi
   # Herdr runs its mods, programs.json and this launcher outside any sandbox, so its
   # folder is never writable, whatever the lines above say; only the usage feed is.

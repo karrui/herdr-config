@@ -107,6 +107,11 @@ Paths in `deny.txt` beside it are always blocked, even inside the project.
 The first install starts both lists from `sandbox/allow.default.txt` and `deny.default.txt`; after that they're yours, and updating never replaces them.
 The starter list covers the agents' own state, common caches and your shell and git dotfiles, so expect to allow a few paths your own tools need.
 SSH agent sockets and `AWS_*` variables are kept from it.
+Sockets in your home folder are blocked as well: Herdr's own (`hc`, `herdr-app`), Docker's, 1Password's and other apps' control sockets, which would let an agent run commands outside the sandbox.
+So sandboxed agents can't message other agents or open terminals. A `socket <path>` line in `allow.txt` opens one, such as Docker's for tests, at the cost of that escape.
+`deny.txt` also lists paths that are readable but never writable (`write <path>` lines): shell and git startup files, tools on your `PATH`, and the agents' settings, hooks, plugins and skills.
+Code planted there would run later outside the sandbox.
+`gh`, `git` and the network still work.
 
 The footer shows "N blocked" when the sandbox stopped something.
 Click it to see what, and to allow a path.

@@ -1,5 +1,6 @@
 # Paths a sandboxed agent may never read or write, one per line, even when allow.txt
 # or the folder it starts in covers them. A folder includes everything under it.
+# A line starting with "write " only blocks writing it.
 # ~ is your home. Changes apply the next time an agent starts.
 # For example: a project's production secrets
 #   ~/Projects/my-app/.env.production
@@ -7,3 +8,42 @@
 # Cloud credentials and SSH keys
 ~/.aws
 ~/.ssh
+
+# Readable, never writable: what runs later outside any sandbox (your shells, your git,
+# an unsandboxed agent), so code planted there would escape it.
+# Shell and git startup files
+write ~/.zshrc
+write ~/.zshenv
+write ~/.zprofile
+write ~/.zlogin
+write ~/.zlogout
+write ~/.zim
+write ~/.zcompdump
+write ~/.profile
+write ~/.bashrc
+write ~/.bash_profile
+write ~/.config/fish
+write ~/.gitconfig
+write ~/.config/git
+# Tools on your PATH: hc, claude, node, gh extensions, ...
+write ~/.local/bin
+write ~/.local/share
+write ~/.npmrc
+# The agents' settings, hooks, plugins, skills and instructions
+write ~/.claude/settings
+write ~/.claude/hooks
+write ~/.claude/plugins
+write ~/.claude/skills
+write ~/.claude/agents
+write ~/.claude/commands
+write ~/.claude/rules
+write ~/.claude/CLAUDE.md
+write ~/.claude/statusline
+write ~/.codex/config.toml
+write ~/.codex/hooks
+write ~/.codex/.hook-trust
+write ~/.codex/rules
+write ~/.codex/skills
+write ~/.codex/plugins
+write ~/.codex/AGENTS.md
+write ~/.agents

@@ -1,6 +1,8 @@
 # What a sandboxed agent may use besides the folder it starts in.
 # Reading in $HOME is blocked, and writing is blocked everywhere, unless listed here.
 # rw = read and write, ro = read only. A folder includes everything under it.
+# socket <path>: let agents connect to that socket (all others in $HOME are blocked),
+# such as Docker's. A container can then reach any file, so it's an escape hatch.
 # ~ is your home, $TMPDIR your temp folder. Changes apply the next time an agent starts.
 # This is a starting point: add what your tools need from the "blocked" list in Herdr's footer.
 
@@ -9,14 +11,13 @@ rw ~/.claude
 rw ~/.claude.json
 rw ~/.codex
 rw ~/.local/state/claude
-rw ~/.local/state/herdr-core
 
 # Logins stored in the macOS Keychain (Claude's, gh's, ...)
 rw ~/Library/Keychains
 
 # Tools and caches
-rw ~/.local/share
-rw ~/.local/bin
+ro ~/.local/share
+ro ~/.local/bin
 rw ~/.npm
 rw ~/.cache
 rw ~/Library/Caches
@@ -25,15 +26,15 @@ rw ~/Library/Caches
 rw /private/tmp
 rw $TMPDIR/..
 
-# Shell and git dotfiles
-rw ~/.zshrc
-rw ~/.zprofile
-rw ~/.profile
-rw ~/.bashrc
-rw ~/.zcompdump
-rw ~/.gitconfig
-rw ~/.gitignore
-rw ~/.config/git
+# Shell and git dotfiles, read only (deny.txt keeps them so)
+ro ~/.zshrc
+ro ~/.zprofile
+ro ~/.profile
+ro ~/.bashrc
+ro ~/.zcompdump
+ro ~/.gitconfig
+ro ~/.gitignore
+ro ~/.config/git
 
 # GitHub CLI: its settings, not your other configs
 ro ~/.config/gh

@@ -3,7 +3,7 @@ import { h_flex, v_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
 import { exec as execFile, theme, focused, window, watchFolder, openOverlay, closeOverlay, props, settings } from "herdr";
 import * as fs from "fs/promises";
-import { DIR as SANDBOX_DIR, BLOCKED, runOf, loadBlocked, loadRules, allowed, needsWrite, splitPath, allowUpTo, openSandboxLists } from "./sandbox.js";
+import { DIR as SANDBOX_DIR, BLOCKED, runOf, loadBlocked, loadRules, allowed, denied, needsWrite, splitPath, allowUpTo, openSandboxLists } from "./sandbox.js";
 import { CLAUDE, agentAt, loadUsage, usageKey, tokens, resetAt, level } from "./usage.js";
 
 const ICON = "mods/agent-bar/shield.svg";
@@ -190,7 +190,7 @@ export default class AgentBar extends View {
   segments(entry, row) {
     const t = theme();
     const { root, parts } = splitPath(entry.path);
-    const done = allowed(this.rules, entry);
+    const done = allowed(this.rules, entry) || denied(this.rules, entry);
     const hovered = this.hover?.row === row ? this.hover.upto : -1;
     const sep = () => div().px(5).text_color(t.dim).child("/");
     return h_flex().min_w(0).flex_1().items_center().overflow_hidden()
@@ -227,10 +227,10 @@ export default class AgentBar extends View {
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().font_family(settings().font_family ?? "JetBrains Mono")
         .when(rows.length === 0, el => el.child(div().py(8).text_color(t.dim).child("Nothing blocked yet.")))
         .children(rows.map((e, row) => {
-          const ok = allowed(this.rules, e);
+          const ok = allowed(this.rules, e), no = denied(this.rules, e);
           return h_flex().id(`row-${row}`).h(28).px(8).gap(14).rounded(5).items_center().flex_none().hover(s => s.bg(t.hover))
             .child(this.segments(e, row))
-            .child(div().flex_none().text_color(ok ? t.ansi2 : t.dim).child(ok ? "allowed · restart agent" : needsWrite(e.op) ? "write" : "read"))
+            .child(div().flex_none().text_color(ok ? t.ansi2 : t.dim).child(ok ? "allowed · restart agent" : no ? "in deny list" : e.op.startsWith("network") ? "socket" : needsWrite(e.op) ? "write" : "read"))
             .child(div().flex_none().text_color(t.muted).child(e.proc))
             .child(div().flex_none().w(110).text_color(t.dim).child(`${e.count}× · ${ago(e.time)}`));
         })));

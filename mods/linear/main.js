@@ -4,19 +4,11 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, focused, exec as execFile, readTextFile, writeTextFile, appHome, shared, setShared, theme } from "herdr";
+import { spaces, panes, focused, exec as execFile, readTextFile, writeTextFile, shared, setShared, theme } from "herdr";
 import * as fs from "fs/promises";
+import { KEY_DIR, KEY_FILE, KEY_CHANGED, LINKS, ID, readKey, linear, findTicket } from "./resolve.js";
 
-// The key lives in Herdr's folder, which sandboxed agents can't read.
-const KEY_DIR = () => `${appHome()}/data/linear`;
-const KEY_FILE = () => `${KEY_DIR()}/api-key`;
 const KEYS_URL = "https://linear.app/settings/account/security";
-// { "<repo>|<branch>": "DEVX-684" }; "" means unlinked on purpose (no auto-detect).
-const LINKS = "linear.links";
-const ID = /\b([a-z][a-z0-9]{0,9}-\d+)\b/gi;
-
-const ISSUE = `identifier title url description priorityLabel
-  state { name color } assignee { name } project { name } labels { nodes { name color } }`;
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -25,27 +17,15 @@ function location() {
 }
 const key = () => JSON.stringify(location());
 
-async function linear(apiKey, query, variables) {
-  const r = await fetch("https://api.linear.app/graphql", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: apiKey },
-    body: JSON.stringify({ query, variables }),
-  });
-  if (r.status === 401 || r.status === 403) throw Object.assign(new Error("Linear rejected the API key"), { auth: true });
-  const body = await r.json().catch(() => null);
-  if (!r.ok || body?.errors?.length) throw new Error(body?.errors?.[0]?.message ?? `Linear answered ${r.status}`);
-  return body.data;
-}
-
 export default class LinearPanel extends View {
   init(_props, cx) {
-    this.apiKey = null; this.keyLoaded = false; this.editingKey = false; this.issue = null; this.status = "loading"; this.teams = null;
+    this.apiKey = null; this.keyLoaded = false; this.editingKey = false; this.issue = null; this.status = "loading";
     this.keyInput = InputState.new({ placeholder: "Paste a Linear personal API key" });
     this.linkInput = InputState.new({ placeholder: "Link a ticket: DEVX-684 or its URL" });
     this.keyInput.on("submit", (_e, cx) => this.saveKey(cx));
     this.linkInput.on("submit", (_e, cx) => this.link(cx));
     cx.spawn(async (cx) => {
-      this.apiKey = (await readTextFile(KEY_FILE()).catch(() => null))?.trim() || null;
+      this.apiKey = await readKey();
       this.keyLoaded = true;
       this.refresh(cx, true);
     });
@@ -67,19 +47,10 @@ export default class LinearPanel extends View {
     cx.spawn(async (cx) => {
       const current = () => this.run === run && key() === context;
       try {
-        const common = await execFile("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
+        const found = await findTicket(this.apiKey, { cwd, branch, on });
         if (!current()) return;
-        if (common.code !== 0) { this.status = "no-repo"; this.issue = null; return; }
-        if (!branch) { this.status = "no-branch"; this.issue = null; return; }
-        this.repo = common.stdout.trim().replace(/\/\.git$/, ""); this.branch = branch;
-        const linked = (shared(LINKS) ?? {})[`${this.repo}|${branch}`];
-        this.source = linked ? "linked" : "branch";
-        let issue = null;
-        if (linked) issue = (await linear(this.apiKey, `query($id: String!) { issue(id: $id) { ${ISSUE} } }`, { id: linked })).issue;
-        else if (linked !== "") issue = await this.fromBranch(branch);
-        if (!current()) return;
-        this.issue = issue; this.error = null;
-        this.status = issue ? "issue" : linked === "" ? "unlinked" : "not-found";
+        this.status = found.status; this.issue = found.issue ?? null; this.source = found.source;
+        this.repo = found.repo ?? null; this.branch = found.branch ?? null; this.error = null;
       } catch (e) {
         if (!current()) return;
         this.error = String(e.message ?? e);
@@ -87,18 +58,6 @@ export default class LinearPanel extends View {
         if (e.auth) this.issue = null;
       } finally { if (current()) cx.notify(); }
     });
-  }
-
-  // An id in the branch whose prefix is one of the workspace's teams, else Linear's own
-  // branch match (it knows the branch names it suggested, and ones it saw in PRs).
-  async fromBranch(branch) {
-    if (!this.teams) this.teams = new Set((await linear(this.apiKey, "{ teams(first: 250) { nodes { key } } }")).teams.nodes.map((t) => t.key.toUpperCase()));
-    for (const [, id] of branch.matchAll(ID)) {
-      if (!this.teams.has(id.split("-")[0].toUpperCase())) continue;
-      const issue = (await linear(this.apiKey, `query($id: String!) { issue(id: $id) { ${ISSUE} } }`, { id: id.toUpperCase() }).catch(() => null))?.issue;
-      if (issue) return issue;
-    }
-    return (await linear(this.apiKey, `query($b: String!) { issueVcsBranchSearch(branchName: $b) { ${ISSUE} } }`, { b: branch })).issueVcsBranchSearch;
   }
 
   saveKey(cx) {
@@ -112,7 +71,8 @@ export default class LinearPanel extends View {
         const old = await readTextFile(KEY_FILE()).catch(() => null);
         await writeTextFile(KEY_FILE(), `${value}\n`, old ?? null);
         await execFile("chmod", ["600", KEY_FILE()]);
-        this.apiKey = value; this.editingKey = false; this.teams = null; this.error = null;
+        this.apiKey = value; this.editingKey = false; this.error = null;
+        setShared(KEY_CHANGED, Date.now());
         this.refresh(cx, true);
       } catch (e) { this.error = String(e.message ?? e); this.status = "no-key"; cx.notify(); }
     });

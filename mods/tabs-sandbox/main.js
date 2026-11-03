@@ -1,7 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome } from "herdr";
+import { spaces, panes, focused, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome } from "herdr";
+import { KEY_CHANGED, LINKS, readKey, findTicket } from "./linear-resolve.js";
 
 // The branch to compare against: origin's default branch, else the usual names.
 // ponytail: same lookup as changes-sandbox's Branch mode; mods can't import each other.
@@ -32,6 +33,29 @@ export default class Tabs extends View {
     // Lines added and removed on this space's branch, for the Changes button.
     this.branch = { key: null, add: 0, del: 0 };
     cx.timer.every(15000, (cx) => { if (window()?.active) { this.countResources(cx, true); this.countBranch(cx, true); } });
+    // The Linear ticket of the focused pane's branch, for the Linear button.
+    this.ticket = { key: null, issue: null };
+    cx.timer.every(300000, (cx) => { if (window()?.active) this.findLinear(cx, true); });
+  }
+
+  // Asked again when the focused branch, its links or the API key change, and every
+  // 5 minutes while the window is in front (a ticket can be renamed in Linear).
+  findLinear(cx, force = false) {
+    const space = spaces().find((s) => s.active), f = focused();
+    const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+    const where = { cwd: pane?.cwd || f?.cwd || space?.folder, branch: pane?.branch ?? space?.branch ?? null, on: space?.machine ?? null };
+    const key = JSON.stringify([where, shared(LINKS) ?? null, shared(KEY_CHANGED) ?? null]);
+    if (!where.cwd || (!force && key === this.ticket.key) || this.ticket.busy) return;
+    this.ticket = { key, issue: this.ticket.issue, for: this.ticket.for, busy: true };
+    cx.spawn(async (cx) => {
+      let issue = null;
+      try {
+        const apiKey = await readKey();
+        if (apiKey) issue = (await findTicket(apiKey, where)).issue ?? null;
+      } catch {}
+      this.ticket = { key: this.ticket.key, issue, for: key };
+      cx.notify();
+    });
   }
 
   // Asked again when the space, its folder or its agents' status changes, and every
@@ -111,6 +135,7 @@ export default class Tabs extends View {
     const space = spaces().find(p => p.active);
     this.countResources(cx);
     this.countBranch(cx);
+    this.findLinear(cx);
     const shown = space?.tabs ?? [];
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
@@ -174,7 +199,11 @@ export default class Tabs extends View {
         const label = stats && h_flex().gap(4).child(div().text_color(t.ansi2).child(`+${stats.add}`)).child(div().text_color(t.ansi1).child(`−${stats.del}`));
         return el.child(panelButton("changes", label, "mods/changes/changes.svg", "Changes on this branch"));
       })
-      .child(panelButton("linear", "Linear", "mods/linear/ticket.svg", "This branch's Linear ticket"))
+      .child((() => {
+        // The ticket's id once found for this branch; just the icon otherwise.
+        const issue = this.ticket.for === this.ticket.key ? this.ticket.issue : null;
+        return panelButton("linear", issue?.identifier ?? null, "mods/linear/ticket.svg", issue ? `${issue.identifier}: ${issue.title}` : "Linear ticket");
+      })())
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-sandbox/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-sandbox/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-sandbox/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

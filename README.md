@@ -65,6 +65,7 @@ The Changes button in the tab bar shows the branch's lines added and removed aga
 ## Linear panel
 
 The **Linear** button in the tab bar opens the ticket for the focused pane's branch.
+The button shows the ticket's id once it finds one, and just the icon otherwise.
 It finds the ticket in this order:
 
 1. A ticket you linked to this branch by hand, with the panel's Link field (an id like `DEVX-684` or a Linear URL).
@@ -73,6 +74,7 @@ It finds the ticket in this order:
 
 "Not this ticket" stops the panel from detecting one for that branch, and "Detect from branch" goes back to detecting.
 Links are per repo and branch.
+`mods/tabs-sandbox/linear-resolve.js` is a copy of `mods/linear/resolve.js`, because mods can't import each other: change both.
 
 The first time, the panel asks for a Linear personal API key, which you create in Linear's Security & access settings.
 It's saved to `~/.config/herdr-app/data/linear/api-key` (mode 600), which sandboxed agents can't read, and never goes in this repo.

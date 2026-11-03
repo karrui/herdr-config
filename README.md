@@ -46,7 +46,7 @@ Codex needs no setup: `usage/codex-usage` reads Codex's session files.
 | `browser/open` | A shared sandboxed Chrome that agents drive over CDP on port 9222. |
 | `layouts/main-sandbox.json` | The layout that ties the mods together. |
 | `keys.json` | Key bindings. `cmd-alt-[` / `]` move between space folders in this layout. |
-| `mods/` | `agent-bar` (footer: usage + sandbox), `space-folders` (sidebar folders, new worktree spaces), `worktree-hooks` / `worktree-setup` / `resources` (worktree setup UI and its containers), `menu-hooks` (right-click menus), `changes-sandbox` (Changes panel with modes, below), `tabs-sandbox`, `agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists`. |
+| `mods/` | `agent-bar` (footer: usage + sandbox), `space-folders` (sidebar folders, new worktree spaces), `worktree-hooks` / `worktree-setup` / `resources` (worktree setup UI and its containers), `menu-hooks` (right-click menus), `changes-sandbox` (Changes panel with modes, below), `linear` (the branch's Linear ticket, below), `tabs-sandbox`, `agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists`. |
 
 ## Changes panel
 
@@ -61,6 +61,21 @@ Last Turn snapshots the repo when an agent starts working, while the panel is ru
 A turn that started before the panel was first opened, or before Herdr restarted, has no snapshot.
 In Staged, Commit commits only what's staged; everywhere else it commits everything.
 The Changes button in the tab bar shows the branch's lines added and removed against the same base, tracked files only.
+
+## Linear panel
+
+The **Linear** button in the tab bar opens the ticket for the focused pane's branch.
+It finds the ticket in this order:
+
+1. A ticket you linked to this branch by hand, with the panel's Link field (an id like `DEVX-684` or a Linear URL).
+2. A ticket id in the branch name, such as `karrui/devx-684-fix`, if `DEVX` is one of your workspace's teams.
+3. The issue Linear itself ties to the branch name.
+
+"Not this ticket" stops the panel from detecting one for that branch, and "Detect from branch" goes back to detecting.
+Links are per repo and branch.
+
+The first time, the panel asks for a Linear personal API key, which you create in Linear's Security & access settings.
+It's saved to `~/.config/herdr-app/data/linear/api-key` (mode 600), which sandboxed agents can't read, and never goes in this repo.
 
 ## Restarting an agent
 

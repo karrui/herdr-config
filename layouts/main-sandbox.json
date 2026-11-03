@@ -140,6 +140,13 @@
                       "content": {
                         "mod": "changes-sandbox"
                       }
+                    },
+                    {
+                      "id": "linear",
+                      "type": "block",
+                      "content": {
+                        "mod": "linear"
+                      }
                     }
                   ],
                   "active": "files"

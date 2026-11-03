@@ -140,7 +140,8 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = shared("workspace.panels") ?? ["files", "changes"];
+    // Linear isn't one of Herdr's panels, so the welcome's choice never lists it.
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "linear"];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon, tip) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -173,6 +174,7 @@ export default class Tabs extends View {
         const label = stats && h_flex().gap(4).child(div().text_color(t.ansi2).child(`+${stats.add}`)).child(div().text_color(t.ansi1).child(`−${stats.del}`));
         return el.child(panelButton("changes", label, "mods/changes/changes.svg", "Changes on this branch"));
       })
+      .child(panelButton("linear", "Linear", "mods/linear/ticket.svg", "This branch's Linear ticket"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-sandbox/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-sandbox/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-sandbox/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

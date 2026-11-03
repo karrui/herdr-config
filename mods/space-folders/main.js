@@ -29,12 +29,6 @@ const URGENT = ["blocked", "done", "working"];
 // Which of a space's agents its row shows: the one that most needs you.
 const RANK = { idle: 1, working: 2, done: 3, blocked: 4 };
 
-// How long ago, as a list of agents says it: now, 4m, 2h, 3d.
-function ago(ms) {
-  const s = Math.max(0, (Date.now() - ms) / 1000);
-  return s < 60 ? "now" : s < 3600 ? `${Math.floor(s / 60)}m` : s < 86400 ? `${Math.floor(s / 3600)}h` : `${Math.floor(s / 86400)}d`;
-}
-
 async function readFolders(machine) {
   const r = await exec("sh", ["-c", `cat ${FILE} 2>/dev/null`], { on: machine });
   try {
@@ -223,8 +217,6 @@ export default class Spaces extends View {
     cx.timer.every(250, (cx) => this.checkNew(cx));
     this.teardown = {};
     cx.timer.every(700, (cx) => this.watchTeardown(cx));
-    // The rows' "4m ago" times.
-    cx.timer.every(30000, (cx) => cx.notify());
     // "space-folders.next" and ".prev" in keys.json: the next space down the
     // list as it shows, where Herdr's own space.next goes by its own order.
     this.seen = [];
@@ -816,26 +808,25 @@ export default class Spaces extends View {
   }
 
   // What a space's row says, from its terminals (read once per render into this.now):
-  // when anything in it last changed, its most urgent agent, and its working sub-agents.
+  // its most urgent agent and its working sub-agents.
   facts(w) {
     const id = localId(w);
     const mine = this.now.terminals.filter((x) => x.labels?.["herdr.space"] === id);
     const addresses = new Set(mine.map((x) => x.address));
-    const when = Math.max(0, ...mine.map((x) => x.status_ms ?? x.created_ms ?? 0));
     const agents = this.now.agents.filter((a) => a.space === w.id);
     const lead = agents.reduce((m, a) => (!m || (RANK[a.status] ?? 0) > (RANK[m.status] ?? 0) ? a : m), null);
     const subs = this.now.terminals.filter((x) => addresses.has(x.parent) && x.status === "working").length;
-    return { when, lead, subs };
+    return { lead, subs };
   }
 
-  // Three lines, the way an agent list reads: the repo and when it last changed; the
+  // Three lines, the way an agent list reads: the repo; the
   // space's title and its agent; then the branch and what's running, when there's news.
   row({ w, i, g, tree, folder, nested }, t) {
     const on = w.active;
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
     const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
-    const { when, lead, subs } = this.facts(w);
+    const { lead, subs } = this.facts(w);
     const repo = g?.name ?? (w.folder && w.folder !== home() ? base(w.folder) : "~");
     const branch = g?.branch ?? (g ? "detached" : null);
     const pr = g?.branch ? this.prs[`${g.repo}|${g.branch}`]?.pr : null;
@@ -851,7 +842,6 @@ export default class Spaces extends View {
     const inline = !tree && [folderName, w.name].some((n) => n?.trim().toLowerCase() === repo.toLowerCase());
     const badge = h_flex().size(14).flex_none().rounded(4).bg(fill).items_center().justify_center()
       .text_size(8.5).font_bold().text_color("#ffffff").child([...repo][0]?.toUpperCase() ?? "?");
-    const time = div().flex_none().text_size(11).text_color(t.dim).child(ago(when));
     const icon = lead?.program?.icon ? (lead.program.tint ? svg(lead.program.icon).size(14).text_color(t.muted) : image(lead.program.icon).size(14)) : null;
     const state = lead?.status === "working" ? svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().text_color(t.working).spin(900)
       : lead && (lead.status === "blocked" || lead.status === "done") ? div().size(6).flex_none().rounded(3).bg(tone(t, lead.status)) : null;
@@ -896,13 +886,12 @@ export default class Spaces extends View {
         cx.notify();
       })
       .on_mouse_down("right", () => this.menu(w))
-      // The repo (a worktree under its checkout: its branch) and when anything changed;
+      // The repo (a worktree under its checkout: its branch);
       // in a folder named after the repo, that line would only repeat the folder.
       .when(!inline, (el) => el.child(h_flex().gap(6).items_center().text_size(11.5).text_color(t.dim)
         .when(Boolean(tree), (el) => el.pl(14).child(svg("mods/workspace-chrome/branch.svg").size(12).flex_none()))
         .when(!tree, (el) => el.child(badge))
-        .child(div().flex_1().min_w(0).truncate().child(tree ? branch ?? repo : repo))
-        .when(when > 0, (el) => el.child(time))))
+        .child(div().flex_1().min_w(0).truncate().child(tree ? branch ?? repo : repo))))
       // The title, struck through while it's torn down (worktree-hooks), and its agent.
       .child(h_flex().gap(6).items_center().text_size(13)
         // On a folder's rows the agent's icon stands in for the repo badge (kept with no agent).
@@ -912,8 +901,7 @@ export default class Spaces extends View {
             .child(div().w_full().h(1).bg(t.dim)))))
         .when(Boolean(pr), (el) => el.child(this.prChip(w.id, pr, t)))
         .when(Boolean(state), (el) => el.child(state))
-        .when(Boolean(icon) && !inline, (el) => el.child(icon))
-        .when(inline && when > 0, (el) => el.child(time)))
+        .when(Boolean(icon) && !inline, (el) => el.child(icon)))
       .when(Boolean(third), (el) => el.child(h_flex().gap(5).items_center().text_size(11.5).text_color(t.dim)
         .child(div().flex_1().min_w(0).truncate().child(third))
         .when(Boolean(tearing), (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(11).flex_none().spin(900)))));

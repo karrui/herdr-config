@@ -13,6 +13,23 @@ What you get:
 
 It only works on macOS, because the sandbox uses `sandbox-exec`.
 
+## What it looks like
+
+![A worktree space with its agent and the Changes panel](docs/workspace.png)
+
+Spaces grouped in sidebar folders, each row with its agent and pull request, and the agents list below.
+On the right, the Changes panel in Branch mode shows what this branch changed against `origin/main`.
+The footer has the agent's context and usage, and the sandbox state.
+
+![Codex answering a question from another agent](docs/codex.png)
+
+Agents can message each other with `hc send`.
+Here Codex answers a question another agent sent it, marked `<hc from="t5g">`.
+
+![An agent's reply arriving in the session that asked](docs/cross-agent.png)
+
+The reply comes back the same way: a Claude Code agent reports what it did to the agent that asked.
+
 ## Requirements
 
 - The Herdr app, started at least once (it creates `~/.config/herdr-app`).

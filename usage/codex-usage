@@ -3,8 +3,29 @@
 # terminal process $1. Context comes from the session file (rollout) that Codex keeps
 # open; plan limits are account-wide, so they come from whichever session reported
 # last. Prints nothing when there is no such session.
+# With no $1: only the plan limits, with when they were reported (`at`) and the plan.
 root="$1"
-[ -n "$root" ] || exit 0
+
+# The newest plan limits any session reported: a session that just started has none yet.
+limits='{}'
+for f in $(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -5); do
+  line=$(grep '"type":"token_count"' "$f" | grep '"rate_limits":{' | tail -1)
+  [ -n "$line" ] && { limits="$line"; break; }
+done
+windows='([$l.payload.rate_limits.primary, $l.payload.rate_limits.secondary] | map(select(. != null))) as $w
+  | ($w | map(select(.window_minutes == 300)) | first) as $five
+  | ($w | map(select(.window_minutes == 10080)) | first) as $week'
+
+if [ -z "$root" ]; then
+  [ "$limits" = '{}' ] && exit 0
+  /usr/bin/jq -nc --argjson l "$limits" "$windows"' | {
+    at: ($l.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601),
+    plan: $l.payload.rate_limits.plan_type,
+    five: $five.used_percent, five_reset: $five.resets_at,
+    week: $week.used_percent, week_reset: $week.resets_at
+  }'
+  exit 0
+fi
 
 # The terminal's process and everything under it.
 pids=$(ps -A -o pid=,ppid= | awk -v root="$root" '
@@ -15,19 +36,14 @@ pids="${pids%,}"
 
 rollout=$(lsof -a -p "$pids" -Fn 2>/dev/null | sed -n 's|^n\(.*/\.codex/sessions/.*\.jsonl\)$|\1|p' | sort | tail -1)
 [ -n "$rollout" ] || exit 0
-latest=$(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -1)
 
 model=$(grep '"type":"turn_context"' "$rollout" | tail -1 | /usr/bin/jq -r '.payload.model // empty')
-limits=$(grep '"type":"token_count"' "${latest:-$rollout}" | grep '"rate_limits":{' | tail -1)
-[ -n "$limits" ] || limits='{}'
 
 # rollout-<time>-<session uuid>.jsonl
 session=$(basename "$rollout" .jsonl | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
 grep '"type":"token_count"' "$rollout" | tail -1 | /usr/bin/jq -c --arg model "$model" --arg session "$session" --argjson l "$limits" '.payload as $p
-  | ([$l.payload.rate_limits.primary, $l.payload.rate_limits.secondary] | map(select(. != null))) as $w
-  | ($w | map(select(.window_minutes == 300)) | first) as $five
-  | ($w | map(select(.window_minutes == 10080)) | first) as $week
+  | '"$windows"'
   | {
       session: (if $session == "" then null else $session end),
       model: (if $model == "" then null else $model end),

@@ -161,6 +161,8 @@ Right-click the Linear button to link a different ticket, stop or restore detect
   `cmd-alt-[` and `cmd-alt-]` step through spaces in the order the sidebar shows them.
 - Spaces with an agent, and folders with a terminal open, come first.
   The rest go under an Inactive line, in each folder and at the bottom; click it to fold them away.
+- **Usage**, above Settings, shows Claude Code's and Codex's 5-hour and weekly plan limits.
+  They're account-wide, as each agent last reported them, so Claude Code needs the status line set up above.
 
 ## Updating
 
@@ -184,9 +186,10 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `agent/launch` | Starts `claude` or `codex` with `agent/instructions.md` added, sandboxed or not. |
 | `agent/worktree` | Worktree setup, teardown, removal and close, driven by your `worktrees/<repo>.yaml` files. |
 | `sandbox/` | The sandbox (`agent-sandbox`), starter allow and deny lists, the blocked-access logger and `agent-restart`. |
-| `usage/` | The footer's context and usage feeds for Claude Code and Codex. |
+| `usage/` | The context and usage feeds for Claude Code and Codex, for the footer and the Usage popup. |
 | `browser/open` | A shared Chrome, inside the sandbox, that agents drive over CDP on port 9222. |
 | `mods/agent-bar` | The footer: usage, sandbox state and blocked accesses. |
+| `mods/usage`, `footer-sandbox` | The Usage popup, and the sidebar footer that opens it. |
 | `mods/space-folders` | The sidebar: folders, worktree spaces, pull requests, close-time teardown. |
 | `mods/changes-sandbox` | The Changes panel with modes. |
 | `mods/linear` | The Linear panel, its right-click menu and dialogs. |
@@ -196,5 +199,5 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `mods/brand-sandbox` | The sidebar's top bar: only search. |
 | `mods/agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists` | Herdr's agents list, + menu, status bar and a sandbox lists editor, adapted to the sandbox. |
 
-Mods can't import each other, so `mods/tabs-sandbox/linear-resolve.js` is a copy of `mods/linear/resolve.js`.
+Mods can't import each other, so `mods/tabs-sandbox/linear-resolve.js` is a copy of `mods/linear/resolve.js`, and `mods/worktree-hooks/fresh-worktree.js` of `mods/space-folders/fresh-worktree.js`.
 Change both together.

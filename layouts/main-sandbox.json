@@ -53,13 +53,10 @@
           "id": "sidebar-footer",
           "type": "block",
           "content": {
-            "mod": "workspace-chrome",
-            "props": {
-              "footer": true
-            }
+            "mod": "footer-sandbox"
           },
           "size": {
-            "px": 69
+            "px": 97
           }
         }
       ],

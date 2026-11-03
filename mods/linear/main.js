@@ -28,6 +28,7 @@ export default class LinearPanel extends View {
       this.apiKey = await readKey();
       this.keyLoaded = true;
       this.refresh(cx, true);
+      cx.notify();
     });
     // Titles and states change in Linear, not here.
     cx.timer.every(60000, (cx) => this.refresh(cx, true));
@@ -36,14 +37,18 @@ export default class LinearPanel extends View {
   refresh(cx, force = false) {
     const context = key();
     if (!this.keyLoaded || (!force && context === this.context)) return;
+    // Another branch: its ticket isn't the one shown. A timed refresh keeps it until it's back.
+    const moved = context !== this.context;
     this.context = context;
-    if (!this.apiKey) { this.status = "no-key"; this.issue = null; return cx.notify(); }
     const { cwd, branch, on } = location();
-    if (!cwd) { this.status = "none"; this.issue = null; return cx.notify(); }
     const run = (this.run ?? 0) + 1;
     this.run = run;
-    if (!this.issue) this.status = "loading";
-    cx.notify();
+    // Runs from render too, where cx.notify() isn't allowed, and a task runs in its caller
+    // until its first await: what changes now isn't announced (render draws it next; an
+    // event handler calling this notifies), and the task notifies only after awaiting.
+    if (!this.apiKey) { this.status = "no-key"; this.issue = null; return; }
+    if (!cwd) { this.status = "none"; this.issue = null; return; }
+    if (moved || !this.issue) { this.status = "loading"; this.issue = null; }
     cx.spawn(async (cx) => {
       const current = () => this.run === run && key() === context;
       try {
@@ -74,6 +79,7 @@ export default class LinearPanel extends View {
         this.apiKey = value; this.editingKey = false; this.error = null;
         setShared(KEY_CHANGED, Date.now());
         this.refresh(cx, true);
+        cx.notify();
       } catch (e) { this.error = String(e.message ?? e); this.status = "no-key"; cx.notify(); }
     });
   }
@@ -85,6 +91,7 @@ export default class LinearPanel extends View {
     setShared(LINKS, links);
     this.issue = null;
     this.refresh(cx, true);
+    cx.notify();
   }
 
   link(cx) {

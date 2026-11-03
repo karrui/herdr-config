@@ -108,7 +108,8 @@ The first install starts both lists from `sandbox/allow.default.txt` and `deny.d
 The starter list covers the agents' own state, common caches and your shell and git dotfiles, so expect to allow a few paths your own tools need.
 SSH agent sockets and `AWS_*` variables are kept from it.
 Sockets in your home folder are blocked as well: Herdr's own (`hc`, `herdr-app`), Docker's, 1Password's and other apps' control sockets, which would let an agent run commands outside the sandbox.
-So sandboxed agents can't message other agents or open terminals. A `socket <path>` line in `allow.txt` opens one, such as Docker's for tests, at the cost of that escape.
+A `socket <path>` line in `allow.txt` opens one, such as Docker's for tests, at the cost of that escape.
+Sandboxed agents still use `hc`, through a go-between (`sandbox/hc-broker`) that runs beside each one: `hc run` starts the new program sandboxed, in a folder the agent can already write, and messages, reads and waits only reach sandboxed terminals and the agent's own children.
 `deny.txt` also lists paths that are readable but never writable (`write <path>` lines): shell and git startup files, tools on your `PATH`, and the agents' settings, hooks, plugins and skills.
 Code planted there would run later outside the sandbox.
 `gh`, `git` and the network still work.
@@ -192,7 +193,7 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `programs.json` | Points the + menu's agents at `agent/launch`. |
 | `agent/launch` | Starts `claude` or `codex` with `agent/instructions.md` added, sandboxed or not. |
 | `agent/worktree` | Worktree setup, teardown, removal and close, driven by your `worktrees/<repo>.yaml` files. |
-| `sandbox/` | The sandbox (`agent-sandbox`), starter allow and deny lists, the blocked-access logger and `agent-restart`. |
+| `sandbox/` | The sandbox (`agent-sandbox`), its `hc` go-between (`hc-broker`, `bin/hc`), starter allow and deny lists, the blocked-access logger and `agent-restart`. |
 | `usage/` | The context and usage feeds for Claude Code and Codex, for the footer and the Usage popup. |
 | `browser/open` | A shared Chrome, inside the sandbox, that agents drive over CDP on port 9222. |
 | `mods/agent-bar` | The footer: usage, sandbox state and blocked accesses. |

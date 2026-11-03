@@ -46,6 +46,8 @@ rule() {
 
 home="$(cd "$HOME" && pwd -P)"
 profile="$(mktemp -t agent-sandbox)"
+spool="$dir/broker/$file"
+mkdir -p "$spool"
 {
   echo '(version 1)'
   echo '(allow default)'
@@ -106,6 +108,9 @@ profile="$(mktemp -t agent-sandbox)"
   app="$(cd "$dir/.." && pwd -P)"
   echo "(deny file-write* (subpath $(q "$app")) (with message $(q "$tag")))"
   echo "(allow file-write* (subpath $(q "$app/usage/claude")))"
+  # hc's go-between (hc-broker): its spool, and the hc that writes to it.
+  echo "(allow file-read-data file-write* (subpath $(q "$spool")))"
+  echo "(allow file-read-data (subpath $(q "$dir/bin")))"
   # What agents run or read from Herdr: the usage feed scripts and Herdr's instructions.
   echo "(allow file-read-data (subpath $(q "$app/usage")) (subpath $(q "$app/agent")))"
 } > "$profile"
@@ -117,7 +122,12 @@ trap true INT TERM
 # Credentials the environment would hand over: the SSH agent's socket and AWS keys.
 scrub=(-u SSH_AUTH_SOCK)
 for v in $(compgen -e | grep '^AWS_' || true); do scrub+=(-u "$v"); done
-HERDR_SANDBOX="$file" env "${scrub[@]}" sandbox-exec -f "$profile" "$@" || status=$?
+# hc in here goes through a broker out there: Herdr's core would run anything outside.
+"$dir/hc-broker" "$spool" $$ "$here" </dev/null >/dev/null 2>&1 &
+broker=$!
+HERDR_SANDBOX="$file" HERDR_HC_SPOOL="$spool" PATH="$dir/bin:$PATH" env "${scrub[@]}" sandbox-exec -f "$profile" "$@" || status=$?
+kill "$broker" 2>/dev/null || true
+rm -rf "$spool"
 # Only our own label: another run may have taken the terminal since.
 if [ "$term" != none ] && [ "$(hc get "$term" --json 2>/dev/null | jq -r '.labels["herdr.sandbox"] // empty')" = "$file" ]; then
   hc label "$term" "herdr.sandbox=" >/dev/null 2>&1 || true

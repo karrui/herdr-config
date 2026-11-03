@@ -1,0 +1,17 @@
+#!/bin/bash
+# `hc` inside the sandbox: hands the command to this agent's broker (sandbox/hc-broker),
+# which runs outside and passes on only what keeps agents sandboxed, then prints its answer.
+set -uo pipefail
+spool="${HERDR_HC_SPOOL:-}"
+[ -d "$spool" ] || { echo "hc: no broker for this sandbox (start the agent from Herdr)" >&2; exit 1; }
+id="$$-$RANDOM$RANDOM"
+/usr/bin/jq -n --arg cwd "$PWD" '{argv: $ARGS.positional, cwd: $cwd}' --args -- "$@" > "$spool/.$id" && mv "$spool/.$id" "$spool/$id.req"
+until [ -f "$spool/$id.res" ]; do
+  kill -0 "$(cat "$spool/broker.pid" 2>/dev/null)" 2>/dev/null || { echo "hc: the sandbox's broker stopped" >&2; exit 1; }
+  sleep 0.1
+done
+/usr/bin/jq -j .stdout "$spool/$id.res"
+/usr/bin/jq -j .stderr "$spool/$id.res" >&2
+code="$(/usr/bin/jq -r .code "$spool/$id.res")"
+rm -f "$spool/$id.res"
+exit "$code"

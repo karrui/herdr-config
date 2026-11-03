@@ -1,0 +1,119 @@
+#!/bin/bash
+# The other end of the `hc` sandboxed agents get (sandbox/bin/hc). Herdr's core runs
+# commands outside any sandbox, so agents can't reach it themselves; this runs outside,
+# beside one sandboxed agent, and passes on only what keeps them all in:
+# - ls, and talking to, reading, waiting on and ending sandboxed terminals (or the
+#   agent's own children). Never a plain shell or an unsandboxed agent, where typed
+#   text runs as a command outside.
+# - run, as agent/launch --sandbox <program>, in a folder the agent may write already.
+# Requests are <id>.req files in the spool folder: { argv, cwd }; answers <id>.res:
+# { code, stdout, stderr }.
+# usage: hc-broker <spool folder> <pid to outlive> <the agent's starting folder>
+set -uo pipefail
+spool="$1" pid="$2" here="$3"
+dir="$(cd "$(dirname "$0")" && pwd)"
+app="$(cd "$dir/.." && pwd -P)"
+home="$(cd "$HOME" && pwd -P)"
+me="${HC_TERMINAL_ID:-}"
+hc() { env -u HERDR_SANDBOX -u HERDR_HC_SPOOL "$HOME/.local/bin/hc" "$@"; }
+
+inside() { [ "$1" = "$2" ] || [[ "$1" == "$2"/* ]]; }
+resolve() {
+  local p="${1/#\~/$HOME}"
+  p="${p/#\$TMPDIR/${TMPDIR%/}}"
+  [ -d "$p" ] && (cd "$p" && pwd -P) || printf '%s' "$p"
+}
+lines() { grep -v '^\s*\(#\|$\)' "$1" 2>/dev/null; }
+
+# A folder a sandboxed program may start in: one the agent can write already (its own
+# starting folder, allow.txt's rw lines), nothing deny.txt names, never $HOME or above.
+writable() {
+  local p="$1" mode path line ok=1
+  inside "$home" "$p" && return 1
+  inside "$p" "$here" && ok=0
+  while [ $ok -ne 0 ] && read -r mode path; do
+    [ "$mode" = rw ] && inside "$p" "$(resolve "$path")" && ok=0
+  done < <(lines "$dir/allow.txt")
+  [ $ok -eq 0 ] || return 1
+  while read -r line; do inside "$p" "$(resolve "${line#write }")" && return 1; done < <(lines "$dir/deny.txt")
+  return 0
+}
+
+# A terminal this agent may type into or read: one in a sandbox, or its own child.
+reachable() {
+  local t="$1" j
+  [[ "$t" == */* ]] && return 1
+  [ -n "$me" ] && [ "$t" = "$me" ] && return 0
+  j="$(hc get "$t" --json 2>/dev/null)" || return 1
+  [ -n "$(jq -r '.labels["herdr.sandbox"] // empty' <<<"$j")" ] && return 0
+  [ -n "$me" ] && [ "$(jq -r '.parent // empty' <<<"$j")" = "$me" ]
+}
+
+no() { printf 'hc in the sandbox: %s\n' "$1" >&2; return 126; }
+
+serve() {
+  local args=() cwd sub t a opts=() prog=() start="" i
+  while IFS= read -r -d '' a; do args+=("$a"); done < <(jq -j '.argv[] + "\u0000"' "$1")
+  cwd="$(jq -r .cwd "$1")"
+  for a in ${args[@]+"${args[@]}"}; do
+    case "$a" in --on|--on=*) no "--on: other machines run outside the sandbox"; return; esac
+  done
+  sub="${args[0]:-}"
+  case "$sub" in
+    ls|templates) hc "${args[@]}" ;;
+    get|read|send|keys|interrupt|kill|rm|wait)
+      # The terminal is the first argument that isn't an option or an option's value.
+      t=""; i=1
+      while [ $i -lt ${#args[@]} ]; do
+        case "${args[$i]}" in
+          --output|--timeout|--children) i=$((i + 2)); continue ;;
+          -*) ;;
+          *) t="${args[$i]}"; break ;;
+        esac
+        i=$((i + 1))
+      done
+      if [ -n "$t" ] && ! reachable "$t"; then no "$t is not a sandboxed terminal or your child"; return; fi
+      hc "${args[@]}" ;;
+    run)
+      i=1
+      while [ $i -lt ${#args[@]} ]; do
+        a="${args[$i]}"
+        case "$a" in
+          --) prog=("${args[@]:$((i + 1))}"); break ;;
+          --json|--no-notify|--outlive-parent|--rm|--bg|--no-parent) opts+=("$a") ;;
+          --name|--timeout) opts+=("$a" "${args[$((i + 1))]:-}"); i=$((i + 1)) ;;
+          --label) [[ "${args[$((i + 1))]:-}" == herdr.* ]] && { no "herdr.* labels are Herdr's"; return; }
+            opts+=("$a" "${args[$((i + 1))]:-}"); i=$((i + 1)) ;;
+          --cwd) start="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
+          -*) no "hc run $a isn't allowed (--keep and --parent would leave or reach outside)"; return ;;
+          *) prog=("${args[@]:$i}"); break ;;
+        esac
+        i=$((i + 1))
+      done
+      [ ${#prog[@]} -gt 0 ] || { no "hc run needs a program: a bare shell would run outside"; return; }
+      [ -n "$start" ] || start="$cwd"
+      [[ "$start" == /* ]] || start="$cwd/$start"
+      [ -d "$start" ] || { no "no such folder: $start"; return; }
+      start="$(cd "$start" && pwd -P)"
+      writable "$start" || { no "$start isn't a folder you can write, so a program can't start there"; return; }
+      hc run ${opts[@]+"${opts[@]}"} --cwd "$start" -- "$app/agent/launch" --sandbox "${prog[@]}" ;;
+    *) no "hc ${sub:-(no command)} isn't available: it would run or reach outside. Use ls, run, send, read, wait, keys, interrupt, get, kill, rm." ;;
+  esac
+}
+
+answer() {
+  local req="$1" res="${1%.work}.res" out err code
+  out="$(mktemp)" err="$(mktemp)"
+  serve "$req" >"$out" 2>"$err"; code=$?
+  jq -n --rawfile stdout "$out" --rawfile stderr "$err" --argjson code "$code" '{code: $code, stdout: $stdout, stderr: $stderr}' > "$res.tmp" && mv "$res.tmp" "$res"
+  rm -f "$req" "$out" "$err"
+}
+
+echo $$ > "$spool/broker.pid"
+while kill -0 "$pid" 2>/dev/null; do
+  for f in "$spool"/*.req; do
+    [ -e "$f" ] || continue
+    mv "$f" "${f%.req}.work" 2>/dev/null && answer "${f%.req}.work" &
+  done
+  sleep 0.1
+done

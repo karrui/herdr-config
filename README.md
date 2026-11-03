@@ -1,7 +1,26 @@
 # herdr-config
 
-My [Herdr](https://herdr.dev) app setup: sandboxed agents, per-repo worktree setup and teardown, space folders, and a context and usage footer.
-macOS only, because the sandbox uses `sandbox-exec`.
+My setup for the [Herdr](https://herdr.dev) app, the desktop app for terminals and coding agents.
+It's a layout plus a set of mods and scripts that you install into Herdr's config folder.
+
+What you get:
+
+- **Sandboxed agents.** Claude Code and Codex start inside a macOS sandbox that can't read your home folder or write outside the project, except for paths you allow.
+- **Worktree spaces.** A new space can be its own git worktree, with your repo's setup run before the agent starts and its teardown run before the space closes.
+- **A Changes panel with modes.** Last Turn, Uncommitted, Unstaged, Staged, a single commit, or the whole branch.
+- **Linear and GitHub at a glance.** The branch's Linear ticket in a panel, and each space's pull request and CI state in the sidebar.
+- **A usage footer.** Context, 5-hour and weekly usage for the focused agent, and what the sandbox blocked.
+
+It only works on macOS, because the sandbox uses `sandbox-exec`.
+
+## Requirements
+
+- The Herdr app, started at least once (it creates `~/.config/herdr-app`).
+- `jq`.
+- `claude` and/or `codex`.
+- Optional: `gh`, signed in with `gh auth login`, for pull requests in the sidebar.
+- Optional: a Linear personal API key, for the Linear panel.
+- Optional: Google Chrome, for the shared browser agents can drive.
 
 ## Install
 
@@ -10,97 +29,148 @@ git clone https://github.com/karrui/herdr-config.git
 ./herdr-config/install.sh
 ```
 
-Start the Herdr app once before you run this.
-The script copies everything into `~/.config/herdr-app`.
-It keeps any file it replaces as `<file>~`.
-Then press `cmd-shift-l` until the window shows the **main-sandbox** layout.
+The script copies everything into `~/.config/herdr-app` and switches the window to the **main-sandbox** layout.
+Any file it replaces is kept beside it as `<file>~`, including your `keys.json` and `programs.json`.
+If Herdr wasn't open, press `cmd-shift-l` until the window shows main-sandbox.
 
-You need `jq`, `claude` and/or `codex`, and Google Chrome if you want the shared browser.
+The files are copied rather than symlinked on purpose.
+Herdr runs these scripts outside the sandbox, and the sandbox only protects Herdr's own folder from agents, not a checkout somewhere else.
 
-### Context and usage in the footer
+### Show usage in the footer (Claude Code)
 
-The footer shows context, 5h and weekly usage for the focused agent.
-For Claude Code, the footer needs the status line payload, so add this line to your status line script (`statusLine.command` in `~/.claude/settings.json`):
+The footer reads Claude Code's status line data.
+Add this line to your status line script, the one `statusLine.command` points at in `~/.claude/settings.json`:
 
 ```sh
 printf '%s' "$input" | ~/.config/herdr-app/usage/claude-statusline
 ```
 
 Here `$input` is the JSON your script reads from stdin.
-If you have no status line yet, point `statusLine.command` at `~/.config/herdr-app/usage/claude-statusline` directly.
+If you don't have a status line yet, set `statusLine.command` to `~/.config/herdr-app/usage/claude-statusline` instead.
 It prints nothing, so Claude Code's own status line stays empty.
-Codex needs no setup: `usage/codex-usage` reads Codex's session files.
+Codex needs no setup.
+
+### Set up worktrees for your repo
+
+Worktree setup and teardown are per repo, in `~/.config/herdr-app/worktrees/<repo>.yaml`:
+
+```yaml
+repo: "~/Projects/my-app"
+# Copied from the main checkout into each new worktree.
+copy:
+  - ".env"
+# Runs in a Setup pane before the agent starts.
+setup: |
+  pnpm install --frozen-lockfile
+# Runs before the worktree is removed or its space closes.
+teardown: |
+  docker compose down --volumes
+```
+
+To edit one from the app, make a sidebar folder and set it to start its spaces in the repo (**Edit folder…**), then right-click it and choose **Edit worktree setup…**.
+A repo with a `.termic.yaml` or `.worktreeinclude` gets its file written from those the first time.
+`worktrees/idp.yaml` is mine, as an example.
+
+## Using it
+
+### Starting agents
+
+The **+** in the tab bar starts Claude Code or Codex in the sandbox.
+"Claude Code (no sandbox)" and "Codex (no sandbox)" start them without it.
+
+New spaces start from the **+** in the sidebar.
+Pick **Worktree** to give the space its own branch and checkout in `~/.herdr/worktrees/<repo>/<branch>`.
+
+### The sandbox
+
+A sandboxed agent can read and write its starting folder and the paths in `sandbox/allow.txt`.
+Paths in `sandbox/deny.txt` are always blocked, even inside the project.
+SSH agent sockets and `AWS_*` variables are kept from it.
+
+The footer shows "N blocked" when the sandbox stopped something.
+Click it to see what, and to allow a path.
+The settings icon at the end of the footer edits both lists.
+
+List changes only apply when an agent starts.
+Right-click the agent's tab and choose **Restart agent**: it restarts in the same sandbox mode and resumes its conversation.
+To turn the sandbox on or off for an agent, click "Sandbox: …" in the footer.
+
+### Closing worktree spaces
+
+Closing a worktree space from its menu, its tab menu or its last tab's **×** asks first, then runs the repo's teardown.
+The space stays in the sidebar, struck through with the teardown's progress, and closes when it's done.
+The worktree folder is then deleted if it has no uncommitted changes; otherwise it's kept and a toast says so.
+The branch always stays.
+
+Closing its last tab with `cmd-w` can't wait for the teardown, so the teardown runs right after the space is gone.
+**Remove worktree** in a space's menu deletes the worktree even with uncommitted changes, after warning.
+
+### The Changes panel
+
+The dropdown at the top picks what the panel compares:
+
+- **Last Turn**: what the focused agent changed since it last started working.
+- **Uncommitted**, **Unstaged**, **Staged**: the working tree against `HEAD`, the working tree against what's staged, or what's staged against `HEAD`.
+- **Committed**: one commit, picked from this branch's commits (or the latest 30).
+- **Branch**: everything on this branch since it left `origin`'s default branch, uncommitted work included.
+
+Last Turn only knows turns that started while the panel was running, so it starts tracking the first time you open the panel.
+The Changes button in the tab bar shows the branch's lines added and removed.
+
+### Linear
+
+The Linear button in the tab bar shows the focused branch's ticket id, and opens the ticket in a panel.
+The first time, the panel asks for a Linear personal API key, which you create in Linear's Security & access settings.
+It's saved to `~/.config/herdr-app/data/linear/api-key`, where sandboxed agents can't read it.
+
+The ticket is found in this order:
+
+1. A ticket you linked to the branch by hand.
+2. A ticket id in the branch name, such as `devx-684-fix`, if `DEVX` is one of your teams.
+3. The issue Linear itself ties to the branch.
+
+Right-click the Linear button to link a different ticket, stop or restore detection, open the ticket, or change the API key.
+
+### The sidebar
+
+- A space whose branch has a pull request shows it, like `#698`; click it to open it on GitHub.
+  Purple is merged, grey is closed or draft, red is a failing check, yellow is checks running, and green is checks passed.
+- A space you haven't named shows its agent's session title.
+- Folders group spaces: make one with the folder button at the top, then drag spaces onto it.
+  `cmd-alt-[` and `cmd-alt-]` step through spaces in the order the sidebar shows them.
+
+## Updating
+
+Pull, then run `./install.sh` again.
+Your own edits to these files in `~/.config/herdr-app` are overwritten, but each one is kept as `<file>~`.
+
+## Going back
+
+Press `cmd-shift-l` to switch back to Herdr's own layout.
+If anything leaves the window unusable, `ctrl-alt-shift-escape` always resets it to the default layout and keys.
+To restore a file the install replaced, rename its `<file>~` copy back.
 
 ## What's in it
 
 | Path | What it does |
 |---|---|
-| `agent/launch` | Starts `claude` / `codex` with `agent/instructions.md` appended, optionally sandboxed. `programs.json` points the + menu at it. |
-| `sandbox/agent-sandbox` | Seatbelt sandbox: blocks reading `$HOME` and writing anywhere, except the starting folder (and its worktree's `.git`) and `allow.txt`. `deny.txt` always wins. Strips `SSH_AUTH_SOCK` and `AWS_*`. |
-| `sandbox/allow.txt`, `deny.txt` | The sandbox lists. Edit them here or from the footer's settings icon (`sandbox-lists` mod). |
-| `sandbox/logger` | Logs blocked accesses to `sandbox/blocked/`, which the footer shows as "N blocked". You can allow paths from there. |
-| `sandbox/agent-restart` | Restarts a Claude/Codex agent in place and resumes its conversation. |
-| `agent/worktree` | Worktree setup and teardown, from `worktrees/<repo>.yaml`: copies files in, runs setup in a Setup pane before the agent starts, and runs teardown on Remove worktree and on Close (the space stays, struck through, until the teardown is done; then the worktree goes too if it has no uncommitted changes, and its branch is kept). |
-| `worktrees/idp.yaml` | Example for `~/Projects/idp`. Change `repo:` if your checkout lives elsewhere. |
-| `usage/` | Feeds for the footer's context and usage numbers. |
-| `browser/open` | A shared sandboxed Chrome that agents drive over CDP on port 9222. |
-| `layouts/main-sandbox.json` | The layout that ties the mods together. |
-| `keys.json` | Key bindings. `cmd-alt-[` / `]` move between space folders in this layout. |
-| `mods/` | `agent-bar` (footer: usage + sandbox), `space-folders` (sidebar folders, new worktree spaces), `worktree-hooks` / `worktree-setup` / `resources` (worktree setup UI and its containers), `brand-sandbox` (the sidebar's top bar: just search, no logo or sidebar toggle), `menu-hooks` (right-click menus), `changes-sandbox` (Changes panel with modes, below), `linear` (the branch's Linear ticket, below), `tabs-sandbox`, `agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists`. |
+| `layouts/main-sandbox.json` | The layout that puts the mods together. |
+| `keys.json` | Key bindings. `cmd-b` is unbound, so the sidebar always shows. |
+| `programs.json` | Points the + menu's agents at `agent/launch`. |
+| `agent/launch` | Starts `claude` or `codex` with `agent/instructions.md` added, sandboxed or not. |
+| `agent/worktree` | Worktree setup, teardown, removal and close, driven by `worktrees/<repo>.yaml`. |
+| `sandbox/` | The sandbox (`agent-sandbox`), its lists, the blocked-access logger and `agent-restart`. |
+| `usage/` | The footer's context and usage feeds for Claude Code and Codex. |
+| `browser/open` | A shared Chrome, inside the sandbox, that agents drive over CDP on port 9222. |
+| `mods/agent-bar` | The footer: usage, sandbox state and blocked accesses. |
+| `mods/space-folders` | The sidebar: folders, worktree spaces, pull requests, close-time teardown. |
+| `mods/changes-sandbox` | The Changes panel with modes. |
+| `mods/linear` | The Linear panel, its right-click menu and dialogs. |
+| `mods/tabs-sandbox` | The tab bar, with the Changes, Linear and containers buttons. |
+| `mods/worktree-hooks`, `worktree-setup`, `resources` | The worktree dialogs, the setup editor and a worktree's containers. |
+| `mods/menu-hooks` | Right-click menus, including Restart agent. |
+| `mods/brand-sandbox` | The sidebar's top bar: only search. |
+| `mods/agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists` | Herdr's agents list, + menu, status bar and a sandbox lists editor, adapted to the sandbox. |
 
-## Changes panel
-
-The dropdown at the top of the Changes panel picks what it compares, like Codex's:
-
-- **Last Turn**: what the focused agent changed since it last started working.
-- **Uncommitted**, **Unstaged**, **Staged**: the working tree against `HEAD`, the index, or `HEAD` from the index.
-- **Committed**: one commit, picked from this branch's commits (or the latest 30).
-- **Branch**: everything on this branch since it left `origin/main` (origin's default branch), uncommitted work included.
-
-Last Turn snapshots the repo when an agent starts working, while the panel is running.
-A turn that started before the panel was first opened, or before Herdr restarted, has no snapshot.
-The panel only shows changes: there's no commit box, since agents commit their own work.
-The Changes button in the tab bar shows the branch's lines added and removed against the same base, tracked files only.
-
-## Space names
-
-A space you haven't named shows its agent's session title in the sidebar (Claude Code and Codex title their sessions), so `~` reads as what it's doing.
-It's shown in the sidebar only; rename the space to fix its name.
-Claude Code titles a session from its first task, so a long session's title can be behind.
-
-## Pull requests in the sidebar
-
-A space whose branch has a GitHub PR shows it on its row, as `#698`; click it to open the PR.
-Its color says where it stands: purple merged, grey closed or draft, red a check failed, yellow checks running, green checks passed.
-It's asked of `gh` (installed and signed in) every minute while the window is in front.
-`main`, `master` and `develop` are skipped.
-
-## Linear panel
-
-The **Linear** button in the tab bar opens the ticket for the focused pane's branch.
-The button shows the ticket's id once it finds one, and just the icon otherwise.
-It finds the ticket in this order:
-
-1. A ticket you linked to this branch by hand, with the panel's Link field (an id like `DEVX-684` or a Linear URL).
-2. A ticket id in the branch name, such as `karrui/devx-684-fix`, if `DEVX` is one of your workspace's teams.
-3. The issue Linear itself ties to the branch name.
-
-Right-click the Linear button to link a different ticket, say "Not this ticket" (stops detecting one for that branch), go back with "Detect from branch", open the ticket, or change the API key.
-With no ticket, the panel itself has a field to link one.
-Links are per repo and branch.
-`mods/tabs-sandbox/linear-resolve.js` is a copy of `mods/linear/resolve.js`, because mods can't import each other: change both.
-
-The first time, the panel asks for a Linear personal API key (later, change it from the right-click menu), which you create in Linear's Security & access settings.
-It's saved to `~/.config/herdr-app/data/linear/api-key` (mode 600), which sandboxed agents can't read, and never goes in this repo.
-
-## Restarting an agent
-
-Changes to the sandbox lists only apply when an agent starts.
-To pick them up, right-click the agent's tab and choose **Restart agent**.
-The agent restarts in the same sandbox mode and resumes its conversation.
-To turn the sandbox on or off for an agent, click "Sandbox: ..." in the footer.
-
-## Updating
-
-Pull, then run `./install.sh` again.
-Edits you made in `~/.config/herdr-app` get overwritten, but each one is kept as `<file>~`.
+Mods can't import each other, so `mods/tabs-sandbox/linear-resolve.js` is a copy of `mods/linear/resolve.js`.
+Change both together.

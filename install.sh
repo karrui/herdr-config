@@ -15,4 +15,11 @@ rsync -rlptb agent sandbox usage browser layouts worktrees mods keys.json "$app/
 sed "s|__HOME__|$HOME|g" programs.json > "$app/programs.json"
 
 echo "Installed into $app."
-echo "Switch to the layout with cmd-shift-l (\"main-sandbox\"), and see README.md for the Claude status line."
+# The window picks the layout up at once; with no window open, it's there next start.
+if herdr-app do layout.switch --name main-sandbox >/dev/null 2>&1; then
+  echo "Switched the window to the main-sandbox layout."
+else
+  echo "Open Herdr and press cmd-shift-l until it shows the main-sandbox layout."
+fi
+command -v gh >/dev/null || echo "Optional: install gh and run gh auth login, for pull requests in the sidebar."
+echo "Next: the Claude Code status line, in README.md."

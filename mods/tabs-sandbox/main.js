@@ -28,77 +28,85 @@ export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
-    // The containers this space's worktree setup started (mods/resources), counted.
-    this.resources = { key: null, running: 0, total: 0 };
-    // Lines added and removed on this space's branch, for the Changes button.
-    this.branch = { key: null, add: 0, del: 0 };
+    // Each answer is kept for the place it's about, so switching back to a space shows the
+    // last one at once while it's asked again: containers this space's worktree setup
+    // started (mods/resources) and the branch's lines changed, per folder; the Linear
+    // ticket, per terminal and branch.
+    this.resources = {}; this.branch = {}; this.ticket = {};
+    this.asked = {}; this.asking = {};
     cx.timer.every(15000, (cx) => { if (window()?.active) { this.countResources(cx, true); this.countBranch(cx, true); } });
-    // The Linear ticket of the focused pane's branch, for the Linear button.
-    this.ticket = { key: null, issue: null };
     cx.timer.every(300000, (cx) => { if (window()?.active) this.findLinear(cx, true); });
   }
 
-  // Asked again when the focused branch, its links or the API key change, and every
-  // 5 minutes while the window is in front (a ticket can be renamed in Linear).
-  findLinear(cx, force = false) {
+  // One look at a time per answer; asked for again meanwhile, it looks once more after.
+  // `key` is what the answer depends on: a new one (or `force`) asks again.
+  look(slot, key, force, cx, work) {
+    if (!force && this.asked[slot] === key) return;
+    this.asked[slot] = key;
+    if (this.asking[slot]) { this.asking[slot] = "again"; return; }
+    this.asking[slot] = true;
+    cx.spawn(async (cx) => {
+      for (;;) {
+        try { await work(); } catch {}
+        cx.notify();
+        if (this.asking[slot] !== "again") break;
+        this.asking[slot] = true;
+      }
+      this.asking[slot] = false;
+    });
+  }
+
+  // The active space's first terminal's folder: what its branch and containers are about.
+  spaceFolder() {
+    const space = spaces().find((p) => p.active);
+    if (!space) return null;
+    const tabs = new Set((space.tabs ?? []).map((c) => c.id));
+    const folder = panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || space.folder;
+    return folder ? { space, folder, on: space.machine ?? null, id: `${space.machine ?? null}|${folder}` } : null;
+  }
+
+  // The focused pane's branch; the ticket for it is asked again when its links or the API
+  // key change, and every 5 minutes while the window is in front (a ticket can be renamed).
+  linearPlace() {
     const space = spaces().find((s) => s.active), f = focused();
     const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
     const where = { cwd: pane?.cwd || f?.cwd || space?.folder, branch: pane?.branch ?? space?.branch ?? null, on: space?.machine ?? null };
-    const key = JSON.stringify([where, shared(LINKS) ?? null, shared(KEY_CHANGED) ?? null]);
-    if (!where.cwd || (!force && key === this.ticket.key) || this.ticket.busy) return;
-    this.ticket = { ...this.ticket, key, busy: true };
-    cx.spawn(async (cx) => {
-      let found = null;
-      try {
-        const apiKey = await readKey();
-        if (apiKey) found = await findTicket(apiKey, where);
-      } catch {}
-      this.ticket = { key: this.ticket.key, found, issue: found?.issue ?? null, for: key };
-      cx.notify();
+    return where.cwd ? { where, id: JSON.stringify(where) } : null;
+  }
+
+  findLinear(cx, force = false) {
+    const at = this.linearPlace();
+    if (!at) return;
+    this.look(`linear|${at.id}`, JSON.stringify([shared(LINKS) ?? null, shared(KEY_CHANGED) ?? null]), force, cx, async () => {
+      const apiKey = await readKey();
+      this.ticket[at.id] = apiKey ? await findTicket(apiKey, at.where) : null;
     });
   }
 
-  // Asked again when the space, its folder or its agents' status changes, and every
-  // 15 seconds while the window is in front. Tracked files only, like `git diff`.
+  // Asked again when its agents' status changes, and every 15 seconds while the window
+  // is in front. Tracked files only, like `git diff`.
   countBranch(cx, force = false) {
-    const space = spaces().find((p) => p.active);
-    if (!space) return;
-    const tabs = new Set((space.tabs ?? []).map((c) => c.id));
-    const folder = panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || space.folder, on = space.machine ?? null;
-    const key = `${on}|${folder}|${space.status}`;
-    if (!folder || (!force && key === this.branch.key) || this.branch.busy) return;
-    this.branch.key = key; this.branch.busy = true;
-    cx.spawn(async (cx) => {
-      let stats = null;
-      try {
-        const git = (args) => execFile("git", [...READ, ...args], { cwd: folder, on });
-        const base = await baseBranch(git);
-        const mb = base && await git(["merge-base", base, "HEAD"]);
-        const r = mb?.code === 0 && await git(["diff", mb.stdout.trim(), "--shortstat"]);
-        if (r?.code === 0) stats = { add: +(/(\d+) insertion/.exec(r.stdout)?.[1] ?? 0), del: +(/(\d+) deletion/.exec(r.stdout)?.[1] ?? 0) };
-      } catch {}
-      this.branch = { key: this.branch.key, folder: `${on}|${folder}`, stats };
-      cx.notify();
+    const at = this.spaceFolder();
+    if (!at) return;
+    this.look(`branch|${at.id}`, at.space.status, force, cx, async () => {
+      const git = (args) => execFile("git", [...READ, ...args], { cwd: at.folder, on: at.on });
+      const base = await baseBranch(git);
+      const mb = base && await git(["merge-base", base, "HEAD"]);
+      const r = mb?.code === 0 && await git(["diff", mb.stdout.trim(), "--shortstat"]);
+      this.branch[at.id] = r?.code === 0 ? { add: +(/(\d+) insertion/.exec(r.stdout)?.[1] ?? 0), del: +(/(\d+) deletion/.exec(r.stdout)?.[1] ?? 0) } : null;
     });
   }
 
-  // Asked again when the space (or its folder) changes, when the popup acted, and every
-  // 15 seconds while the window is in front.
+  // Asked again when the popup acted, and every 15 seconds while the window is in front.
   countResources(cx, force = false) {
-    const space = spaces().find((p) => p.active);
-    if (!space || space.machine) return;
-    const tabs = new Set((space.tabs ?? []).map((c) => c.id));
-    const folder = panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || space.folder;
-    const key = `${folder}|${shared("resources.changed") ?? 0}`;
-    if (!folder || (!force && key === this.resources.key)) return;
-    this.resources.key = key;
-    cx.spawn(async (cx) => {
-      const r = await execFile("/bin/zsh", ["-lc", 'exec "$0" resources "$1"', `${appHome()}/agent/worktree`, folder]).catch(() => null);
+    const at = this.spaceFolder();
+    if (!at || at.on) return;
+    this.look(`resources|${at.id}`, String(shared("resources.changed") ?? 0), force, cx, async () => {
+      const r = await execFile("/bin/zsh", ["-lc", 'exec "$0" resources "$1"', `${appHome()}/agent/worktree`, at.folder]);
       try {
         const d = JSON.parse(r.stdout.trim().split("\n").pop());
-        this.resources = { key, folder, running: d.containers.filter((c) => c.state === "running").length, total: d.containers.length + d.volumes.length };
-      } catch { this.resources = { key, folder, running: 0, total: 0 }; }
-      cx.notify();
+        this.resources[at.id] = { running: d.containers.filter((c) => c.state === "running").length, total: d.containers.length + d.volumes.length };
+      } catch { this.resources[at.id] = { running: 0, total: 0 }; }
     });
   }
 
@@ -136,6 +144,7 @@ export default class Tabs extends View {
     this.countResources(cx);
     this.countBranch(cx);
     this.findLinear(cx);
+    const place = this.spaceFolder(), res = place && !place.on ? this.resources[place.id] : null;
     const shown = space?.tabs ?? [];
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
@@ -185,24 +194,24 @@ export default class Tabs extends View {
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu-sandbox", kind: "popup", width: 250, height: 543 })))
       // Only on a space whose worktree setup started something: how much is running.
-      .when(this.resources.total > 0 && this.resources.key?.startsWith(`${this.resources.folder}|`), el => el.child(
+      .when((res?.total ?? 0) > 0, el => el.child(
         h_flex().id("resources").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)
-          .text_color(this.resources.running ? t.foreground : t.muted).hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
+          .text_color(res.running ? t.foreground : t.muted).hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
           .tooltip("Containers this worktree's setup started")
-          .on_click(() => openOverlay({ mod: "resources", kind: "popup", width: 380, height: 380, props: { folder: this.resources.folder } }))
+          .on_click(() => openOverlay({ mod: "resources", kind: "popup", width: 380, height: 380, props: { folder: place.folder } }))
           .child(svg("mods/resources/container.svg").size(14))
-          .child(div().size(6).rounded(3).bg(this.resources.running ? t.ansi2 : t.dim))
-          .child(String(this.resources.running))))
+          .child(div().size(6).rounded(3).bg(res.running ? t.ansi2 : t.dim))
+          .child(String(res.running))))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => {
         // The branch's lines added and removed, once known for this space; just the icon otherwise.
-        const stats = this.branch.key?.startsWith(`${this.branch.folder}|`) ? this.branch.stats : null;
+        const stats = place ? this.branch[place.id] : null;
         const label = stats && h_flex().gap(4).child(div().text_color(t.ansi2).child(`+${stats.add}`)).child(div().text_color(t.ansi1).child(`−${stats.del}`));
         return el.child(panelButton("changes", label, "mods/changes/changes.svg", "Changes on this branch"));
       })
       .child((() => {
         // The ticket's id once found for this branch; just the icon otherwise.
-        const fresh = this.ticket.for === this.ticket.key, issue = fresh ? this.ticket.issue : null, found = fresh ? this.ticket.found : null;
+        const lp = this.linearPlace(), found = lp ? this.ticket[lp.id] : null, issue = found?.issue ?? null;
         // Linking and the API key: the menu is the `linear` mod as a popup.
         const menu = () => openOverlay({ mod: "linear", kind: "popup", width: 220, props: {
           view: "menu", repo: found?.repo ?? null, branch: found?.branch ?? null, source: found?.source ?? null,

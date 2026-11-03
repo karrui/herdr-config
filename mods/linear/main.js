@@ -31,6 +31,7 @@ export default class LinearPanel extends View {
   init(_props, cx) {
     this.view = props()?.view ?? "panel";
     this.apiKey = null; this.keyLoaded = false; this.issue = null; this.status = "loading";
+    this.seen = {}; // key() -> the last answer there
     this.keyInput = InputState.new({ placeholder: "Paste a Linear personal API key" });
     this.keyInput.set_masked(true);
     this.linkInput = InputState.new({ placeholder: "DEVX-684 or its Linear URL" });
@@ -64,14 +65,15 @@ export default class LinearPanel extends View {
     // event handler calling this notifies), and the task notifies only after awaiting.
     if (!this.apiKey) { this.status = "no-key"; this.issue = null; return; }
     if (!cwd) { this.status = "none"; this.issue = null; return; }
-    if (moved || !this.issue) { this.status = "loading"; this.issue = null; }
+    // Another branch: its last answer at once, else loading; asked again either way.
+    if (moved || !this.issue) Object.assign(this, this.seen[context] ?? { status: "loading", issue: null, source: null, repo: null, branch: null });
     cx.spawn(async (cx) => {
       const current = () => this.run === run && key() === context;
       try {
         const found = await findTicket(this.apiKey, { cwd, branch, on });
         if (!current()) return;
-        this.status = found.status; this.issue = found.issue ?? null; this.source = found.source;
-        this.repo = found.repo ?? null; this.branch = found.branch ?? null; this.error = null;
+        this.seen[context] = { status: found.status, issue: found.issue ?? null, source: found.source ?? null, repo: found.repo ?? null, branch: found.branch ?? null };
+        Object.assign(this, this.seen[context]); this.error = null;
       } catch (e) {
         if (!current()) return;
         this.error = String(e.message ?? e);

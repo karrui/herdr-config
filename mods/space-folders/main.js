@@ -119,7 +119,7 @@ function find(node, id) {
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
 // Where a space is now: its first terminal's live folder, else where it was made.
-// `ps`: the view's panes(), read once by the caller (each read copies every pane).
+// `ps`: panes(), read once by the caller (each read copies every pane).
 function place(s, ps) {
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
@@ -229,9 +229,6 @@ export default class Spaces extends View {
     cx.timer.every(700, (cx) => this.watchTeardown(cx));
     // Herdr's worktree spaces shown at the last look: id -> { top }.
     this.worktrees = {};
-    this.live = {}; // terminal -> its foreground program's folder (see panes())
-    this.refreshLive(cx);
-    cx.timer.every(3000, (cx) => this.refreshLive(cx));
     cx.timer.every(1000, (cx) => this.watchClosed(cx));
     // "space-folders.next" and ".prev" in keys.json: the next space down the
     // list as it shows, where Herdr's own space.next goes by its own order.
@@ -242,39 +239,6 @@ export default class Spaces extends View {
         if (c === "next" || c === "prev") this.step(c === "next" ? 1 : -1);
         cx.notify();
       }
-    });
-  }
-
-  // panes(), with each local terminal's folder as its foreground program has it: the
-  // core's own can be where the terminal started, when its shell moved without saying
-  // so (a space made in a worktree whose shell then went home showed that worktree).
-  panes() {
-    return panes().map((p) => (this.live[p.terminal] && this.live[p.terminal] !== p.cwd ? { ...p, cwd: this.live[p.terminal] } : p));
-  }
-
-  // Asked of herdr-core every few seconds, for the terminals the rows read: each local
-  // space's first terminal with a folder.
-  refreshLive(cx) {
-    if (this.liveBusy) return;
-    const ps = panes(), wanted = [];
-    for (const s of spaces()) {
-      if (s.machine) continue;
-      const tabs = new Set((s.tabs ?? []).map((c) => c.id));
-      const p = ps.find((p) => tabs.has(p.tab) && p.cwd);
-      if (p?.terminal) wanted.push(p.terminal);
-    }
-    this.liveBusy = true;
-    cx.spawn(async (cx) => {
-      let changed = false;
-      const next = {};
-      for (const t of wanted) {
-        const r = await hc(["get", t, "--json"]).catch(() => null);
-        try { const d = JSON.parse(r.stdout); next[t] = d.foreground?.cwd || d.cwd || null; } catch { next[t] = this.live[t] ?? null; }
-        changed ||= next[t] !== this.live[t];
-      }
-      this.live = next;
-      this.liveBusy = false;
-      if (changed) cx.notify();
     });
   }
 
@@ -296,7 +260,7 @@ export default class Spaces extends View {
     const sp = spaces();
     for (const s of sp) if (!this.shown.has(s.id)) this.born[s.id] ??= now;
     this.adopt(sp, now);
-    const due = this.due(now, sp, this.panes());
+    const due = this.due(now, sp, panes());
     if (due.size) this.refreshGit(due, cx);
     if (sp.some((s) => !this.shown.has(s.id))) cx.notify();
   }
@@ -512,7 +476,7 @@ export default class Spaces extends View {
     if (!s || (id && !f.list.some((x) => x.id === id))) return;
     const of = { ...f.of };
     if (id) of[localId(s)] = id;
-    else if (folderOf(s, f, this.panes())) of[localId(s)] = "";
+    else if (folderOf(s, f, panes())) of[localId(s)] = "";
     else delete of[localId(s)];
     saveFolders(machine, { ...f, of });
   }
@@ -556,7 +520,7 @@ export default class Spaces extends View {
       seen.push({ id: r.w.id, shown: !away });
       return away ? [] : [collapsed ? this.compact(r, t) : this.row(r, t)];
     };
-    const f = folders(machine), { list } = f, ps = this.panes();
+    const f = folders(machine), { list } = f, ps = panes();
     let parent = null;
     const placed = rows.map((r) => {
       if (!r.tree) parent = folderOf(r.w, f, ps);
@@ -772,7 +736,7 @@ export default class Spaces extends View {
 
   // Spaces in order, each worktree space moved under its main checkout's.
   ordered() {
-    const sp = spaces(), ps = this.panes();
+    const sp = spaces(), ps = panes();
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null })).filter((r) => this.shown.has(r.w.id));
@@ -838,7 +802,7 @@ export default class Spaces extends View {
   // machine a folder here takes in shows in that folder instead. `seen`
   // collects the spaces in this order (see foldered).
   grouped(t, collapsed, seen = []) {
-    const rows = this.ordered(), ps = this.panes();
+    const rows = this.ordered(), ps = panes();
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name)])].sort();
     const guests = remote.map((m) => {
       const mine = rows.filter((r) => r.w.machine === m);
@@ -877,7 +841,7 @@ export default class Spaces extends View {
     const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
     const { lead, subs } = this.facts(w);
     // Not a repo: where it is now (not where it was made) names it.
-    const here = place(w, this.panes());
+    const here = place(w, panes());
     const repo = g?.name ?? (here && here !== home() ? base(here) : "~");
     const branch = g?.branch ?? (g ? "detached" : null);
     const pr = g?.branch ? this.prs[`${g.repo}|${g.branch}`]?.pr : null;
@@ -969,7 +933,7 @@ export default class Spaces extends View {
   watchClosed(cx) {
     // While this computer's layout can't be read, spaces() can look empty.
     if (machines().find((m) => m.name === null)?.layout !== "ready") return;
-    const sp = spaces(), ps = this.panes(), ids = new Set(sp.map((s) => s.id)), now = {};
+    const sp = spaces(), ps = panes(), ids = new Set(sp.map((s) => s.id)), now = {};
     for (const s of sp) {
       if (s.machine) continue;
       const g = this.git[where(s, ps)];
@@ -1050,7 +1014,7 @@ export default class Spaces extends View {
     if (changed) setShared("space.colors", kept);
     // While a space in a folder is dragged, a place to drop it out of the folder.
     const dragged = this.pressed !== null ? spaces()[this.pressed] : null;
-    const leaving = Boolean(dragged && folderOf(dragged, folders(dragged.machine ?? null), this.panes()));
+    const leaving = Boolean(dragged && folderOf(dragged, folders(dragged.machine ?? null), panes()));
     const button = (id, icon, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6)
       .hover(s => s.bg(t.hover).text_color(t.foreground)).on_click(action).child(svg(`mods/workspace-chrome/${icon}.svg`).size(14));
     this.now = { terminals: terminals(), agents: agents() };

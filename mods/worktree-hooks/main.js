@@ -103,8 +103,9 @@ async function submodules(top, on) {
 // The repo a folder belongs to: its main checkout and name, and whether
 // the folder is itself a linked worktree. null outside git.
 async function repoOf(folder, on) {
-  const top = await git(folder, ["rev-parse", "--show-toplevel"], on);
-  const common = await git(folder, ["rev-parse", "--path-format=absolute", "--git-common-dir"], on);
+  // A folder that's gone (its worktree removed) can't run git: no repo either.
+  const top = await git(folder, ["rev-parse", "--show-toplevel"], on).catch(() => ({ ok: false }));
+  const common = await git(folder, ["rev-parse", "--path-format=absolute", "--git-common-dir"], on).catch(() => ({ ok: false }));
   if (!top.ok || !common.ok) return null;
   const main = common.out.endsWith("/.git") ? common.out.slice(0, -5) : common.out;
   return { top: top.out, main, name: main.split("/").pop(), linked: main !== top.out };
@@ -155,6 +156,10 @@ export default class Worktree extends View {
         this.folder = props()?.folder || place(this.space()) || this.userHome;
         // The repo is set last: Enter does nothing until the warnings it consents to are known.
         const repo = await repoOf(this.folder, this.on);
+        // Another space working in this worktree: closing this one leaves it be.
+        const s = this.space(), within = (p) => p === repo?.top || Boolean(p?.startsWith(`${repo?.top}/`));
+        this.sharedWith = repo?.linked && props()?.action === "close"
+          ? spaces().find((o) => o.id !== s?.id && (o.machine ?? null) === (this.on ?? null) && within(place(o))) : null;
         if (repo && confirming) {
           this.dirty = (await git(repo.top, ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain"], this.on)).out !== "";
           this.unpushed = (await submodules(repo.top, this.on)).unpushed;
@@ -176,13 +181,18 @@ export default class Worktree extends View {
     closeOverlay(props().overlay);
   }
 
+  // Close works outside a repo too (its worktree already gone): it just closes the space.
+  ready() {
+    return this.repo || (this.repo === null && props()?.action === "close");
+  }
+
   go(cx) {
-    if (this.busy || !this.repo) return;
+    if (this.busy || !this.ready()) return;
     cx.spawn(async (cx) => this.work(cx));
   }
 
   async work(cx) {
-    if (this.busy || !this.repo) return;
+    if (this.busy || !this.ready()) return;
     this.busy = true;
     this.error = "";
     cx.notify();
@@ -256,7 +266,7 @@ export default class Worktree extends View {
   async closeSpace() {
     const s = this.space();
     if (!s) return "";
-    if (this.on || !this.repo?.linked) { run("space.close", { id: s.id, confirmed: true }); return ""; }
+    if (this.on || !this.repo?.linked || this.sharedWith) { run("space.close", { id: s.id, confirmed: true }); return ""; }
     setShared("worktree.teardown", { ...(shared("worktree.teardown") ?? {}), [s.id]: Date.now() });
     const r = await hc(["run", "--bg", "--cwd", this.repo.top, "--", "/bin/zsh", "-lic", 'exec "$0" closed "$1" "$2"', HOOKS(), this.repo.top, s.id]);
     return r.code === 0 ? "" : r.stderr.trim() || "Couldn't start the teardown.";
@@ -350,7 +360,9 @@ export default class Worktree extends View {
       r === undefined
         ? "…"
         : r === null
-          ? `${this.folder ? tilde(this.folder, this.userHome) : "This folder"} is not in a git repository.`
+          ? `${this.folder ? tilde(this.folder, this.userHome) : "This folder"} is not in a git repository.${closing ? " The space closes with no teardown." : ""}`
+          : closing && this.sharedWith
+            ? `Its agents and terminals stop. ${this.sharedWith.name} is still working in ${tilde(r.top, this.userHome)}, so the worktree stays.`
           : closing
             ? `Its agents and terminals stop. This repo's teardown runs first, then the space closes${this.dirty ? "." : ` and ${tilde(r.top, this.userHome)} is deleted. The branch stays.`}`
           : remove
@@ -358,7 +370,7 @@ export default class Worktree extends View {
               ? "This is the repository's main checkout, not a worktree."
               : `${this.on ? "" : "Runs this repo's teardown, then "}${this.on ? "Closes" : "closes"} the space and deletes ${tilde(r.top, this.userHome)}. The branch stays.`
             : `A new space on a checkout in ${tilde(ROOT(this.userHome), this.userHome)}/${r.name}/. It starts on a new branch from origin's latest default branch; a taken name gets -2.`;
-    const blocked = !r || ((remove || closing) && !r.linked);
+    const blocked = closing ? r === undefined : !r || (remove && !r.linked);
     return v_flex()
       .id("worktree")
       .track_focus(this.handle)
@@ -371,7 +383,7 @@ export default class Worktree extends View {
       .child(div().font_semibold().text_color(t.foreground).child(title))
       .child(div().text_color(t.muted).child(detail))
       .when(remove && this.dirty, (el) => el.child(div().text_color(t.blocked).child("It has uncommitted changes: they will be lost.")))
-      .when(closing && this.dirty, (el) => el.child(div().text_color(t.ansi3).child(`It has uncommitted changes, so ${tilde(r.top, this.userHome)} is kept.`)))
+      .when(closing && this.dirty && !this.sharedWith, (el) => el.child(div().text_color(t.ansi3).child(`It has uncommitted changes, so ${tilde(r.top, this.userHome)} is kept.`)))
       .when(remove && this.unpushed.length > 0, (el) => el.child(div().text_color(t.blocked).child(`Submodule ${this.unpushed.join(", ")} has commits that aren't pushed anywhere: they will be lost.`)))
       .when(!remove && !closing && !blocked, (el) =>
         el.child(

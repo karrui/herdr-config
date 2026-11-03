@@ -160,8 +160,11 @@ Right-click the Linear button to link a different ticket, stop or restore detect
 
 ### The sidebar
 
-- A space whose branch has a pull request shows it, like `#698`; click it to open it on GitHub.
+- A space shows its pull requests: its branch's, the rest of a `gh stack` that branch is in, and every one its Claude Code sessions (sub-agents included) opened.
+  One shows as `#698`; click it to open it on GitHub.
+  Several show as `3 PRs`; hover it for the list, and click one to open it.
   Purple is merged, grey is closed or draft, red is a failing check, yellow is checks running, and green is checks passed.
+  Several take the color of the one most in need.
 - A space you haven't named shows its agent's session title.
 - Folders group spaces: make one with the folder button at the top, then drag spaces onto it.
   `cmd-alt-[` and `cmd-alt-]` step through spaces in the order the sidebar shows them.

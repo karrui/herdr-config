@@ -12,7 +12,7 @@
 // machine's name or the folder one of its spaces works in.
 
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, HoverCard } from "gpui-base";
 import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, knownAgents, appHome, readTextFile, agents, terminals, notify } from "herdr";
 import { freshWorktree } from "./fresh-worktree.js";
 
@@ -154,6 +154,8 @@ const PR_LOOK = {
   pending: ["ansi3", "git-pull-request", "checks running"], passing: ["ansi2", "git-pull-request", "checks passed"],
   open: ["muted", "git-pull-request", "open"],
 };
+// Several PRs' chip takes the color of the one most in need.
+const PR_RANK = ["error", "pending", "open", "passing", "draft", "merged", "closed"];
 
 // A space nobody named shows what its agent says the session is about (Claude Code and
 // Codex title their sessions), else Herdr's name for it. Shown here only: renaming it
@@ -200,7 +202,8 @@ export default class Spaces extends View {
     this.moving = null; // a folder being dragged: { machine, id, index }
     this.overMove = null;
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
-    this.prs = {}; // "<repo>|<branch>" -> { at, pr: { number, url, state } | null }
+    this.prs = {}; // "<repo>|<branch>" or a PR's URL -> { at, pr: { number, url, title, state } | null }
+    this.spacePRs = {}; // space -> its keys in this.prs
     // CI and reviews move on GitHub, not here: asked again every minute while in front.
     cx.timer.every(PR_EVERY, (cx) => { if (window()?.active) this.refreshPRs(cx, true); });
     this.checked = {}; // where() -> when it was last looked at
@@ -371,47 +374,117 @@ export default class Spaces extends View {
     }
   }
 
-  // Each shown branch's PR, one gh at a time; `force` asks again for ones already known.
+  // A space's PRs: its branch's, the rest of a gh stack holding that branch, and every
+  // PR its Claude Code sessions opened (Claude Code notes each as a pr-link in its
+  // transcript, which the status line feed names). One gh at a time; `force` asks again
+  // for ones already known, merged ones aside.
   // ponytail: the trunk branches are skipped by name, since a PR "from main" is usually a fork's.
   refreshPRs(cx, force = false) {
     if (this.prBusy) return;
-    const asks = new Map();
-    for (const [place, g] of Object.entries(this.git)) {
-      if (!g?.branch || g.branch === "(detached)" || ["main", "master", "develop"].includes(g.branch)) continue;
-      const k = `${g.repo}|${g.branch}`, known = this.prs[k];
-      if (!asks.has(k) && (!known || (force && Date.now() - known.at > PR_EVERY / 2))) asks.set(k, { place, branch: g.branch });
-    }
-    if (!asks.size) return;
     this.prBusy = true;
     cx.spawn(async (cx) => {
-      for (const [k, { place, branch }] of asks) {
-        const [on, cwd] = JSON.parse(place);
-        const r = await exec("/bin/zsh", ["-lc", 'exec gh "$@"', "gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
-          "--json", "number,url,state,isDraft,statusCheckRollup"], { cwd, on }).catch(() => null);
-        // gh missing, signed out or offline: keep what showed, try again next round.
-        if (r?.code !== 0) continue;
-        try {
-          const pr = JSON.parse(r.stdout)[0];
-          this.prs[k] = { at: Date.now(), pr: pr ? { number: pr.number, url: pr.url, state: prState(pr) } : null };
-        } catch {}
-        cx.notify();
-      }
-      this.prBusy = false;
+      try { await this.findPRs(cx, force); } finally { this.prBusy = false; }
     });
   }
 
-  // The PR chip on a row's title line: its number, colored by state; opens it.
-  prChip(id, pr, t) {
-    const [color, icon, label] = PR_LOOK[pr.state];
-    return h_flex().id(`pr-${id}`).h(18).px(5).gap(3).flex_none().items_center().rounded(5).cursor_pointer()
-      .text_size(11).text_color(t[color]).hover((s) => s.bg(t.hover))
-      .tooltip(`PR #${pr.number}: ${label}`)
+  async findPRs(cx, force) {
+    const asks = new Map(), stacks = {}, found = {}, all = terminals();
+    const ask = (k, place, how) => {
+      const known = this.prs[k];
+      const stale = force && known && known.pr?.state !== "merged" && Date.now() - known.at > PR_EVERY / 2;
+      if (!asks.has(k) && (!known || stale)) asks.set(k, { place, how });
+    };
+    for (const s of spaces()) {
+      const place = this.at[s.id], g = this.git[place];
+      if (!place) continue;
+      const keys = [];
+      if (g?.branch && g.branch !== "(detached)" && !["main", "master", "develop"].includes(g.branch)) {
+        let branches = [g.branch];
+        // gh stack's catalog, in the repo's .git.
+        const [on, common] = JSON.parse(g.repo);
+        if (!stacks[g.repo]) {
+          const text = await readTextFile(`${common}/gh-stack`, { on }).catch(() => null);
+          try { stacks[g.repo] = JSON.parse(text ?? "{}").stacks ?? []; } catch { stacks[g.repo] = []; }
+        }
+        const stack = stacks[g.repo].find((st) => (st.branches ?? []).some((b) => b.branch === g.branch));
+        if (stack) branches = stack.branches.map((b) => b.branch);
+        for (const b of branches) { keys.push(`${g.repo}|${b}`); ask(`${g.repo}|${b}`, place, ["--head", b]); }
+      }
+      if (!s.machine) {
+        // Its terminals, and the ones they started (sub-agents, which carry no space).
+        const mine = new Set(all.filter((x) => x.labels?.["herdr.space"] === s.id).map((x) => x.address));
+        for (let more = true; more;) {
+          more = false;
+          for (const x of all) if (mine.has(x.parent) && !mine.has(x.address)) { mine.add(x.address); more = true; }
+        }
+        const transcripts = [];
+        for (const address of mine) {
+          const feed = await readTextFile(`${appHome()}/usage/claude/${address}.json`).catch(() => null);
+          try { const f = JSON.parse(feed ?? "null")?.transcript; if (f) transcripts.push(f); } catch {}
+        }
+        if (transcripts.length) {
+          const r = await exec("/usr/bin/grep", ["-h", "-e", '"type":"pr-link"', "--", ...transcripts]).catch(() => null);
+          for (const line of (r?.stdout ?? "").split("\n")) {
+            try { const url = JSON.parse(line).prUrl; if (url && !keys.includes(url)) { keys.push(url); ask(url, place, [url]); } } catch {}
+          }
+        }
+      }
+      found[s.id] = keys;
+    }
+    this.spacePRs = found;
+    for (const [k, { place, how }] of asks) {
+      const [on, cwd] = JSON.parse(place);
+      const fields = ["--json", "number,url,title,state,isDraft,statusCheckRollup"];
+      const args = how[0] === "--head" ? ["pr", "list", ...how, "--state", "all", "--limit", "1", ...fields] : ["pr", "view", ...how, ...fields];
+      const r = await exec("/bin/zsh", ["-lc", 'exec gh "$@"', "gh", ...args], { cwd, on }).catch(() => null);
+      // gh missing, signed out or offline: keep what showed, try again next round.
+      if (r?.code !== 0) continue;
+      try {
+        const out = JSON.parse(r.stdout), pr = Array.isArray(out) ? out[0] : out;
+        this.prs[k] = { at: Date.now(), pr: pr ? { number: pr.number, url: pr.url, title: pr.title, state: prState(pr) } : null };
+      } catch {}
+      cx.notify();
+    }
+    cx.notify();
+  }
+
+  // A space's PRs, each once: a stack bottom to top, then its sessions' in the order opened.
+  prsOf(w) {
+    const seen = new Set();
+    return (this.spacePRs[w.id] ?? []).map((k) => this.prs[k]?.pr).filter((pr) => pr && !seen.has(pr.url) && seen.add(pr.url));
+  }
+
+  // The PR chip on a row's title line: its number, colored by state; opens it. Several:
+  // how many, colored by the one most in need, and a list of them on hover.
+  prChip(id, prs, t) {
+    const stop = (el) => el
       // Not a press on the row: it would select or start dragging the space.
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_mouse_up("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [pr.url]); })
-      .child(svg(`mods/space-folders/${icon}.svg`).size(11))
-      .child(`#${pr.number}`);
+      .on_mouse_up("left", (_e, cx) => cx.stop_propagation());
+    const chip = (state) => stop(h_flex().id(`pr-${id}`).h(18).px(5).gap(3).flex_none().items_center().rounded(5).cursor_pointer()
+      .text_size(11).text_color(t[PR_LOOK[state][0]]).hover((s) => s.bg(t.hover))
+      .child(svg(`mods/space-folders/${PR_LOOK[state][1]}.svg`).size(11)));
+    if (prs.length === 1) {
+      const [pr] = prs;
+      return chip(pr.state).tooltip(`PR #${pr.number}: ${PR_LOOK[pr.state][2]}`)
+        .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [pr.url]); })
+        .child(`#${pr.number}`);
+    }
+    const worst = PR_RANK.find((s) => prs.some((pr) => pr.state === s));
+    // From more than one repo: each says which.
+    const repo = (pr) => pr.url.split("/")[4];
+    const many = new Set(prs.map(repo)).size > 1;
+    const item = (pr) => stop(h_flex().id(`pr-${id}-${pr.url}`).px(8).py(5).gap(7).items_start().rounded(6).cursor_pointer()
+      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); exec("open", [pr.url]); })
+      .child(svg(`mods/space-folders/${PR_LOOK[pr.state][1]}.svg`).size(12).mt(2).flex_none().text_color(t[PR_LOOK[pr.state][0]]))
+      .child(v_flex().flex_1().min_w(0).gap(1)
+        .child(h_flex().gap(6).child(div().flex_none().text_color(t[PR_LOOK[pr.state][0]]).child(`#${pr.number}`))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(pr.title ?? "")))
+        .child(div().truncate().text_size(11).text_color(t.dim).child([...(many ? [repo(pr)] : []), PR_LOOK[pr.state][2]].join(" \u00b7 ")))));
+    return HoverCard.new(`prs-${id}`).open_delay(150).anchor("top_right")
+      .trigger(chip(worst).child(`${prs.length} PRs`))
+      .content(v_flex().w(320).p(4).gap(1).rounded(10).bg(t.popover).border(1).border_color(t.border).text_size(12.5)
+        .children(prs.map(item)));
   }
 
   watch(repo, cx) {
@@ -896,7 +969,7 @@ export default class Spaces extends View {
     const here = place(w, panes());
     const repo = g?.name ?? (here && here !== home() ? base(here) : "~");
     const branch = g?.branch ?? (g ? "detached" : null);
-    const pr = g?.branch ? this.prs[`${g.repo}|${g.branch}`]?.pr : null;
+    const prs = this.prsOf(w);
     const tearing = this.teardown[w.id];
     const news = [
       ...(branch ? [branch] : []),
@@ -968,7 +1041,7 @@ export default class Spaces extends View {
         .child(div().relative().flex_1().min_w(0).truncate().font_medium().text_color(tearing ? t.dim : t.foreground).child(title)
           .when(Boolean(tearing), (el) => el.child(div().absolute().left(0).right(0).top(0).bottom(0).flex().items_center()
             .child(div().w_full().h(1).bg(t.dim)))))
-        .when(Boolean(pr), (el) => el.child(this.prChip(w.id, pr, t)))
+        .when(prs.length > 0, (el) => el.child(this.prChip(w.id, prs, t)))
         .when(Boolean(state), (el) => el.child(state))
         .when(Boolean(icon) && !inline, (el) => el.child(icon)))
       .when(Boolean(third), (el) => el.child(h_flex().gap(5).items_center().text_size(11.5).text_color(t.dim)

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Fed Claude Code's status line payload on stdin (see ~/.claude/statusline-command.sh).
-# Saves this terminal's context and plan usage to claude/<terminal>.json for the
-# `usage` mod. Prints nothing; does nothing outside a Herdr terminal.
+# Saves this terminal's context, plan usage and transcript to claude/<terminal>.json for the
+# `usage` mod (and space-folders, for the PRs a session opened). Prints nothing; does
+# nothing outside a Herdr terminal.
 payload=$(cat)
 [ -n "$HC_TERMINAL_ID" ] || exit 0
 dir="$(cd "$(dirname "$0")" && pwd)/claude"
@@ -9,6 +10,7 @@ out="$dir/$HC_TERMINAL_ID.json"
 printf '%s' "$payload" | /usr/bin/jq -c '{
   at: (now | floor),
   session: (.session_id // null),
+  transcript: (.transcript_path // null),
   model: (.model.display_name // null),
   ctx: (.context_window.used_percentage // null),
   ctx_tokens: (.context_window.total_input_tokens // null),

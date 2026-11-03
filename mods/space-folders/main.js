@@ -217,6 +217,7 @@ export default class Spaces extends View {
     this.over = null;
     this.machines = [];
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
+    this.idleFolded = new Set(JSON.parse(localStorage.getItem("idle.folded") ?? "[]")); // "<machine>|<folder>"
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
     // Another screen may have changed them: read every machine's file again now and then.
@@ -526,20 +527,62 @@ export default class Spaces extends View {
       if (!r.tree) parent = folderOf(r.w, f, ps);
       return { ...r, folder: parent, nested };
     });
+    // A space is active while it has an agent, idle or not; a worktree goes
+    // with its checkout's space, the pair active when either is.
+    const agentIn = (r) => this.now.agents.some((a) => a.space === r.w.id);
+    const spacesOf = (rows) => {
+      const groups = [];
+      for (const r of rows) r.tree && groups.length ? groups.at(-1).push(r) : groups.push([r]);
+      return groups.map((g) => ({ busy: g.some(agentIn), shown: g.some((r) => r.w.active), draw: (away) => g.flatMap((r) => draw(r, away)) }));
+    };
+    // A folder is active while any of its spaces has a terminal open, agent or not.
+    const open = (r) => this.now.terminals.some((x) => x.labels?.["herdr.space"] === localId(r.w));
+    const folderItems = list.map((f, n) => {
+      const inside = placed.filter((r) => r.folder === f.id);
+      const visitors = guests.filter((g) => g.folder === f.id);
+      const counted = [...inside, ...visitors.flatMap((g) => g.rows)];
+      return {
+        busy: counted.some(open), shown: counted.some((r) => r.w.active),
+        draw: (hide) => [
+          ...(hide ? [] : [this.folderHead(f, n, machine, counted, t, collapsed)]),
+          ...this.split(spacesOf(inside), `${key(machine)}|${f.id}`, true, hide || f.folded, t, collapsed),
+          ...visitors.flatMap((g) => this.machineSection(g.m, g.rows, t, collapsed, { nested: true, hidden: hide || f.folded, seen })),
+        ],
+      };
+    });
+    return this.split([...folderItems, ...spacesOf(placed.filter((r) => !r.folder))], `${key(machine)}|`, nested, hidden, t, collapsed);
+  }
+
+  // Active items (folders, spaces) first, then the rest under a line that folds
+  // them away; whatever holds the shown space stays.
+  split(items, id, indent, away, t, collapsed) {
+    const on = items.filter((x) => x.busy), off = items.filter((x) => !x.busy);
+    if (!on.length || !off.length) return items.flatMap((x) => x.draw(away));
+    const folded = this.idleFolded.has(id);
     return [
-      ...list.flatMap((f, n) => {
-        const inside = placed.filter((r) => r.folder === f.id);
-        const visitors = guests.filter((g) => g.folder === f.id);
-        const counted = [...inside, ...visitors.flatMap((g) => g.rows)];
-        const away = hidden || f.folded;
-        return [
-          ...(hidden ? [] : [this.folderHead(f, n, machine, counted, t, collapsed)]),
-          ...inside.flatMap((r) => draw(r, away)),
-          ...visitors.flatMap((g) => this.machineSection(g.m, g.rows, t, collapsed, { nested: true, hidden: away, seen })),
-        ];
-      }),
-      ...placed.filter((r) => !r.folder).flatMap((r) => draw(r, hidden)),
+      ...on.flatMap((x) => x.draw(away)),
+      ...(away ? [] : [this.idleHead(id, off.length, folded, indent, t, collapsed)]),
+      ...off.flatMap((x) => x.draw(away || (folded && !x.shown))),
     ];
+  }
+
+  idleHead(id, count, folded, indent, t, collapsed) {
+    // As tall as a folder's header, to hit easily.
+    const head = h_flex().id(`idle-${id}`).h(30).flex_none().pl(collapsed ? 2 : indent ? 26 : 8).pr(8).gap(7).items_center().rounded(8)
+      .text_size(12).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.muted))
+      .on_click((_e, cx) => {
+        folded ? this.idleFolded.delete(id) : this.idleFolded.add(id);
+        localStorage.setItem("idle.folded", JSON.stringify([...this.idleFolded]));
+        cx.notify();
+      })
+      // A space dragged here goes nowhere (not out of its folder, as below the list).
+      .on_mouse_move((_e, cx) => { if (this.pressed !== null && this.over !== null) { this.over = null; cx.notify(); } })
+      .on_mouse_up("left", (_e, cx) => { if (this.pressed !== null) { this.pressed = null; this.over = null; cx.stop_propagation(); cx.notify(); } });
+    if (collapsed) return head.justify_center().child(div().w_full().h(1).bg(t.border));
+    return head
+      .child(div().flex_1().min_w(0).truncate().child("Inactive"))
+      .child(div().flex_none().text_size(11.5).child(String(count)))
+      .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none());
   }
 
   folderHead(f, n, machine, inside, t, collapsed) {

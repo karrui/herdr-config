@@ -157,6 +157,8 @@ Right-click the Linear button to link a different ticket, stop or restore detect
 - A space you haven't named shows its agent's session title.
 - Folders group spaces: make one with the folder button at the top, then drag spaces onto it.
   `cmd-alt-[` and `cmd-alt-]` step through spaces in the order the sidebar shows them.
+- Spaces with an agent, and folders with a terminal open, come first.
+  The rest go under an Inactive line, in each folder and at the bottom; click it to fold them away.
 
 ## Updating
 

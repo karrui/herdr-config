@@ -22,6 +22,6 @@ It runs in the sandbox, so `file://` pages outside the whitelist and downloads t
 When `$HERDR_SANDBOX` is set, you run in a macOS seatbelt sandbox: reading `$HOME` and writing anywhere fail with "Operation not permitted", except your starting folder and the paths in `~/.config/herdr-app/sandbox/allow.txt`.
 Shell and git startup files, tools on `PATH` and the agents' settings, hooks and skills are never writable.
 Sockets in `$HOME` are unreachable, so `herdr-app` and Docker don't work.
-`hc` works through a go-between: `hc run` starts the program sandboxed too, in a folder you can write; `send`, `read`, `wait`, `keys`, `interrupt`, `get`, `kill` and `rm` reach sandboxed terminals and your own children only; `exec`, `file` and `--on` aren't available.
+`hc` works through a go-between: `hc run` starts the program sandboxed too, in a folder you can write; `send`, `wait` and `get` reach any agent; `read`, `keys`, `interrupt`, `kill` and `rm` reach sandboxed terminals and your own children only; `exec`, `file` and `--on` aren't available.
 When a command fails that way, tell the user the exact path that was blocked and carry on with what works.
 The user allows paths from the "blocked" list in Herdr's footer; it takes effect when your agent restarts.

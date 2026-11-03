@@ -2,9 +2,11 @@
 # The other end of the `hc` sandboxed agents get (sandbox/bin/hc). Herdr's core runs
 # commands outside any sandbox, so agents can't reach it themselves; this runs outside,
 # beside one sandboxed agent, and passes on only what keeps them all in:
-# - ls, and talking to, reading, waiting on and ending sandboxed terminals (or the
-#   agent's own children). Never a plain shell or an unsandboxed agent, where typed
-#   text runs as a command outside.
+# - ls; reading, pressing keys in and ending sandboxed terminals (or the agent's own
+#   children); and messaging, waiting on and looking at any agent too. A message to an
+#   agent outside starts "[hc from tN] ", so it can't be a ! shell command or a
+#   /command there (Herdr's own <hc from> wrap only comes from agents). Never a plain
+#   shell, where typed text would run outside.
 # - run, as agent/launch --sandbox <program>, in a folder the agent may write already.
 # Requests are <id>.req files in the spool folder: { argv, cwd }; answers <id>.res:
 # { code, stdout, stderr }.
@@ -49,6 +51,9 @@ reachable() {
   [ -n "$me" ] && [ "$(jq -r '.parent // empty' <<<"$j")" = "$me" ]
 }
 
+# A terminal Herdr sees an agent in (Claude Code, Codex, ...): it gets messages, wrapped.
+agent() { [ -n "$(hc get "$1" --json 2>/dev/null | jq -r '.status.app // empty')" ]; }
+
 no() { printf 'hc in the sandbox: %s\n' "$1" >&2; return 126; }
 
 serve() {
@@ -72,7 +77,15 @@ serve() {
         esac
         i=$((i + 1))
       done
-      if [ -n "$t" ] && ! reachable "$t"; then no "$t is not a sandboxed terminal or your child"; return; fi
+      if [ -n "$t" ] && ! reachable "$t"; then
+        case "$sub" in
+          send) [[ "$t" != */* ]] && agent "$t" || { no "$t is not an agent, a sandboxed terminal or your child"; return; }
+            # Everything after the terminal is the message: one, prefixed.
+            args=("${args[@]:0:$((i + 1))}" "[hc from ${me:-a sandbox}] ${args[*]:$((i + 1))}") ;;
+          wait|get) [[ "$t" != */* ]] && agent "$t" || { no "$t is not an agent, a sandboxed terminal or your child"; return; } ;;
+          *) no "$t is not a sandboxed terminal or your child"; return ;;
+        esac
+      fi
       hc "${args[@]}" ;;
     run)
       i=1

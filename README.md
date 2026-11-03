@@ -161,8 +161,10 @@ Right-click the Linear button to link a different ticket, stop or restore detect
   `cmd-alt-[` and `cmd-alt-]` step through spaces in the order the sidebar shows them.
 - Spaces with an agent, and folders with a terminal open, come first.
   The rest go under an Inactive line, in each folder and at the bottom; click it to fold them away.
-- **Usage**, above Settings, shows Claude Code's and Codex's 5-hour and weekly plan limits.
+- **Usage**, above Settings, shows Claude Code's and Codex's plan limits: each 5-hour and weekly window, when it resets, and how old the reading is.
   They're account-wide, as each agent last reported them, so Claude Code needs the status line set up above.
+
+  ![The Usage popup with Claude Code's and Codex's limits](docs/usage.png)
 
 ## Updating
 

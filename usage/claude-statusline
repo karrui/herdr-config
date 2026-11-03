@@ -17,6 +17,7 @@ printf '%s' "$payload" | /usr/bin/jq -c '{
   five_reset: (.rate_limits.five_hour.resets_at // null),
   week: (.rate_limits.seven_day.used_percentage // null),
   week_reset: (.rate_limits.seven_day.resets_at // null),
+  limits: (.rate_limits // null),
   cost: (.cost.total_cost_usd // null)
 }' > "$out.tmp" 2>/dev/null && mv "$out.tmp" "$out"
 exit 0

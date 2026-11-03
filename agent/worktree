@@ -14,6 +14,8 @@
 #                                             Enter runs it again
 #   worktree remove <path> <space> [--force]  run the teardown, then close the space and
 #                                             remove the worktree; output to logs/<space>.log
+#   worktree closed <path>                    after its space closed: the teardown, then
+#                                             remove it if clean; logs/closed-<name>.log
 #   worktree resources <path> [stop|start|remove]
 #                                             the containers and volumes its setup started
 #   worktree config <path>                    the repo's file and settings, as JSON
@@ -181,6 +183,18 @@ case "$cmd" in
     echo "Removing the worktree"
     herdr-app do space.close --id "$space" --confirmed true >/dev/null
     cd "$main" && git worktree remove $force "$dir" && echo "Removed"
+    ;;
+  closed)
+    # Its space was closed some other way than Remove worktree (the menu's Close, the last
+    # tab, cmd-w): run the teardown, then remove the worktree when that loses nothing
+    # uncommitted. Its branch stays either way. Exits 3 when it kept the worktree.
+    log="$here/logs/closed-$(basename "$dir").log"
+    mkdir -p "$here/logs"
+    exec >"$log" 2>&1
+    script="$(has teardown && get "$conf" teardown)"
+    [ -z "$script" ] || { echo "Tearing down"; bash -c "$script"; }
+    if [ -n "$(git --no-optional-locks status --porcelain)" ]; then echo "Kept: it has uncommitted changes"; exit 3; fi
+    cd "$main" && git worktree remove "$dir" && echo "Removed"
     ;;
   resources)
     # What this worktree's setup started, as JSON with each container's state now; or,

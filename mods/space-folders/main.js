@@ -13,7 +13,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, knownAgents, appHome, readTextFile, agents, terminals } from "herdr";
+import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, knownAgents, appHome, readTextFile, agents, terminals, notify } from "herdr";
 
 // A machine's folders live in a file in its home, so every screen showing its
 // spaces shows the same folders: { list: [{ id, name, folded }], of: { spaceId:
@@ -217,6 +217,9 @@ export default class Spaces extends View {
     cx.timer.every(250, (cx) => this.checkNew(cx));
     this.teardown = {};
     cx.timer.every(700, (cx) => this.watchTeardown(cx));
+    // Herdr's worktree spaces shown at the last look: id -> { top }.
+    this.worktrees = {};
+    cx.timer.every(1000, (cx) => this.watchClosed(cx));
     // "space-folders.next" and ".prev" in keys.json: the next space down the
     // list as it shows, where Herdr's own space.next goes by its own order.
     this.seen = [];
@@ -338,7 +341,7 @@ export default class Spaces extends View {
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
       const repo = common.stdout.trim();
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
+      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), top: top.stdout.trim(), linked: repo !== `${top.stdout.trim()}/.git` };
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
         else if (line.startsWith("# branch.ab ")) {
@@ -910,9 +913,46 @@ export default class Spaces extends View {
   // Spaces worktree-hooks is tearing down (shared "worktree.teardown": id -> since), and
   // the last line of each one's log. Read only while one is going; the script closes the
   // space when it's done, which ends its entry here.
+  // A worktree space closed any way but Remove worktree (the menu's Close, its last tab,
+  // cmd-w): the repo's teardown runs, and the worktree goes when that loses nothing
+  // uncommitted (agent/worktree closed). Only Herdr's own, under ~/.herdr/worktrees, here.
+  watchClosed(cx) {
+    // While this computer's layout can't be read, spaces() can look empty.
+    if (machines().find((m) => m.name === null)?.layout !== "ready") return;
+    const sp = spaces(), ps = panes(), ids = new Set(sp.map((s) => s.id)), now = {};
+    for (const s of sp) {
+      if (s.machine) continue;
+      const g = this.git[where(s, ps)];
+      if (g?.linked && g.top?.startsWith(`${home()}/.herdr/worktrees/`)) now[s.id] = { top: g.top };
+      // Not looked at yet (just moved): keep what it was.
+      else if (g === undefined && this.worktrees[s.id]) now[s.id] = this.worktrees[s.id];
+    }
+    const open = new Set(Object.values(now).map((w) => w.top));
+    for (const [id, w] of Object.entries(this.worktrees)) {
+      if (!ids.has(id) && !open.has(w.top) && !(id in (shared("worktree.teardown") ?? {}))) this.cleanUp(id, w, cx);
+    }
+    this.worktrees = now;
+  }
+
+  cleanUp(id, w, cx) {
+    const name = base(w.top);
+    cx.spawn(async (cx) => {
+      // Gone for good, not a blip: still gone a moment later, and no Remove worktree under way.
+      await exec("sleep", ["3"]);
+      if (spaces().some((s) => s.id === id) || id in (shared("worktree.teardown") ?? {})) return;
+      // ponytail: runs from here, so quitting Herdr mid-teardown stops it; hc run --bg if teardowns get long.
+      const r = await exec("/bin/zsh", ["-lic", 'exec "$0" closed "$1"', `${appHome()}/agent/worktree`, w.top]).catch(() => ({ code: 1 }));
+      if (r.code === 0) notify({ title: `Removed worktree ${name}`, body: "Teardown ran. Its branch is kept.", level: "info" });
+      else if (r.code === 3) notify({ title: `Kept worktree ${name}`, body: "Teardown ran. It has uncommitted changes.", level: "warning" });
+      else notify({ title: `Couldn't clean up worktree ${name}`, body: `See ~/.config/herdr-app/agent/logs/closed-${name}.log`, level: "error" });
+      cx.notify();
+    });
+  }
+
   watchTeardown(cx) {
     const going = shared("worktree.teardown") ?? {}, ids = new Set(spaces().map((s) => s.id));
-    const live = Object.fromEntries(Object.entries(going).filter(([id, at]) => ids.has(id) && Date.now() - at < 30 * 60000));
+    // A gone space's entry stays two minutes: watchClosed reads it to leave Remove worktree's close alone.
+    const live = Object.fromEntries(Object.entries(going).filter(([id, at]) => (ids.has(id) || Date.now() - at < 120000) && Date.now() - at < 30 * 60000));
     if (Object.keys(live).length !== Object.keys(going).length) setShared("worktree.teardown", live);
     if (!Object.keys(live).length && !Object.keys(this.teardown).length) return;
     cx.spawn(async (cx) => {

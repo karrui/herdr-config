@@ -905,13 +905,14 @@ export default class Spaces extends View {
         .when(when > 0, (el) => el.child(time))))
       // The title, struck through while it's torn down (worktree-hooks), and its agent.
       .child(h_flex().gap(6).items_center().text_size(13)
-        .when(inline, (el) => el.child(badge))
+        // On a folder's rows the agent's icon stands in for the repo badge (kept with no agent).
+        .when(inline, (el) => el.child(icon ?? badge))
         .child(div().relative().flex_1().min_w(0).truncate().font_medium().text_color(tearing ? t.dim : t.foreground).child(w.name)
           .when(Boolean(tearing), (el) => el.child(div().absolute().left(0).right(0).top(0).bottom(0).flex().items_center()
             .child(div().w_full().h(1).bg(t.dim)))))
         .when(Boolean(pr), (el) => el.child(this.prChip(w.id, pr, t)))
         .when(Boolean(state), (el) => el.child(state))
-        .when(Boolean(icon), (el) => el.child(icon))
+        .when(Boolean(icon) && !inline, (el) => el.child(icon))
         .when(inline && when > 0, (el) => el.child(time)))
       .when(Boolean(third), (el) => el.child(h_flex().gap(5).items_center().text_size(11.5).text_color(t.dim)
         .child(div().flex_1().min_w(0).truncate().child(third))

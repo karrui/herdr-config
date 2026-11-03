@@ -2,3 +2,9 @@
 gpui-kit.d.ts
 jsconfig.json
 .DS_Store
+
+# Personal, kept in ~/.config/herdr-app only: each person's sandbox lists and
+# per-repo worktree setup (install.sh starts the lists from *.default.txt).
+sandbox/allow.txt
+sandbox/deny.txt
+worktrees/

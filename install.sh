@@ -10,7 +10,11 @@ for tool in jq sandbox-exec; do
   command -v "$tool" >/dev/null || { echo "Missing $tool." >&2; exit 1; }
 done
 
-rsync -rlptb agent sandbox usage browser layouts worktrees mods keys.json "$app/"
+rsync -rlptb --exclude '*.default.txt' agent sandbox usage browser layouts mods keys.json "$app/"
+# Sandbox lists are each person's own: started from the defaults, never replaced.
+for list in allow deny; do
+  [ -e "$app/sandbox/$list.txt" ] || cp "sandbox/$list.default.txt" "$app/sandbox/$list.txt"
+done
 [ -f "$app/programs.json" ] && cp "$app/programs.json" "$app/programs.json~"
 sed "s|__HOME__|$HOME|g" programs.json > "$app/programs.json"
 

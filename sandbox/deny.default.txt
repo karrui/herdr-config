@@ -1,0 +1,9 @@
+# Paths a sandboxed agent may never read or write, one per line, even when allow.txt
+# or the folder it starts in covers them. A folder includes everything under it.
+# ~ is your home. Changes apply the next time an agent starts.
+# For example: a project's production secrets
+#   ~/Projects/my-app/.env.production
+
+# Cloud credentials and SSH keys
+~/.aws
+~/.ssh

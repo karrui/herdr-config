@@ -1,0 +1,40 @@
+# What a sandboxed agent may use besides the folder it starts in.
+# Reading in $HOME is blocked, and writing is blocked everywhere, unless listed here.
+# rw = read and write, ro = read only. A folder includes everything under it.
+# ~ is your home, $TMPDIR your temp folder. Changes apply the next time an agent starts.
+# This is a starting point: add what your tools need from the "blocked" list in Herdr's footer.
+
+# The agents' own state: sessions, settings, logins
+rw ~/.claude
+rw ~/.claude.json
+rw ~/.codex
+rw ~/.local/state/claude
+rw ~/.local/state/herdr-core
+
+# Logins stored in the macOS Keychain (Claude's, gh's, ...)
+rw ~/Library/Keychains
+
+# Tools and caches
+rw ~/.local/share
+rw ~/.local/bin
+rw ~/.npm
+rw ~/.cache
+rw ~/Library/Caches
+
+# Temp folders (the parent of $TMPDIR also holds your per-user cache)
+rw /private/tmp
+rw $TMPDIR/..
+
+# Shell and git dotfiles
+rw ~/.zshrc
+rw ~/.zprofile
+rw ~/.profile
+rw ~/.bashrc
+rw ~/.zcompdump
+rw ~/.gitconfig
+rw ~/.gitignore
+rw ~/.config/git
+
+# GitHub CLI: its settings, not your other configs
+ro ~/.config/gh
+ro ~/.local/state/gh

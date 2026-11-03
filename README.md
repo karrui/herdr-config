@@ -69,7 +69,7 @@ teardown: |
 
 To edit one from the app, make a sidebar folder and set it to start its spaces in the repo (**Edit folder…**), then right-click it and choose **Edit worktree setup…**.
 A repo with a `.termic.yaml` or `.worktreeinclude` gets its file written from those the first time.
-`worktrees/idp.yaml` is mine, as an example.
+These files are yours: they live only in `~/.config/herdr-app/worktrees`, and installing or updating never touches them.
 
 ## Using it
 
@@ -83,8 +83,10 @@ Pick **Worktree** to give the space its own branch and checkout in `~/.herdr/wor
 
 ### The sandbox
 
-A sandboxed agent can read and write its starting folder and the paths in `sandbox/allow.txt`.
-Paths in `sandbox/deny.txt` are always blocked, even inside the project.
+A sandboxed agent can read and write its starting folder and the paths in `~/.config/herdr-app/sandbox/allow.txt`.
+Paths in `deny.txt` beside it are always blocked, even inside the project.
+The first install starts both lists from `sandbox/allow.default.txt` and `deny.default.txt`; after that they're yours, and updating never replaces them.
+The starter list covers the agents' own state, common caches and your shell and git dotfiles, so expect to allow a few paths your own tools need.
 SSH agent sockets and `AWS_*` variables are kept from it.
 
 The footer shows "N blocked" when the sandbox stopped something.
@@ -143,6 +145,7 @@ Right-click the Linear button to link a different ticket, stop or restore detect
 
 Pull, then run `./install.sh` again.
 Your own edits to these files in `~/.config/herdr-app` are overwritten, but each one is kept as `<file>~`.
+Your sandbox lists and worktree setups are left alone.
 
 ## Going back
 
@@ -158,8 +161,8 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `keys.json` | Key bindings. `cmd-b` is unbound, so the sidebar always shows. |
 | `programs.json` | Points the + menu's agents at `agent/launch`. |
 | `agent/launch` | Starts `claude` or `codex` with `agent/instructions.md` added, sandboxed or not. |
-| `agent/worktree` | Worktree setup, teardown, removal and close, driven by `worktrees/<repo>.yaml`. |
-| `sandbox/` | The sandbox (`agent-sandbox`), its lists, the blocked-access logger and `agent-restart`. |
+| `agent/worktree` | Worktree setup, teardown, removal and close, driven by your `worktrees/<repo>.yaml` files. |
+| `sandbox/` | The sandbox (`agent-sandbox`), starter allow and deny lists, the blocked-access logger and `agent-restart`. |
 | `usage/` | The footer's context and usage feeds for Claude Code and Codex. |
 | `browser/open` | A shared Chrome, inside the sandbox, that agents drive over CDP on port 9222. |
 | `mods/agent-bar` | The footer: usage, sandbox state and blocked accesses. |

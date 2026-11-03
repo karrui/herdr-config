@@ -89,8 +89,14 @@ export default class AgentBar extends View {
       u?.week != null && this.chip("week", u.week, "wk", 64),
     ].filter(Boolean);
     return h_flex().size_full().px(14).gap(14).items_center().justify_end().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8)
+      // Just above the bars, their right edges lined up.
       .when(chips.length > 0, el => el.child(h_flex().id("usage").gap(5).items_center().cursor_pointer()
-        .on_click(() => openOverlay({ mod: "agent-bar", kind: "popup", width: POPOVER_WIDTH, height: this.popoverHeight(u), props: { view: "usage", address: agent.address } }))
+        .on_mouse_down("left", e => { this.chipsAt = e.bounds ?? null; })
+        .on_click(() => {
+          const b = this.chipsAt, height = this.popoverHeight(u);
+          openOverlay({ mod: "agent-bar", kind: "popup", width: POPOVER_WIDTH, height, props: { view: "usage", address: agent.address },
+            ...(b ? { at: { x: b.x + b.width - POPOVER_WIDTH, y: b.y - height - 6 } } : {}) });
+        })
         .children(chips)))
       .when(Boolean(run), el => el.child(div().id("blocked").cursor_pointer().text_color(total ? t.ansi3 : t.dim).hover(s => s.text_color(t.foreground))
         .on_click(() => openOverlay({ mod: "agent-bar", kind: "dialog", width: 900, height: 560, props: { view: "blocked", run } }))

@@ -46,7 +46,20 @@ Codex needs no setup: `usage/codex-usage` reads Codex's session files.
 | `browser/open` | A shared sandboxed Chrome that agents drive over CDP on port 9222. |
 | `layouts/main-sandbox.json` | The layout that ties the mods together. |
 | `keys.json` | Key bindings. `cmd-alt-[` / `]` move between space folders in this layout. |
-| `mods/` | `agent-bar` (footer: usage + sandbox), `space-folders` (sidebar folders, new worktree spaces), `worktree-hooks` / `worktree-setup` / `resources` (worktree setup UI and its containers), `menu-hooks` (right-click menus), `tabs-sandbox`, `agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists`. |
+| `mods/` | `agent-bar` (footer: usage + sandbox), `space-folders` (sidebar folders, new worktree spaces), `worktree-hooks` / `worktree-setup` / `resources` (worktree setup UI and its containers), `menu-hooks` (right-click menus), `changes-sandbox` (Changes panel with modes, below), `tabs-sandbox`, `agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists`. |
+
+## Changes panel
+
+The dropdown at the top of the Changes panel picks what it compares, like Codex's:
+
+- **Last Turn**: what the focused agent changed since it last started working.
+- **Uncommitted**, **Unstaged**, **Staged**: the working tree against `HEAD`, the index, or `HEAD` from the index.
+- **Committed**: one commit, picked from this branch's commits (or the latest 30).
+- **Branch**: everything on this branch since it left `origin/main` (origin's default branch), uncommitted work included.
+
+Last Turn snapshots the repo when an agent starts working, while the panel is running.
+A turn that started before the panel was first opened, or before Herdr restarted, has no snapshot.
+In Staged, Commit commits only what's staged; everywhere else it commits everything.
 
 ## Restarting an agent
 

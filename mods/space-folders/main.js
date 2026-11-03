@@ -954,6 +954,7 @@ export default class Spaces extends View {
       // Gone for good, not a blip: still gone a moment later, and no Remove worktree under way.
       await exec("sleep", ["3"]);
       if (spaces().some((s) => s.id === id) || id in (shared("worktree.teardown") ?? {})) return;
+      notify({ title: `Tearing down worktree ${name}`, body: "Its space closed. Removing it after, if it's clean.", level: "info" });
       // ponytail: runs from here, so quitting Herdr mid-teardown stops it; hc run --bg if teardowns get long.
       const r = await exec("/bin/zsh", ["-lic", 'exec "$0" closed "$1"', `${appHome()}/agent/worktree`, w.top]).catch(() => ({ code: 1 }));
       if (r.code === 0) notify({ title: `Removed worktree ${name}`, body: "Teardown ran. Its branch is kept.", level: "info" });

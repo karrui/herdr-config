@@ -62,6 +62,12 @@ A turn that started before the panel was first opened, or before Herdr restarted
 The panel only shows changes: there's no commit box, since agents commit their own work.
 The Changes button in the tab bar shows the branch's lines added and removed against the same base, tracked files only.
 
+## Space names
+
+A space you haven't named shows its agent's session title in the sidebar (Claude Code and Codex title their sessions), so `~` reads as what it's doing.
+It's shown in the sidebar only; rename the space to fix its name.
+Claude Code titles a session from its first task, so a long session's title can be behind.
+
 ## Pull requests in the sidebar
 
 A space whose branch has a GitHub PR shows it on its row, as `#698`; click it to open the PR.

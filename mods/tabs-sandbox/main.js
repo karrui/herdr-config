@@ -1,7 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, focused, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome } from "herdr";
+import { spaces, panes, focused, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome, home } from "herdr";
 import { KEY_CHANGED, LINKS, readKey, findTicket } from "./linear-resolve.js";
 
 // The branch to compare against: origin's default branch, else the usual names.
@@ -110,6 +110,16 @@ export default class Tabs extends View {
     });
   }
 
+  // A worktree space's last tab closes the space through the worktree dialog, so the
+  // repo's teardown runs before it goes (worktree-hooks); any other tab as usual.
+  closeTab(c, space) {
+    const at = this.spaceFolder();
+    const worktree = space && !space.machine && (space.tabs ?? []).length === 1 && at?.space.id === space.id
+      && at.folder.startsWith(`${home()}/.herdr/worktrees/`);
+    if (worktree) openOverlay({ mod: "worktree-hooks", kind: "dialog", width: 440, height: 200, props: { space: space.id, action: "close" } });
+    else run("tab.close", { id: c.id });
+  }
+
   // The side panel is remembered per space: switching shows that space's choice
   // (closed if it never had one), and opening or closing it records it.
   syncPanel(space, panel, body, enabled) {
@@ -166,7 +176,7 @@ export default class Tabs extends View {
         .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
         .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
         .when(c.status === "blocked" || c.status === "done", el => el.child(div().size(6).rounded(3).bg(t[c.status])))
-        .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))));
+        .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.closeTab(c, space); }).child(svg("mods/pane/close.svg").size(12))));
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();
     // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.

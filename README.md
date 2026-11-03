@@ -40,7 +40,7 @@ Codex needs no setup: `usage/codex-usage` reads Codex's session files.
 | `sandbox/allow.txt`, `deny.txt` | The sandbox lists. Edit them here or from the footer's settings icon (`sandbox-lists` mod). |
 | `sandbox/logger` | Logs blocked accesses to `sandbox/blocked/`, which the footer shows as "N blocked". You can allow paths from there. |
 | `sandbox/agent-restart` | Restarts a Claude/Codex agent in place and resumes its conversation. |
-| `agent/worktree` | Worktree setup and teardown, from `worktrees/<repo>.yaml`: copies files in, runs setup in a Setup pane before the agent starts, and runs teardown on Remove worktree, or when a worktree's space is closed any other way (then the worktree goes too, if it has no uncommitted changes; its branch is kept). |
+| `agent/worktree` | Worktree setup and teardown, from `worktrees/<repo>.yaml`: copies files in, runs setup in a Setup pane before the agent starts, and runs teardown on Remove worktree and on Close (the space stays, struck through, until the teardown is done; then the worktree goes too if it has no uncommitted changes, and its branch is kept). |
 | `worktrees/idp.yaml` | Example for `~/Projects/idp`. Change `repo:` if your checkout lives elsewhere. |
 | `usage/` | Feeds for the footer's context and usage numbers. |
 | `browser/open` | A shared sandboxed Chrome that agents drive over CDP on port 9222. |

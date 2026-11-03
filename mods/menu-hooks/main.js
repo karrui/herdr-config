@@ -6,12 +6,18 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, agents, exec as execFile, appHome, notify } from "herdr";
+import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, agents, exec as execFile, appHome, notify, home } from "herdr";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
   return panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
+}
+
+// A space on one of Herdr's worktrees (~/.herdr/worktrees) closes through the worktree
+// dialog, which runs the repo's teardown before the space goes (worktree-hooks).
+function closesWithTeardown(s) {
+  return Boolean(s && !s.machine && place(s)?.startsWith(`${home()}/.herdr/worktrees/`));
 }
 
 // A space's checkout: "main" (a repo's own), "linked" (a worktree), or null.
@@ -57,7 +63,12 @@ function items(p, git) {
         ["Rename", "tab.rename", { id: tg.id }],
         ["New tab", "tab.new", { space: tg.space }],
         ...(agent ? [["Restart agent", "restart", { address: agent.address, mode: sandboxed ? "on" : "off" }]] : []),
-        ["Close", "tab.close", { id: tg.id }],
+        // The last tab of a worktree space: closing it closes the space, teardown first.
+        ...((() => {
+          const sp = spaces().find((x) => x.id === tg.space);
+          return sp?.tabs?.length === 1 && closesWithTeardown(sp)
+            ? [["Close", "worktree", { space: sp.id, action: "close" }]] : [["Close", "tab.close", { id: tg.id }]];
+        })()),
       ];
     }
     case "space":
@@ -65,7 +76,8 @@ function items(p, git) {
         ["Rename", "space.rename", { id: tg.id }],
         ...(git ? [["New worktree", "worktree", { space: tg.id, action: "new" }], ["Open worktree", "worktree", { space: tg.id, action: "open" }]] : []),
         ...(git === "linked" ? [["Remove worktree", "worktree", { space: tg.id, action: "remove" }]] : []),
-        ["Close", "space.close", { id: tg.id }],
+        closesWithTeardown(spaces().find((x) => x.id === tg.id))
+          ? ["Close", "worktree", { space: tg.id, action: "close" }] : ["Close", "space.close", { id: tg.id }],
       ];
     default:
       return [
@@ -79,9 +91,13 @@ function items(p, git) {
   }
 }
 
-function menuIcon(command) {
+// A worktree space's Close goes through the worktree dialog but is still a close.
+const isClose = (it) => it[1].endsWith(".close") || it[2]?.action === "close";
+
+function menuIcon(it) {
+  const command = it[1];
   if (command === "restart") return "mods/menu-hooks/rotate-ccw.svg";
-  const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
+  const name = isClose(it) ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
 
@@ -117,7 +133,7 @@ export default class Menu extends View {
       execFile(`${appHome()}/sandbox/agent-restart`, [it[2].address, it[2].mode])
         .catch((e) => ({ code: 1, stderr: String(e) }))
         .then((r) => r.code === 0 || notify({ title: "Couldn't restart the agent", body: r.stderr.trim(), level: "error" }));
-    else if (it[1] === "worktree") openOverlay({ mod: "worktree-hooks", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 300 }), props: it[2] });
+    else if (it[1] === "worktree") openOverlay({ mod: "worktree-hooks", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: it[2].action === "close" ? 200 : 300 }), props: it[2] });
     else run(it[1], it[2]);
   }
 
@@ -143,7 +159,7 @@ export default class Menu extends View {
       .children(
         list.map((it, i) =>
           v_flex()
-            .when(i > 0 && (it[1].endsWith(".close") || it[1] === "app.help" || (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")), el => el.child(div().mx(7).my(4).h(1).bg(t.border)))
+            .when(i > 0 && (isClose(it) || it[1] === "app.help" || (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")), el => el.child(div().mx(7).my(4).h(1).bg(t.border)))
             .child(h_flex()
             .id(`mi-${i}`)
             .h(31)
@@ -156,7 +172,7 @@ export default class Menu extends View {
             .when(i === this.at, (el) => el.bg(t.selected))
             .hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => this.choose(i, cx))
-            .child(svg(menuIcon(it[1])).size(14).flex_none().text_color(t.muted))
+            .child(svg(menuIcon(it)).size(14).flex_none().text_color(t.muted))
             .child(div().flex_1().child(it[0]))
             .child(div().text_size(11).text_color(t.dim).child(shortcut(it[1], it[2])))),
         ),

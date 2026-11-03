@@ -943,7 +943,13 @@ export default class Spaces extends View {
     }
     const open = new Set(Object.values(now).map((w) => w.top));
     for (const [id, w] of Object.entries(this.worktrees)) {
-      if (!ids.has(id) && !open.has(w.top) && !(id in (shared("worktree.teardown") ?? {}))) this.cleanUp(id, w, cx);
+      if (ids.has(id) || open.has(w.top)) continue;
+      if (!(id in (shared("worktree.teardown") ?? {}))) this.cleanUp(id, w, cx);
+      // Closed by the Close dialog after its teardown: say so if the worktree stayed.
+      else cx.spawn(async () => {
+        const log = await readTextFile(`${appHome()}/agent/logs/${id}.log`).catch(() => null);
+        if (/^Kept: /m.test(log ?? "")) notify({ title: `Kept worktree ${base(w.top)}`, body: "Teardown ran. It has uncommitted changes.", level: "warning" });
+      });
     }
     this.worktrees = now;
   }

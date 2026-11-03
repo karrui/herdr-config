@@ -1,4 +1,4 @@
-// Worktree dialog: { space, action: "new" | "open" | "remove" } or
+// Worktree dialog: { space, action: "new" | "open" | "remove" | "close" } or
 // { folder, machine } for a repo without a space; optional { branch, tab, argv }.
 
 import { View, div } from "gpui-kit";
@@ -129,7 +129,9 @@ export default class Worktree extends View {
     this.title.on("submit", (_e, cx) => this.go(cx));
     this.input.on("change", () => { this.branchEdited = this.input.value() !== hyphenate(this.title.value()); });
     const first = props()?.action === "new" && !props()?.branch ? this.title : this.input;
-    if (props()?.action !== "remove") {
+    // Remove and Close only confirm: Enter is theirs, not an input's.
+    const confirming = ["remove", "close"].includes(props()?.action);
+    if (!confirming) {
       first.focus();
       cx.timer.after(600, () => first.focus());
     }
@@ -139,7 +141,7 @@ export default class Worktree extends View {
     this.dirty = false;
     this.unpushed = [];
     this.handle = cx.focus_handle();
-    if (props()?.action === "remove") this.handle.focus();
+    if (confirming) this.handle.focus();
     cx.spawn(async (cx) => {
       try {
         if (this.on) {
@@ -152,7 +154,7 @@ export default class Worktree extends View {
         this.folder = props()?.folder || place(this.space()) || this.userHome;
         // The repo is set last: Enter does nothing until the warnings it consents to are known.
         const repo = await repoOf(this.folder, this.on);
-        if (repo && props().action === "remove") {
+        if (repo && confirming) {
           this.dirty = (await git(repo.top, ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain"], this.on)).out !== "";
           this.unpushed = (await submodules(repo.top, this.on)).unpushed;
         }
@@ -183,7 +185,8 @@ export default class Worktree extends View {
     this.busy = true;
     this.error = "";
     cx.notify();
-    try { this.error = props().action === "remove" ? await this.remove() : await this.create(); }
+    const action = props().action;
+    try { this.error = action === "remove" ? await this.remove() : action === "close" ? await this.closeSpace() : await this.create(); }
     catch (error) { this.error = String(error); }
     this.busy = false;
     if (!this.error) this.close();
@@ -248,6 +251,18 @@ export default class Worktree extends View {
     return r.ok ? "" : r.err || "git worktree remove failed.";
   }
 
+  // Close on a Herdr worktree space (the menus' Close, a last tab's ×): the space stays,
+  // struck through with the teardown's progress (space-folders), until the teardown is
+  // done; then it closes, and the worktree goes too if that loses nothing uncommitted.
+  async closeSpace() {
+    const s = this.space();
+    if (!s) return "";
+    if (this.on || !this.repo?.linked) { run("space.close", { id: s.id, confirmed: true }); return ""; }
+    setShared("worktree.teardown", { ...(shared("worktree.teardown") ?? {}), [s.id]: Date.now() });
+    const r = await hc(["run", "--bg", "--cwd", this.repo.top, "--", "/bin/zsh", "-lic", 'exec "$0" closed "$1" "$2"', HOOKS(), this.repo.top, s.id]);
+    return r.code === 0 ? "" : r.stderr.trim() || "Couldn't start the teardown.";
+  }
+
   key(e, cx) {
     if (e.key === "escape") return this.close();
     if (this.opening) {
@@ -258,7 +273,7 @@ export default class Worktree extends View {
       cx.stop_propagation();
       return cx.notify();
     }
-    if (e.key === "enter" && props()?.action === "remove") return this.go(cx);
+    if (e.key === "enter" && ["remove", "close"].includes(props()?.action)) return this.go(cx);
   }
 
   renderOpen(t) {
@@ -328,21 +343,23 @@ export default class Worktree extends View {
   render(cx) {
     const t = theme();
     if (this.opening) return this.renderOpen(t);
-    const remove = props()?.action === "remove";
+    const remove = props()?.action === "remove", closing = props()?.action === "close";
     const s = this.space();
     const r = this.repo;
-    const title = remove ? `Remove worktree ${s?.name ?? ""}?` : `New worktree${r ? ` of ${r.name}` : ""}`;
+    const title = closing ? `Close ${s?.name ?? "this space"}?` : remove ? `Remove worktree ${s?.name ?? ""}?` : `New worktree${r ? ` of ${r.name}` : ""}`;
     const detail =
       r === undefined
         ? "…"
         : r === null
           ? `${this.folder ? tilde(this.folder, this.userHome) : "This folder"} is not in a git repository.`
+          : closing
+            ? `Its agents and terminals stop. This repo's teardown runs first, then the space closes${this.dirty ? "." : ` and ${tilde(r.top, this.userHome)} is deleted. The branch stays.`}`
           : remove
             ? !r.linked
               ? "This is the repository's main checkout, not a worktree."
               : `${this.on ? "" : "Runs this repo's teardown, then "}${this.on ? "Closes" : "closes"} the space and deletes ${tilde(r.top, this.userHome)}. The branch stays.`
             : `A new space on a checkout in ${tilde(ROOT(this.userHome), this.userHome)}/${r.name}/. A branch that exists is checked out; a new one starts from here.`;
-    const blocked = !r || (remove && !r.linked);
+    const blocked = !r || ((remove || closing) && !r.linked);
     return v_flex()
       .id("worktree")
       .track_focus(this.handle)
@@ -355,8 +372,9 @@ export default class Worktree extends View {
       .child(div().font_semibold().text_color(t.foreground).child(title))
       .child(div().text_color(t.muted).child(detail))
       .when(remove && this.dirty, (el) => el.child(div().text_color(t.blocked).child("It has uncommitted changes: they will be lost.")))
+      .when(closing && this.dirty, (el) => el.child(div().text_color(t.ansi3).child(`It has uncommitted changes, so ${tilde(r.top, this.userHome)} is kept.`)))
       .when(remove && this.unpushed.length > 0, (el) => el.child(div().text_color(t.blocked).child(`Submodule ${this.unpushed.join(", ")} has commits that aren't pushed anywhere: they will be lost.`)))
-      .when(!remove && !blocked, (el) =>
+      .when(!remove && !closing && !blocked, (el) =>
         el.child(
           Input.new(this.title)
             .h(32)
@@ -388,7 +406,9 @@ export default class Worktree extends View {
           .items_center()
           .when(this.busy, (el) => el.child(div().flex_1().text_size(11.5).text_color(t.dim).child("Working…")))
           .child(this.button("cancel", blocked ? "Close" : "Cancel", "esc", t.raised, t.foreground, () => this.close()))
-          .when(!blocked, (el) => el.child(remove
+          .when(!blocked, (el) => el.child(closing
+            ? this.button("close-space", "Close", "↵", t.blocked, "#ffffff", (_e, cx) => this.go(cx))
+            : remove
             ? this.button("remove", "Remove", "↵", t.blocked, "#ffffff", (_e, cx) => this.go(cx))
             : this.button("create", "Create", "↵", t.solid, t.solid_foreground, (_e, cx) => this.go(cx)))),
       );

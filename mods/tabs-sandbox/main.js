@@ -3,6 +3,17 @@ import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome } from "herdr";
 
+// The branch to compare against: origin's default branch, else the usual names.
+// ponytail: same lookup as changes-sandbox's Branch mode; mods can't import each other.
+async function baseBranch(git) {
+  const head = await git(["rev-parse", "--abbrev-ref", "origin/HEAD"]);
+  const names = [head.code === 0 ? head.stdout.trim() : null, "origin/main", "origin/master", "main", "master"].filter(Boolean);
+  for (const name of names) if ((await git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`])).code === 0) return name;
+  return null;
+}
+// Reads write nothing under .git, like the Changes panel's.
+const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
+
 function find(node, id) {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
@@ -18,7 +29,33 @@ export default class Tabs extends View {
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     // The containers this space's worktree setup started (mods/resources), counted.
     this.resources = { key: null, running: 0, total: 0 };
-    cx.timer.every(15000, (cx) => { if (window()?.active) this.countResources(cx, true); });
+    // Lines added and removed on this space's branch, for the Changes button.
+    this.branch = { key: null, add: 0, del: 0 };
+    cx.timer.every(15000, (cx) => { if (window()?.active) { this.countResources(cx, true); this.countBranch(cx, true); } });
+  }
+
+  // Asked again when the space, its folder or its agents' status changes, and every
+  // 15 seconds while the window is in front. Tracked files only, like `git diff`.
+  countBranch(cx, force = false) {
+    const space = spaces().find((p) => p.active);
+    if (!space) return;
+    const tabs = new Set((space.tabs ?? []).map((c) => c.id));
+    const folder = panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || space.folder, on = space.machine ?? null;
+    const key = `${on}|${folder}|${space.status}`;
+    if (!folder || (!force && key === this.branch.key) || this.branch.busy) return;
+    this.branch.key = key; this.branch.busy = true;
+    cx.spawn(async (cx) => {
+      let stats = null;
+      try {
+        const git = (args) => execFile("git", [...READ, ...args], { cwd: folder, on });
+        const base = await baseBranch(git);
+        const mb = base && await git(["merge-base", base, "HEAD"]);
+        const r = mb?.code === 0 && await git(["diff", mb.stdout.trim(), "--shortstat"]);
+        if (r?.code === 0) stats = { add: +(/(\d+) insertion/.exec(r.stdout)?.[1] ?? 0), del: +(/(\d+) deletion/.exec(r.stdout)?.[1] ?? 0) };
+      } catch {}
+      this.branch = { key: this.branch.key, folder: `${on}|${folder}`, stats };
+      cx.notify();
+    });
   }
 
   // Asked again when the space (or its folder) changes, when the popup acted, and every
@@ -73,6 +110,7 @@ export default class Tabs extends View {
     const t = theme();
     const space = spaces().find(p => p.active);
     this.countResources(cx);
+    this.countBranch(cx);
     const shown = space?.tabs ?? [];
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
@@ -104,7 +142,7 @@ export default class Tabs extends View {
     const panel = find(root, "panel"), body = find(root, "panel-body");
     const enabled = shared("workspace.panels") ?? ["files", "changes"];
     this.syncPanel(space, panel, body, enabled);
-    const panelButton = (id, label, icon) => {
+    const panelButton = (id, label, icon, tip) => {
       const on = panel && !panel.hidden && body?.active === id;
       return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
@@ -112,7 +150,7 @@ export default class Tabs extends View {
         .on_click(() => {
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
-        }).child(svg(icon).size(14)).child(label);
+        }).when(Boolean(tip), el => el.tooltip(tip)).child(svg(icon).size(14)).when(label !== null, el => el.child(label));
     };
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
@@ -129,7 +167,12 @@ export default class Tabs extends View {
           .child(div().size(6).rounded(3).bg(this.resources.running ? t.ansi2 : t.dim))
           .child(String(this.resources.running))))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
-      .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
+      .when(enabled.includes("changes"), el => {
+        // The branch's lines added and removed, once known for this space; just the icon otherwise.
+        const stats = this.branch.key?.startsWith(`${this.branch.folder}|`) ? this.branch.stats : null;
+        const label = stats && h_flex().gap(4).child(div().text_color(t.ansi2).child(`+${stats.add}`)).child(div().text_color(t.ansi1).child(`−${stats.del}`));
+        return el.child(panelButton("changes", label, "mods/changes/changes.svg", "Changes on this branch"));
+      })
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-sandbox/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-sandbox/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-sandbox/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

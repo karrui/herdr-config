@@ -60,6 +60,7 @@ The dropdown at the top of the Changes panel picks what it compares, like Codex'
 Last Turn snapshots the repo when an agent starts working, while the panel is running.
 A turn that started before the panel was first opened, or before Herdr restarted, has no snapshot.
 In Staged, Commit commits only what's staged; everywhere else it commits everything.
+The Changes button in the tab bar shows the branch's lines added and removed against the same base, tracked files only.
 
 ## Restarting an agent
 

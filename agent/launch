@@ -8,6 +8,14 @@ wrap=()
 if [ "${1:-}" = --sandbox ]; then wrap=("$dir/../sandbox/agent-sandbox"); shift; fi
 program="$1"; shift
 
+# Started outside a shell (hc run starts programs with Herdr core's PATH, a login one):
+# tools your interactive shell adds, like node from fnm, would be missing, and the
+# agent's node-based hooks fail. Take PATH from an interactive shell then (~0.6s).
+if ! command -v node >/dev/null; then
+  path="$("${SHELL:-/bin/zsh}" -lic 'printf "\n__PATH__%s" "$PATH"' </dev/null 2>/dev/null | sed -n 's/^__PATH__//p')"
+  [ -n "$path" ] && export PATH="$path"
+fi
+
 case "$program" in
   # Herdr draws Kitty images, but answers Claude Code's check for them out of order
   # (the end-of-replies answer comes first), so Claude Code would turn pictures off.

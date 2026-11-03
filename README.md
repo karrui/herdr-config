@@ -97,6 +97,8 @@ The **+** in the tab bar starts Claude Code or Codex in the sandbox.
 
 New spaces start from the **+** in the sidebar.
 Pick **Worktree** to give the space its own branch and checkout in `~/.herdr/worktrees/<repo>/<branch>`.
+The branch is always new, cut from the remote's default branch right after fetching it.
+If the name is taken, here or on the remote, it gets `-2`, `-3` and so on, and a toast names the branch it made.
 
 ### The sandbox
 

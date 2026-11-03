@@ -3,7 +3,8 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
-import { run, props, closeOverlay, theme, spaces, panes, exec, home, hc, appHome, shared, setShared } from "herdr";
+import { run, props, closeOverlay, theme, spaces, panes, exec, home, hc, appHome, shared, setShared, notify } from "herdr";
+import { freshWorktree } from "./fresh-worktree.js";
 
 // The repo's own worktree setup and teardown (.termic.yaml), on this computer only.
 const HOOKS = () => `${appHome()}/agent/worktree`;
@@ -196,12 +197,10 @@ export default class Worktree extends View {
   async create() {
     const branch = this.text.trim();
     if (!branch) return "Type a branch name.";
-    const path = `${ROOT(this.userHome)}/${this.repo.name}/${slug(branch)}`;
-    const exists = (await git(this.repo.main, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], this.on)).ok;
-    const add = exists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, "HEAD"];
-    const r = await git(this.repo.top, add, this.on);
-    if (!r.ok) return r.err || "git worktree add failed.";
-    const p = props();
+    const r = await freshWorktree(this.repo.top, branch, (b) => `${ROOT(this.userHome)}/${this.repo.name}/${slug(b)}`, this.on);
+    if (r.error) return r.error;
+    if (r.branch !== branch) notify({ title: `Made branch ${r.branch}`, body: `${branch} was taken.`, level: "info" });
+    const path = r.dir, p = props();
     // A Setup pane runs the repo's setup first; the agent waits for it.
     const argv = this.on ? p.argv : [HOOKS(), "start", path, ...(p.argv ? ["--", ...p.argv] : [])];
     // Leave spaces unnamed so they follow the checkout folder and nest under the repo.
@@ -358,7 +357,7 @@ export default class Worktree extends View {
             ? !r.linked
               ? "This is the repository's main checkout, not a worktree."
               : `${this.on ? "" : "Runs this repo's teardown, then "}${this.on ? "Closes" : "closes"} the space and deletes ${tilde(r.top, this.userHome)}. The branch stays.`
-            : `A new space on a checkout in ${tilde(ROOT(this.userHome), this.userHome)}/${r.name}/. A branch that exists is checked out; a new one starts from here.`;
+            : `A new space on a checkout in ${tilde(ROOT(this.userHome), this.userHome)}/${r.name}/. It starts on a new branch from origin's latest default branch; a taken name gets -2.`;
     const blocked = !r || ((remove || closing) && !r.linked);
     return v_flex()
       .id("worktree")

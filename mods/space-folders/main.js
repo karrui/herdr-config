@@ -14,6 +14,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, knownAgents, appHome, readTextFile, agents, terminals, notify } from "herdr";
+import { freshWorktree } from "./fresh-worktree.js";
 
 // A machine's folders live in a file in its home, so every screen showing its
 // spaces shows the same folders: { list: [{ id, name, folded }], of: { spaceId:
@@ -684,7 +685,7 @@ export default class Spaces extends View {
   // a new checkout at ~/.herdr/worktrees/<repo>/<branch>, where Herdr's own go, and
   // the repo's worktree setup (agent/worktree) runs there before the agent starts.
   startSpace(argv, name, cx) {
-    const { id, machine, overlay, path, repo, base: from } = this.launching;
+    const { id, machine, overlay, path, repo } = this.launching;
     const open = (folder, fresh) => {
       // The setup script is on this computer only.
       const cmd = fresh && !machine ? [`${appHome()}/agent/worktree`, "start", folder, ...(argv ? ["--", ...argv] : [])] : argv;
@@ -700,14 +701,12 @@ export default class Spaces extends View {
     this.busy = true;
     cx.notify();
     cx.spawn(async (cx) => {
-      const git = (args) => execFile("git", ["-C", repo, ...args], { on: machine });
-      const dir = `${await expand(machine, "~")}/.herdr/worktrees/${base(repo)}/${branch.replace(/[^A-Za-z0-9._-]+/g, "-")}`;
-      const exists = (await git(["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).code === 0;
-      const r = await git(exists ? ["worktree", "add", dir, branch] : ["worktree", "add", "-b", branch, dir, from]).catch((e) => ({ code: 1, stderr: String(e) }));
+      const root = `${await expand(machine, "~")}/.herdr/worktrees/${base(repo)}`;
+      const r = await freshWorktree(repo, branch, (b) => `${root}/${b.replace(/[^A-Za-z0-9._-]+/g, "-")}`, machine);
       this.busy = false;
-      if (r.code === 0) return open(dir, true);
-      this.error = r.stderr.trim().split("\n").pop() || "git worktree add failed.";
-      cx.notify();
+      if (r.error) { this.error = r.error; return cx.notify(); }
+      if (r.branch !== branch) notify({ title: `Made branch ${r.branch}`, body: `${branch} was taken.`, level: "info" });
+      open(r.dir, true);
     });
   }
 
@@ -727,7 +726,7 @@ export default class Spaces extends View {
       .on_click((_e, cx) => { this.mode = m; cx.notify(); })
       .child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(label);
     const worktree = Boolean(l.repo) && this.mode === "worktree";
-    const where = worktree ? `A new branch from ${l.base} in its own folder, so agents work in parallel without touching the main checkout.`
+    const where = worktree ? `A new branch from the latest ${l.base} in its own folder, so agents work in parallel without touching the main checkout.`
       : l.path ? `Opens in ${tilde(l.path)}.` : "Opens in your home folder. Set a start folder with Edit folder…";
     const field = (key, icon, state, bad) => h_flex().id(`field-${key}`).mx(4).mb(4).h(30).px(9).gap(8).items_center().rounded(7).border_1()
       .border_color(bad ? t.blocked : t.input).bg(t.background)
@@ -740,7 +739,7 @@ export default class Spaces extends View {
       .child(field("title", "square-pen", this.title, false))
       .when(worktree, (el) => el.child(field("branch", "git-branch", this.branch, Boolean(this.error))))
       .when(Boolean(this.error), (el) => el.child(div().px(9).pb(4).text_size(11.5).text_color(t.blocked).child(this.error)))
-      .when(Boolean(this.busy), (el) => el.child(div().px(9).pb(4).text_size(11.5).text_color(t.dim).child("Creating the worktree…")))
+      .when(Boolean(this.busy), (el) => el.child(div().px(9).pb(4).text_size(11.5).text_color(t.dim).child("Fetching and creating the worktree…")))
       .when(sandboxable, (el) => el.child(row("sandbox", svg(SHIELD).size(14).text_color(sandbox ? t.ansi2 : t.dim),
         sandbox ? "Sandboxed: home folder and writes blocked" : "Not sandboxed", sandbox ? "On" : "Off", true,
         (_e, cx) => { this.sandbox = !this.sandbox; cx.notify(); })))

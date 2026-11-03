@@ -46,14 +46,14 @@ export default class Tabs extends View {
     const where = { cwd: pane?.cwd || f?.cwd || space?.folder, branch: pane?.branch ?? space?.branch ?? null, on: space?.machine ?? null };
     const key = JSON.stringify([where, shared(LINKS) ?? null, shared(KEY_CHANGED) ?? null]);
     if (!where.cwd || (!force && key === this.ticket.key) || this.ticket.busy) return;
-    this.ticket = { key, issue: this.ticket.issue, for: this.ticket.for, busy: true };
+    this.ticket = { ...this.ticket, key, busy: true };
     cx.spawn(async (cx) => {
-      let issue = null;
+      let found = null;
       try {
         const apiKey = await readKey();
-        if (apiKey) issue = (await findTicket(apiKey, where)).issue ?? null;
+        if (apiKey) found = await findTicket(apiKey, where);
       } catch {}
-      this.ticket = { key: this.ticket.key, issue, for: key };
+      this.ticket = { key: this.ticket.key, found, issue: found?.issue ?? null, for: key };
       cx.notify();
     });
   }
@@ -168,7 +168,7 @@ export default class Tabs extends View {
     // Linear isn't one of Herdr's panels, so the welcome's choice never lists it.
     const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "linear"];
     this.syncPanel(space, panel, body, enabled);
-    const panelButton = (id, label, icon, tip) => {
+    const panelButton = (id, label, icon, tip, menu) => {
       const on = panel && !panel.hidden && body?.active === id;
       return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
@@ -176,7 +176,8 @@ export default class Tabs extends View {
         .on_click(() => {
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
-        }).when(Boolean(tip), el => el.tooltip(tip)).child(svg(icon).size(14)).when(label !== null, el => el.child(label));
+        }).when(Boolean(menu), el => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); menu(); }))
+        .when(Boolean(tip), el => el.tooltip(tip)).child(svg(icon).size(14)).when(label !== null, el => el.child(label));
     };
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
@@ -201,8 +202,12 @@ export default class Tabs extends View {
       })
       .child((() => {
         // The ticket's id once found for this branch; just the icon otherwise.
-        const issue = this.ticket.for === this.ticket.key ? this.ticket.issue : null;
-        return panelButton("linear", issue?.identifier ?? null, "mods/linear/ticket.svg", issue ? `${issue.identifier}: ${issue.title}` : "Linear ticket");
+        const fresh = this.ticket.for === this.ticket.key, issue = fresh ? this.ticket.issue : null, found = fresh ? this.ticket.found : null;
+        // Linking and the API key: the menu is the `linear` mod as a popup.
+        const menu = () => openOverlay({ mod: "linear", kind: "popup", width: 220, props: {
+          view: "menu", repo: found?.repo ?? null, branch: found?.branch ?? null, source: found?.source ?? null,
+          issue: issue && { identifier: issue.identifier, url: issue.url } } });
+        return panelButton("linear", issue?.identifier ?? null, "mods/linear/ticket.svg", issue ? `${issue.identifier}: ${issue.title}` : "Linear ticket", menu);
       })())
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-sandbox/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-sandbox/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))

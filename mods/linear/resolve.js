@@ -2,7 +2,7 @@
 // Linear button: mods can't import each other, so mods/tabs-sandbox/linear-resolve.js
 // is a copy of this file. Change both.
 // herdr's exec takes an argv list and never goes through a shell.
-import { exec as execFile, readTextFile, appHome, shared } from "herdr";
+import { exec as execFile, readTextFile, appHome, shared, setShared } from "herdr";
 
 // The key lives in Herdr's folder, which sandboxed agents can't read.
 export const KEY_DIR = () => `${appHome()}/data/linear`;
@@ -12,6 +12,20 @@ export const KEY_CHANGED = "linear.key-changed";
 // { "<repo>|<branch>": "DEVX-684" }; "" means unlinked on purpose (no auto-detect).
 export const LINKS = "linear.links";
 export const ID = /\b([a-z][a-z0-9]{0,9}-\d+)\b/gi;
+
+// Links a ticket to a branch by hand; "" stops detecting one, null goes back to detecting.
+export function setLink(repo, branch, value) {
+  const links = { ...(shared(LINKS) ?? {}) }, k = `${repo}|${branch}`;
+  if (value === null) delete links[k]; else links[k] = value;
+  setShared(LINKS, links);
+}
+
+// The id in what was typed or pasted: a URL's follows /issue/ (its slug can look like
+// one too: …/some-title-2), else the first one.
+export function parseId(text) {
+  const id = /\/issue\/([a-z][a-z0-9]{0,9}-\d+)/i.exec(text)?.[1] ?? [...text.matchAll(ID)][0]?.[1];
+  return id ? id.toUpperCase() : null;
+}
 
 const ISSUE = `identifier title url description priorityLabel
   state { name color } assignee { name } project { name } labels { nodes { name color } }`;

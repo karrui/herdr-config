@@ -72,11 +72,12 @@ It finds the ticket in this order:
 2. A ticket id in the branch name, such as `karrui/devx-684-fix`, if `DEVX` is one of your workspace's teams.
 3. The issue Linear itself ties to the branch name.
 
-"Not this ticket" stops the panel from detecting one for that branch, and "Detect from branch" goes back to detecting.
+Right-click the Linear button to link a different ticket, say "Not this ticket" (stops detecting one for that branch), go back with "Detect from branch", open the ticket, or change the API key.
+With no ticket, the panel itself has a field to link one.
 Links are per repo and branch.
 `mods/tabs-sandbox/linear-resolve.js` is a copy of `mods/linear/resolve.js`, because mods can't import each other: change both.
 
-The first time, the panel asks for a Linear personal API key, which you create in Linear's Security & access settings.
+The first time, the panel asks for a Linear personal API key (later, change it from the right-click menu), which you create in Linear's Security & access settings.
 It's saved to `~/.config/herdr-app/data/linear/api-key` (mode 600), which sandboxed agents can't read, and never goes in this repo.
 
 ## Restarting an agent

@@ -17,6 +17,8 @@ const countLines = (text) => text ? text.split("\n").length - Number(text.endsWi
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 // A diff line's height, for the list to place rows without measuring them.
 const ROW = 22;
+// Added and removed lines, in Claude Code's own diff colors (its dark and light themes).
+const DIFF = { dark: { "+": "#225c2b", "-": "#7a2936" }, light: { "+": "#69db7c", "-": "#ffa8b4" } };
 
 // What the panel compares. null is a separator in the menu.
 const MODES = [["turn", "Last Turn"], null, ["uncommitted", "Uncommitted"], ["unstaged", "Unstaged"], ["staged", "Staged"], null, ["commit", "Committed"], ["branch", "Branch"]];
@@ -274,7 +276,7 @@ export default class Changes extends View {
 
   diffRow({ kind, number, text }, t) {
     if (kind === "@") return div().w_full().px(12).h(ROW).flex_none().truncate().bg(t.raised).text_color(t.dim).child(text);
-    return h_flex().w_full().h(ROW).flex_none().gap(10).items_center().when(kind === "+", (e) => e.bg(t.ansi2 + "38")).when(kind === "-", (e) => e.bg(t.ansi1 + "38"))
+    return h_flex().w_full().h(ROW).flex_none().gap(10).items_center().when(kind === "+" || kind === "-", (e) => e.bg(DIFF[settings().dark === false ? "light" : "dark"][kind]))
       .child(div().w(30).flex_none().text_right().text_color(t.dim).child(number === undefined ? "" : String(number)))
       .child(div().flex_1().min_w(0).truncate().child(text));
   }
@@ -334,7 +336,7 @@ export default class Changes extends View {
           .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`))).when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
       })).when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? NONE[this.mode] : "No folder")))))
       .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
-      .child(div().flex_1().min_h(0).relative().font_family(settings().font ?? "JetBrains Mono").text_size(12)
+      .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
         .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar()
           .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("changes-diff", this.rows.length, ROW, (i) => String(i),
             (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))

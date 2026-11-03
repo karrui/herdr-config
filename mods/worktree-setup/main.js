@@ -17,7 +17,7 @@ export default class WorktreeSetup extends View {
     this.handle.focus();
     cx.timer.after(300, () => this.handle.focus());
     const t = theme();
-    const editor = (language) => EditorState.new({ language, value: "", font_family: settings().font, font_size: 12, folding: false,
+    const editor = (language) => EditorState.new({ language, value: "", font_family: settings().font_family, font_size: 12, folding: false,
       syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
     this.copy = editor("text");
     this.setup = editor("bash");

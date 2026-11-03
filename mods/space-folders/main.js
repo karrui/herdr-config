@@ -140,6 +140,26 @@ const FALLBACK = 60000;
 // that draws space avatars): one strong color per hue, light and dark alike.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 
+// A branch's GitHub PR, for the chip on its row: merged, closed, or open and its checks'
+// state. gh from a login shell, where it's installed and signed in.
+const PR_EVERY = 60000;
+const FAILED = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"]);
+function prState(pr) {
+  if (pr.state === "MERGED") return "merged";
+  if (pr.state === "CLOSED") return "closed";
+  if (pr.isDraft) return "draft";
+  const checks = pr.statusCheckRollup ?? [];
+  if (checks.some((c) => FAILED.has(c.conclusion) || FAILED.has(c.state))) return "error";
+  if (checks.some((c) => (c.__typename === "CheckRun" ? c.status !== "COMPLETED" : c.state === "PENDING" || c.state === "EXPECTED"))) return "pending";
+  return checks.length ? "passing" : "open";
+}
+const PR_LOOK = {
+  merged: ["ansi5", "git-merge", "merged"], closed: ["dim", "git-pull-request-closed", "closed"],
+  draft: ["dim", "git-pull-request", "draft"], error: ["ansi1", "git-pull-request", "checks failing"],
+  pending: ["ansi3", "git-pull-request", "checks running"], passing: ["ansi2", "git-pull-request", "checks passed"],
+  open: ["muted", "git-pull-request", "open"],
+};
+
 // A space speaks up only when something in it needs you.
 export function glyph(status) {
   return status === "blocked" || status === "done" ? "●" : "·";
@@ -175,6 +195,9 @@ export default class Spaces extends View {
     this.moving = null; // a folder being dragged: { machine, id, index }
     this.overMove = null;
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
+    this.prs = {}; // "<repo>|<branch>" -> { at, pr: { number, url, state } | null }
+    // CI and reviews move on GitHub, not here: asked again every minute while in front.
+    cx.timer.every(PR_EVERY, (cx) => { if (window()?.active) this.refreshPRs(cx, true); });
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
     this.pending = new Set(); // where()s to look at next
@@ -298,6 +321,7 @@ export default class Spaces extends View {
       const used = new Set(Object.values(this.git).filter(Boolean).map((g) => JSON.parse(g.repo)).filter(([on]) => !on).map(([, repo]) => repo));
       for (const repo of this.watching) if (!used.has(repo)) this.watching.delete(repo);
       this.refreshing = false;
+      this.refreshPRs(cx);
       cx.notify();
     });
   }
@@ -338,6 +362,49 @@ export default class Spaces extends View {
       this.git[key] ??= null;
       this.unsure.add(key);
     }
+  }
+
+  // Each shown branch's PR, one gh at a time; `force` asks again for ones already known.
+  // ponytail: the trunk branches are skipped by name, since a PR "from main" is usually a fork's.
+  refreshPRs(cx, force = false) {
+    if (this.prBusy) return;
+    const asks = new Map();
+    for (const [place, g] of Object.entries(this.git)) {
+      if (!g?.branch || g.branch === "(detached)" || ["main", "master", "develop"].includes(g.branch)) continue;
+      const k = `${g.repo}|${g.branch}`, known = this.prs[k];
+      if (!asks.has(k) && (!known || (force && Date.now() - known.at > PR_EVERY / 2))) asks.set(k, { place, branch: g.branch });
+    }
+    if (!asks.size) return;
+    this.prBusy = true;
+    cx.spawn(async (cx) => {
+      for (const [k, { place, branch }] of asks) {
+        const [on, cwd] = JSON.parse(place);
+        const r = await exec("/bin/zsh", ["-lc", 'exec gh "$@"', "gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "1",
+          "--json", "number,url,state,isDraft,statusCheckRollup"], { cwd, on }).catch(() => null);
+        // gh missing, signed out or offline: keep what showed, try again next round.
+        if (r?.code !== 0) continue;
+        try {
+          const pr = JSON.parse(r.stdout)[0];
+          this.prs[k] = { at: Date.now(), pr: pr ? { number: pr.number, url: pr.url, state: prState(pr) } : null };
+        } catch {}
+        cx.notify();
+      }
+      this.prBusy = false;
+    });
+  }
+
+  // The PR chip on a row's title line: its number, colored by state; opens it.
+  prChip(id, pr, t) {
+    const [color, icon, label] = PR_LOOK[pr.state];
+    return h_flex().id(`pr-${id}`).h(18).px(5).gap(3).flex_none().items_center().rounded(5).cursor_pointer()
+      .text_size(11).text_color(t[color]).hover((s) => s.bg(t.hover))
+      .tooltip(`PR #${pr.number}: ${label}`)
+      // Not a press on the row: it would select or start dragging the space.
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_mouse_up("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [pr.url]); })
+      .child(svg(`mods/space-folders/${icon}.svg`).size(11))
+      .child(`#${pr.number}`);
   }
 
   watch(repo, cx) {
@@ -771,6 +838,7 @@ export default class Spaces extends View {
     const { when, lead, subs } = this.facts(w);
     const repo = g?.name ?? (w.folder && w.folder !== home() ? base(w.folder) : "~");
     const branch = g?.branch ?? (g ? "detached" : null);
+    const pr = g?.branch ? this.prs[`${g.repo}|${g.branch}`]?.pr : null;
     const tearing = this.teardown[w.id];
     const news = [
       ...(branch ? [branch] : []),
@@ -841,6 +909,7 @@ export default class Spaces extends View {
         .child(div().relative().flex_1().min_w(0).truncate().font_medium().text_color(tearing ? t.dim : t.foreground).child(w.name)
           .when(Boolean(tearing), (el) => el.child(div().absolute().left(0).right(0).top(0).bottom(0).flex().items_center()
             .child(div().w_full().h(1).bg(t.dim)))))
+        .when(Boolean(pr), (el) => el.child(this.prChip(w.id, pr, t)))
         .when(Boolean(state), (el) => el.child(state))
         .when(Boolean(icon), (el) => el.child(icon))
         .when(inline && when > 0, (el) => el.child(time)))

@@ -62,6 +62,13 @@ A turn that started before the panel was first opened, or before Herdr restarted
 The panel only shows changes: there's no commit box, since agents commit their own work.
 The Changes button in the tab bar shows the branch's lines added and removed against the same base, tracked files only.
 
+## Pull requests in the sidebar
+
+A space whose branch has a GitHub PR shows it on its row, as `#698`; click it to open the PR.
+Its color says where it stands: purple merged, grey closed or draft, red a check failed, yellow checks running, green checks passed.
+It's asked of `gh` (installed and signed in) every minute while the window is in front.
+`main`, `master` and `develop` are skipped.
+
 ## Linear panel
 
 The **Linear** button in the tab bar opens the ticket for the focused pane's branch.

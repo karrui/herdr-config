@@ -218,7 +218,7 @@ export default class AgentBar extends View {
         .child(button("edit-lists", "Edit allow and deny lists", () => openSandboxLists()))
         .child(button("close", "Close", () => closeOverlay(props().overlay))))
       .child(div().text_color(t.dim).child("Click a path segment to allow it for every sandboxed agent: green = will be allowed, dimmed = trimmed off. Allowed paths apply the next time the agent starts."))
-      .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().font_family(settings().font_family ?? "JetBrains Mono")
+      .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar().font_family(settings().font ?? "JetBrains Mono")
         .when(rows.length === 0, el => el.child(div().py(8).text_color(t.dim).child("Nothing blocked yet.")))
         .children(rows.map((e, row) => {
           const ok = allowed(this.rules, e);

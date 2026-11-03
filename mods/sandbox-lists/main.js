@@ -26,7 +26,7 @@ export default class SandboxLists extends View {
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.timer.after(300, () => this.handle.focus());
-    const editor = () => EditorState.new({ language: "text", value: "", font_family: settings().font_family, font_size: 12, folding: false, soft_wrap: true });
+    const editor = () => EditorState.new({ language: "text", value: "", font_family: settings().font, font_size: 12, folding: false, soft_wrap: true });
     this.allow = editor();
     this.deny = editor();
     this.loaded = {};

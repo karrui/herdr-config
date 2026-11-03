@@ -663,6 +663,11 @@ export default class Spaces extends View {
     this.branch = InputState.new({ placeholder: "branch-name" });
     this.title.on("change", (_e, cx) => { if (!this.branchEdited) this.branch.set_value(hyphenate(this.title.value())); cx.notify(); });
     this.branch.on("change", (_e, cx) => { this.branchEdited = this.branch.value() !== hyphenate(this.title.value()); this.error = null; cx.notify(); });
+    // Enter starts the default agent, the first one listed.
+    for (const input of [this.title, this.branch]) input.on("submit", (_e, cx) => {
+      const l = this.launching, a = this.choices()[0];
+      if (a?.installed && !this.busy) this.startSpace(argvFor(a, l.agents, !l.machine && this.sandbox), a.name, cx);
+    });
     this.title.focus();
     cx.timer.after(300, () => this.title.focus());
     cx.spawn(async (cx) => {
@@ -710,11 +715,16 @@ export default class Spaces extends View {
     });
   }
 
+  // The agents the popup offers: the installed ones, then two that aren't.
+  choices() {
+    const listed = (this.launching.agents ?? []).filter((a) => !a.key.endsWith("-unsandboxed"));
+    return [...listed.filter((a) => a.installed), ...listed.filter((a) => !a.installed).slice(0, 2)];
+  }
+
   newSpaceView(t) {
     const l = this.launching;
     const sandboxable = !l.machine, sandbox = sandboxable && this.sandbox;
-    const listed = (l.agents ?? []).filter((a) => !a.key.endsWith("-unsandboxed"));
-    const choices = [...listed.filter((a) => a.installed), ...listed.filter((a) => !a.installed).slice(0, 2)];
+    const choices = this.choices();
     const row = (key, icon, name, hint, enabled, action) => h_flex().id(`new-${key}`).h(32).px(9).gap(10).flex_none().items_center().rounded(7)
       .text_color(enabled ? t.foreground : t.dim).when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click(action))
       .child(h_flex().w(16).flex_none().justify_center().child(icon)).child(div().flex_1().min_w(0).truncate().child(name))

@@ -18,10 +18,7 @@ case "$program" in
   claude)
     export CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1
     export SSH_CONNECTION="${SSH_CONNECTION:-127.0.0.1 0 127.0.0.1 0}"
-    # In the sandbox, Claude Code asks no permission: the sandbox is what holds it in.
-    yolo=()
-    [ ${#wrap[@]} -gt 0 ] && yolo=(--dangerously-skip-permissions)
-    exec ${wrap[@]+"${wrap[@]}"} claude ${yolo[@]+"${yolo[@]}"} --append-system-prompt-file "$dir/instructions.md" "$@" ;;
+    exec ${wrap[@]+"${wrap[@]}"} claude --append-system-prompt-file "$dir/instructions.md" "$@" ;;
   # Codex takes the text itself, as a TOML string (a JSON string is one).
   codex) exec ${wrap[@]+"${wrap[@]}"} codex -c "developer_instructions=$(jq -Rs . < "$dir/instructions.md")" "$@" ;;
   *) exec ${wrap[@]+"${wrap[@]}"} "$program" "$@" ;;

@@ -107,8 +107,6 @@ Paths in `deny.txt` beside it are always blocked, even inside the project.
 The first install starts both lists from `sandbox/allow.default.txt` and `deny.default.txt`; after that they're yours, and updating never replaces them.
 The starter list covers the agents' own state, common caches and your shell and git dotfiles, so expect to allow a few paths your own tools need.
 SSH agent sockets and `AWS_*` variables are kept from it.
-Inside the sandbox, Claude Code runs with `--dangerously-skip-permissions`: it asks before nothing, and the sandbox is what holds it in.
-The sandbox limits files only, so commands that reach the network, like `git push` or `gh`, still run.
 
 The footer shows "N blocked" when the sandbox stopped something.
 Click it to see what, and to allow a path.

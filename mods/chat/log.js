@@ -532,6 +532,15 @@ export class Conversation {
     this.doing = null;
   }
 
+  // A task-notification: the helper (or background job) its tool-use-id names is done.
+  finished(text) {
+    const id = /<tool-use-id>([^<]+)<\/tool-use-id>/.exec(text)?.[1];
+    if (!id) return;
+    const h = this.helpers.get(id);
+    if (h) h.done = true;
+    this.bg = this.bg.filter((j) => j.id !== id);
+  }
+
   // The helpers still running: [{ desc }]. One silent for three hours is taken as gone (its
   // session ended without telling).
   running() {
@@ -625,13 +634,7 @@ export class Conversation {
     if (l.type === "user" && l.origin?.kind === "task-notification") {
       // A helper or a background job finished (Claude Code tells the agent so): it's done.
       const c = l.message?.content;
-      const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((b) => b?.text ?? "").join("\n") : "";
-      const id = /<tool-use-id>([^<]+)<\/tool-use-id>/.exec(text)?.[1];
-      if (id) {
-        const h = this.helpers.get(id);
-        if (h) h.done = true;
-        this.bg = this.bg.filter((j) => j.id !== id);
-      }
+      this.finished(typeof c === "string" ? c : Array.isArray(c) ? c.map((b) => b?.text ?? "").join("\n") : "");
       return;
     }
     if (l.type === "user") {
@@ -654,6 +657,8 @@ export class Conversation {
     } else if (l.type === "attachment" && l.attachment?.type === "queued_command") {
       // A message typed while the agent was busy, taken in mid-turn.
       const a = l.attachment;
+      // Newer Claude Code queues a helper's (or job's) task-notification the same way.
+      if (a.commandMode === "task-notification" || a.origin?.kind === "task-notification") { this.finished(String(a.prompt ?? "")); return; }
       if (a.commandMode !== "prompt" || (a.origin?.kind && a.origin.kind !== "human")) return;
       const u = claudeUser(a.prompt);
       if (u) this.user(`u${off}`, { ...u, at: time(a.timestamp ?? l.timestamp) });

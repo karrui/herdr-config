@@ -108,6 +108,11 @@ function clock(at) {
 }
 // An edit's card (log.js diffOf()): at most this many of its lines show.
 const DIFF_SHOWN = 40;
+// A code block's header buttons, fixed widths so a press finds them (clickRow()): Copy at the
+// right end, Run (a block of ! commands) before it.
+const COPY_W = 70, RUN_W = 56;
+// The ! commands in a code block (Claude Code asks you to run one that way): one per line.
+const bangs = (code) => [...String(code).matchAll(/^\s*!\s*(\S.*)$/gm)].map((m) => m[1].trim()).filter(Boolean);
 // Pictures a tool returned (log.js I records): a strip this tall, each as wide as its shape.
 const GALLERY_H = 160;
 const fileName = (p) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
@@ -2087,9 +2092,14 @@ export default class Chat extends View {
       }
       case "codehead": {
         const done = this.copied === x.id;
-        return col(h_flex().w_full().h(28).pl(12).pr(4).items_center().rounded_t(8).bg(t.surface).border_1().border_b(0).border_color(t.border)
+        // Run, on a block of ! commands for Claude Code: they run as you'd type them (runBangs()).
+        const runs = this.kind === "claude" && bangs(x.code).length > 0;
+        return col(h_flex().w_full().h(28).pl(12).pr(4).gap(4).items_center().rounded_t(8).bg(t.surface).border_1().border_b(0).border_color(t.border)
           .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(x.lang || "code"))
-          .child(h_flex().h(22).px(6).gap(5).items_center().rounded(6).cursor_pointer().text_size(12).text_color(done ? t.foreground : t.dim)
+          .when(runs, (el) => el.child(h_flex().w(RUN_W).h(22).flex_none().justify_center().gap(5).items_center().rounded(6).cursor_pointer().text_size(12).font_medium()
+            .bg(t.accent + "1f").text_color(t.accent).hover((s) => s.bg(t.accent + "33"))
+            .child(svg("mods/chat/play.svg").size(10).flex_none()).child("Run")))
+          .child(h_flex().w(COPY_W).h(22).flex_none().justify_center().gap(5).items_center().rounded(6).cursor_pointer().text_size(12).text_color(done ? t.foreground : t.dim)
             .hover((s) => s.bg(t.hover).text_color(t.foreground))
             .child(svg(`mods/chat/${done ? "check" : "copy"}.svg`).size(12).flex_none()).child(done ? "Copied" : "Copy")), 18, 0).pt(x.top0 ? 0 : 6);
       }
@@ -2181,7 +2191,12 @@ export default class Chat extends View {
     if (row.kind === "tools") {
       if (this.opened.has(key)) this.opened.delete(key);
       else { this.opened.add(key); this.loadResults(row, cx); }
-    } else if (row.kind === "codehead") this.copy(row.code, row.id, cx);
+    } else if (row.kind === "codehead") {
+      // Copy at the header's right end, Run before it (case "codehead").
+      const fromRight = this.edges().right - 4 - (this.press?.x ?? 0);
+      if (fromRight >= 0 && fromRight <= COPY_W) this.copy(row.code, row.id, cx);
+      else if (this.kind === "claude" && fromRight > COPY_W + 4 && fromRight <= COPY_W + 4 + RUN_W && bangs(row.code).length) this.runBangs(bangs(row.code));
+    }
     // A message of yours with annotations: what they quoted, opened and shut.
     else if (row.kind === "user" && row.noteItems?.length) { const k = `n:${row.id}`; if (this.opened.has(k)) this.opened.delete(k); else this.opened.add(k); }
     else if (row.kind === "pending" && row.failed) { const p = this.pending.find((x) => x.id === row.id); if (p?.msg) this.retry(p, cx); }
@@ -2288,6 +2303,16 @@ export default class Chat extends View {
     // its log. Agents it started with hc are terminals Herdr already lists under it in the
     // Agents sidebar, so they aren't repeated here.
     return (this.conv?.running?.() ?? []).map((h) => ({ id: h.id, label: h.desc, at: h.at }));
+  }
+
+  // A code block's Run: Claude Code's ! commands, typed into it as you would ("! cmd"), so each
+  // runs in its session and its output lands in the conversation. A sandboxed agent's would hit
+  // the sandbox, so they run outside it, in a login shell split below this chat that stays open
+  // (as pane-sandbox's Run chip does in Terminal mode).
+  runBangs(cmds) {
+    const t = terminals().find((x) => x.address === this.addr);
+    if (!t?.labels?.["herdr.sandbox"]) { this.typed(async () => { for (const c of cmds) await hc(["send", this.addr, `! ${c}`]); }); return; }
+    run("pane.split", { direction: "down", pane: this.myPane(), argv: ["/bin/zsh", "-lic", 'cd "$1" && print -r -- "$ $2" && eval "$2"; exec zsh -l', "zsh", t.foreground?.cwd ?? t.cwd ?? home(), cmds.join("; ")] });
   }
 
   // A Claude Code helper's own log: <session>/subagents/agent-<id>.jsonl, the one whose

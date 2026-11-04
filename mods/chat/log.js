@@ -78,7 +78,7 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
   }
   keep = 0
   if (index(head, mine)) {
-    if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\""))) keep = 1
+    if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\"")) || index(head, "\"subtype\":\"turn_duration\"")) keep = 1
   } else if (index(head, "\"type\":\"response_item\"")) {
     if (index(head, "\"type\":\"message\"") || index(head, "_call\"")) keep = 1
   } else if (index(head, "\"type\":\"event_msg\"")) {
@@ -226,6 +226,12 @@ function cleanUser(t) {
 }
 
 function cleanWords(t) {
+  // A ! command run in Claude Code (the chat's Run, or typed in its terminal): yours, so it starts
+  // a turn, with its output added to it when that line comes (Conversation.user()).
+  const bi = /^\s*<bash-input>([\s\S]*?)<\/bash-input>\s*$/.exec(t);
+  if (bi) return { text: "`! " + bi[1].trim().replace(/`/g, "'") + "`", bang: true };
+  const bo = /^\s*<bash-stdout>([\s\S]*?)<\/bash-stdout>(?:<bash-stderr>([\s\S]*?)<\/bash-stderr>)?\s*$/.exec(t);
+  if (bo) return { text: "", bangOut: [bo[1], bo[2]].filter((x) => x?.trim()).join("\n").trim() };
   const r = reactionLines(t);
   if (r.reactions.length) {
     const u = r.text ? cleanWords(r.text) : null;
@@ -517,6 +523,12 @@ export class Conversation {
 
   user(id, u) {
     this.waiting = false;
+    // A ! command's output: in a code block under the command it came from.
+    if (u?.bangOut !== undefined) {
+      const cmd = [...this.items].reverse().find((x) => x.kind === "user" && x.bang && !x.out);
+      if (cmd) { const o = u.bangOut.length > 4000 ? `${u.bangOut.slice(0, 3999)}…` : u.bangOut; cmd.out = true; cmd.text += `\n\n\`\`\`\n${o || "(no output)"}\n\`\`\``; }
+      return;
+    }
     for (const r of u?.reactions ?? []) this.react("you", r);
     // Only reactions: nothing to show, but the agent's turn before it is over (its actions and
     // pills stay while it answers, and its answer is a turn of its own).
@@ -528,7 +540,7 @@ export class Conversation {
       replyTo = u.quoted;
       text = u.rest;
     }
-    this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0, noteItems: u.noteItems });
+    this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0, noteItems: u.noteItems, bang: u.bang });
     this.doing = null;
   }
 
@@ -634,6 +646,9 @@ export class Conversation {
   claude(l, off) {
     // A helper's lines, in its parent's log; a helper's own log (side) is all of them.
     if (Boolean(l.isSidechain) !== Boolean(this.side)) return;
+    // A turn ended (written once per turn, also for one no message of yours started, as a
+    // helper's report does): the chat folds each turn by these (main.js foldTurns()).
+    if (l.type === "system" && l.subtype === "turn_duration") { this.push({ kind: "turnend", id: `te${off}` }); return; }
     if (l.type === "user" && l.origin?.kind === "task-notification") {
       // A helper or a background job finished (Claude Code tells the agent so): it's done.
       const c = l.message?.content;

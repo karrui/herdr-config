@@ -1605,30 +1605,31 @@ export default class Chat extends View {
   // ---- the conversation's rows ----------------------------------------------------------------
 
   // Codex's way with a finished turn: the person's message, "Worked for 4m 5s", the last reply.
-  // What came between (replies on the way, thoughts, tool steps) folds into that row and opens
-  // on a click; the turn under way shows all of it as it comes. Questions, pictures and
-  // artifacts stay where they were.
+  // What came between (replies on the way, thoughts, tool steps, diffs) folds into that row and
+  // opens on a click; the turn under way shows all of it as it comes. Questions, pictures and
+  // artifacts stay where they were. A turn ends at a message of yours or where Claude Code
+  // says one ended (turnend: a helper's report starts a turn of its own, with no message).
   foldTurns(items, working) {
     const FOLDS = new Set(["agent", "thought", "tools", "diff"]);
     const out = [];
-    let i = 0;
-    while (i < items.length) {
-      if (items[i].kind !== "user") { out.push(items[i++]); continue; }
-      const u = items[i];
-      out.push(u);
-      let j = i + 1;
-      while (j < items.length && items[j].kind !== "user") j++;
-      const turn = items.slice(i + 1, j);
-      i = j;
+    let span = [], lead = null;
+    const close = (last) => {
       let fin = -1;
-      for (let k = turn.length - 1; k >= 0; k--) if (turn[k].kind === "agent") { fin = k; break; }
-      if ((working && j === items.length) || !turn.slice(0, Math.max(0, fin)).some((x) => FOLDS.has(x.kind))) { out.push(...turn); continue; }
-      const id = `w:${u.id}`, end = turn[fin].at ?? 0;
-      out.push({ kind: "worked", id, secs: u.at && end > u.at ? Math.round((end - u.at) / 1000) : null });
-      const open = this.opened.has(id);
+      for (let k = span.length - 1; k >= 0; k--) if (span[k].kind === "agent") { fin = k; break; }
+      if ((working && last) || !span.slice(0, Math.max(0, fin)).some((x) => FOLDS.has(x.kind))) { out.push(...span); span = []; return; }
+      const id = `w:${(lead ?? span[0]).id}`, start = lead?.at ?? span.find((x) => x.at)?.at, end = span[fin].at ?? 0;
+      out.push({ kind: "worked", id, secs: start && end > start ? Math.round((end - start) / 1000) : null });
       // Opened, what it folds is drawn faded (rowBare(), dim), so the last reply stands out.
-      turn.forEach((x, k) => { if (k >= fin || !FOLDS.has(x.kind)) out.push(x); else if (open) out.push({ ...x, dim: true }); });
+      const open = this.opened.has(id);
+      span.forEach((x, k) => { if (k >= fin || !FOLDS.has(x.kind)) out.push(x); else if (open) out.push({ ...x, dim: true }); });
+      span = [];
+    };
+    for (const x of items) {
+      if (x.kind === "user") { close(false); out.push(x); lead = x; }
+      else if (x.kind === "turnend") { close(false); lead = null; }
+      else span.push(x);
     }
+    close(true);
     return out;
   }
 
@@ -1696,7 +1697,7 @@ export default class Chat extends View {
         // Its actions in a band row under it (the row above draws them too: band()).
         if (x.text) {
           const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, side: "user", at: x.at, pills: this.pills(x.id),
-            acts: ["reply", "copy", ...(/^\//.test(x.text) || x.from ? [] : ["rewind"])] };
+            acts: ["reply", "copy", ...(/^\//.test(x.text) || x.from || x.bang ? [] : ["rewind"])] };
           out[out.length - 1] = { ...out[out.length - 1], bar };
           out.push({ kind: "band", id: `ab:${x.id}`, bar });
         }

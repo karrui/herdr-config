@@ -2843,7 +2843,7 @@ export default class Chat extends View {
       case "thought": return 14 + lines(x.text, w) * 21;
       case "worked": return 41;
       case "diff": return 32 + (this.opened.has(x.id) ? 0 : 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0));
-      case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
+      case "tools": return this.opened.has(x.id) ? 26 + x.steps.reduce((n, s) => n + (s.cmd || s.kind === "run" ? 36 : 19), 0) : 20;
       case "artifact": return x.pending || x.line ? 20 : 62;
       case "tasknews": return x.accept ? 26 : 20;
       case "cardstrip": {
@@ -3102,9 +3102,10 @@ export default class Chat extends View {
               const out = this.results.get(s.id), mono = settings().font_family ?? "JetBrains Mono";
               // A command: its description, then the command itself ("Ran" when it has none).
               const part = (line) => (s.cmd && !line.includes("\n") ? [s.label, s.cmd] : s.kind === "run" && line.startsWith("Ran ") ? ["Ran", line.slice(4)] : [line, null]);
-              return [...s.line.split("\n").map((line) => { const [label, code] = part(line); return h_flex().min_w(0).gap(6).items_center()
-                .child(div().flex_none().max_w_96().truncate().child(label))
-                .when(Boolean(code), (el) => el.child(div().flex_1().min_w(0).truncate().font_family(mono).text_size(11.5).text_color(t.dim).child(code))); }),
+              // On two lines, for reading: what it's for, then the command.
+              return [...s.line.split("\n").map((line) => { const [label, code] = part(line); return v_flex().min_w(0).gap(1)
+                .child(div().truncate().child(label))
+                .when(Boolean(code), (el) => el.child(div().truncate().font_family(mono).text_size(11.5).text_color(t.dim).child(code))); }),
                 ...(out ? [v_flex().ml(2).mb(3).pl(8).border_l(1).border_color(t.border).font_family(mono).text_size(11).text_color(t.dim)
                   .children(out.split("\n").map((l) => div().truncate().child(l || " ")))] : [])];
             })))), 12, 0);

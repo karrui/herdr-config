@@ -790,6 +790,8 @@ export class Conversation {
       this.waits.clear();
       this.waiting = false;
       this.doing = null;
+      // The turn ended: the chat folds by these, as by Claude Code's turn_duration.
+      this.push({ kind: "turnend", id: `te${off}` });
     }
   }
 }

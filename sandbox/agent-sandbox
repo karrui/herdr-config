@@ -113,8 +113,9 @@ mkdir -p "$spool"
   # hc's go-between (hc-broker): its spool, and the hc that writes to it.
   echo "(allow file-read-data file-write* (subpath $(q "$spool")))"
   echo "(allow file-read-data (subpath $(q "$dir/bin")))"
-  # What agents run or read from Herdr: the usage feed scripts and Herdr's instructions.
-  echo "(allow file-read-data (subpath $(q "$app/usage")) (subpath $(q "$app/agent")))"
+  # What agents run or read from Herdr: the usage feed scripts, Herdr's instructions and
+  # the shared Chrome's launcher.
+  echo "(allow file-read-data (subpath $(q "$app/usage")) (subpath $(q "$app/agent")) (subpath $(q "$app/browser")))"
 } > "$profile"
 
 [ "$term" != none ] && hc label "$term" "herdr.sandbox=$file" >/dev/null 2>&1 || true

@@ -3,7 +3,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, notify } from "herdr";
 import { chatAgents, sweep } from "./parked.js";
 
 function find(node, id) {
@@ -165,13 +165,29 @@ export default class Agents extends View {
         .when(s.id === on, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(14).flex_none().text_color(t.foreground)))));
   }
 
+  // A helper's conversation, read-only, in a dialog: its log sits by its agent's session log
+  // (<session>/subagents/agent-<id>.jsonl, the one whose .meta.json names the call that
+  // started it), as the chat's helper rows open it (mods/chat openHelper()).
+  openHelper(h) {
+    const dir = `${h.log.replace(/\.jsonl$/, "")}/subagents`;
+    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && printf %s "${f%.meta.json}.jsonl"', "x", dir, `"toolUseId":"${h.id}"`], { on: h.machine ?? undefined })
+      .then((r) => {
+        if (!r.stdout) { notify({ title: "No conversation for this helper", body: "Claude Code hasn't written its log yet.", level: "info" }); return; }
+        openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: r.stdout, kind: "claude", title: h.label } } });
+      }).catch(() => {});
+  }
+
   peek(addr) {
     run("terminal.peek", { terminal: addr });
   }
 
-  // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
+  // Live sub-agents of `addr`, depth first, each with the tree lines in front of it: terminals it
+  // started (hc), then the helpers its CLI runs itself (Claude Code's Agent/Task runs), which its
+  // chat lists in shared "chat.subagents" (mods/chat publishHelpers()).
   tree(all, addr, lead = []) {
-    const kids = all.filter((k) => k.parent === addr && k.state === "live");
+    const own = shared("chat.subagents")?.[addr];
+    const helpers = (own?.list ?? []).map((h) => ({ address: `helper:${h.id}`, name: h.label, status: "working", state: "live", helper: { ...h, log: own.log, machine: own.machine } }));
+    const kids = [...all.filter((k) => k.parent === addr && k.state === "live"), ...helpers];
     return kids.flatMap((k, i) => {
       const last = i === kids.length - 1;
       return [
@@ -198,7 +214,7 @@ export default class Agents extends View {
       .text_size(12.5)
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
-      .on_click(() => this.peek(k.address))
+      .on_click(() => (k.helper ? this.openHelper(k.helper) : this.peek(k.address)))
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))

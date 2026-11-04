@@ -871,6 +871,7 @@ export default class Chat extends View {
         if (k && (starting(k) || openCard(this.addr))) { await this.screens.tick(this.addr, k); cx.notify(); }
         this.alerts(cx);
         this.drainQueue(cx);
+        this.publishHelpers();
         // Dragged to the top with the scrollbar: no wheel said so.
         if (this.start && (this.range?.start ?? 9) <= 1) this.loadEarlier(cx);
         if (this.error) { this.error = null; cx.notify(); }
@@ -2268,6 +2269,20 @@ export default class Chat extends View {
 
   // A Claude Code helper's own log: <session>/subagents/agent-<id>.jsonl, the one whose
   // .meta.json names the call that started it. Opened read-only in a dialog over the window.
+  // Its running helpers for the Agents panel (agents-sandbox lists them under the agent), as
+  // shared "chat.subagents": { <agent address>: { log, machine, list: [{ id, label, at }] } }.
+  // The panel opens one with this chat's transcript props, finding its log as openHelper() does.
+  publishHelpers() {
+    if (this.transcript || !this.addr) return;
+    const all = shared("chat.subagents") ?? {};
+    const list = this.kind === "claude" && this.path ? this.helpers().map((h) => ({ id: h.id, label: h.label, at: h.at ?? null })) : [];
+    const mine = list.length ? { log: this.path, machine: this.machine, list } : null;
+    if (JSON.stringify(mine) === JSON.stringify(all[this.addr] ?? null)) return;
+    const next = { ...all };
+    if (mine) next[this.addr] = mine; else delete next[this.addr];
+    setShared("chat.subagents", next);
+  }
+
   openHelper(h) {
     if (!this.path || this.kind !== "claude" || !h.id) return;
     const dir = `${this.path.replace(/\.jsonl$/, "")}/subagents`;
@@ -2304,13 +2319,22 @@ export default class Chat extends View {
       .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(h.label))
       .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(ago(h.at)));
-    return v_flex().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(4)
-      .children(list.map(row))
-      .when(!open, (el) => el.child(h_flex().id("helpers-more").h(22).px(6).gap(6).items_center().rounded(6).cursor_pointer()
-        .text_size(12).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_click((_e, cx) => { cx.stop_propagation(); this.helpersOpen = true; cx.notify(); })
-        .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none())
-        .child(`+${shown.length - 4} more`)));
+    // A card docked on the box's top edge (as Manus shows its running work), so the helpers read
+    // apart from the agent's own working line above: a count that folds it, then a row each.
+    const shut = this.helpersShut;
+    return v_flex().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(6)
+      .child(v_flex().mx(12).px(6).py(4).rounded_t(10).border_1().border_b(0).border_color(t.border).bg(t.surface)
+        .child(h_flex().id("helpers-head").h(24).px(6).gap(6).items_center().rounded(6).cursor_pointer().text_size(12).text_color(t.muted)
+          .hover((s) => s.text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.helpersShut = !shut; cx.notify(); })
+          .child(div().flex_1().child(`${shown.length} helper${shown.length === 1 ? "" : "s"} running`))
+          .child(svg(`mods/chat/chevron-${shut ? "up" : "down"}.svg`).size(12).flex_none()))
+        .when(!shut, (el) => el.children(list.map(row))
+          .when(!open, (el) => el.child(h_flex().id("helpers-more").h(22).px(6).gap(6).items_center().rounded(6).cursor_pointer()
+            .text_size(12).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .on_click((_e, cx) => { cx.stop_propagation(); this.helpersOpen = true; cx.notify(); })
+            .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none())
+            .child(`+${shown.length - 4} more`)))));
   }
 
   // Held messages, each with Edit and Cancel; they go once the agent is free.
@@ -2554,7 +2578,8 @@ export default class Chat extends View {
     const recallable = !list.length && (!this.box.value() || this.recall >= 0);
     const take = (fn) => (_e, cx) => { fn(cx); cx.stop_propagation(); cx.notify(); };
     const sel = Math.min(this.slashSel, Math.max(0, list.length - 1));
-    return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(8).child(v_flex().id("chat-composer").w_full().rounded(10).border_1()
+    // Flush under the helpers' card when it shows (background()).
+    return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(this.helpers().length ? 0 : 8).child(v_flex().id("chat-composer").w_full().rounded(10).border_1()
       // Esc stops a working agent while the box is empty and nothing is open over it.
       .key_context([list.length ? "chat_slash" : recallable ? "chat_recall" : "chat_composer",
         st === "working" && !list.length && !this.box.value().trim() && !this.quote ? "chat_stop" : null].filter(Boolean).join(" "))

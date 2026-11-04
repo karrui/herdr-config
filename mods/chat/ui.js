@@ -1,15 +1,15 @@
 // The UI building blocks every mod draws with: one size system, one red/green/amber, and the
 // few controls the app repeats (buttons, switch, segmented control, menu row, headings, card
-// header, dialog footer, hover). lib/UI.md lists them and the rules.
-// Shared: the source is lib/ui.js; bin/sync-shared copies it into each mod in lib/COPIES.
-// Edit lib/ui.js, never a mod's copy, then run bin/sync-shared.
+// header, dialog footer, hover).
+// Shared: the same file in mods chat, chat-image, chat-models, chat-react and artifacts; change
+// every copy alike.
 import { div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { settings, theme, openOverlay, notify, layout, shared, setShared, spaces } from "herdr";
+import { settings, theme, notify, layout, shared, setShared } from "herdr";
 
 // Sizes -------------------------------------------------------------------
 // Buttons: 24 in panels, rows and headers; 32 in dialogs and cards; 20 only inside a row's
-// 16 tall second line (a Ready row's Accept), so the row keeps its height.
+// 16 tall second line, so the row keeps its height.
 export const H = { xs: 20, sm: 24, lg: 32 };
 // Text: 11 IDs and times, 12 second lines and labels, 13 body and titles, 15 page titles.
 export const TEXT = { id: 11, label: 12, body: 13, title: 15 };
@@ -17,15 +17,11 @@ export const TEXT = { id: 11, label: 12, body: 13, title: 15 };
 export const RADIUS = { control: 6, card: 8, bubble: 12 };
 
 // Status colors -----------------------------------------------------------
-// Shepherdr's own, light and dark, the same as the task dots (dot.js uses these): red needs
-// you (and alerts), green ready, amber working.
+// Light and dark: red needs you (and alerts), green ready, amber working.
 const dark = () => settings()?.dark !== false;
 export const red = () => (dark() ? "#ff6369" : "#e5484d");
 export const green = () => (dark() ? "#3dd68c" : "#30a46c");
 export const amber = () => (dark() ? "#f5b544" : "#e2a336");
-// Text on a red, green or amber fill: white on light's deep fills, black on dark's bright ones
-// (Shepherdr's AttentionBadge).
-export const onStatus = () => (dark() ? "#000000" : "#ffffff");
 
 // Hover and pointer --------------------------------------------------------
 // Only what a click does something on gets the pointer and a hover; everything else gets
@@ -158,35 +154,10 @@ export function dialogFooter({ onCancel, primary, cancelLabel = "Cancel", note =
       { kind: "primary", size: "lg", disabled: primary.disabled, onClick: primary.onClick })));
 }
 
-// Count badge ------------------------------------------------------------------------------
-// The count badge on Tasks, tabs and spaces, as Shepherdr's AttentionBadge: Needs you alone a red
-// dot, Ready alone a green one, both one oval split down the middle (red Needs you left, green
-// Ready right, a 1px line between in `line`, the color behind the badge). Always 16 tall, so a
-// row never jumps when the badge changes kind; each count stops at 9+. 11px digits are an even
-// number of pixels tall, so they centre; a lone "1" is narrow with its flag on the left, so it
-// moves right a pixel to look centred.
-export function countBadge(need, ready, line) {
-  const num = (n) => div().line_height("16px").when(n === 1, (el) => el.ml(1)).child(n > 9 ? "9+" : String(n));
-  const part = (n, bg) => div().h(16).flex().items_center().justify_center().bg(bg).child(num(n));
-  const badge = h_flex().h(16).flex_none().text_color(onStatus()).text_size(TEXT.id).font_semibold();
-  if (need > 0 && ready > 0)
-    return badge.child(part(need, red()).w(need > 9 ? 19 : 15).rounded_l(8)).child(div().w(1).h(16).bg(line))
-      .child(part(ready, green()).w(ready > 9 ? 19 : 15).rounded_r(8));
-  const n = need || ready;
-  return badge.child(part(n, need ? red() : green()).min_w(16).px(n > 9 ? 4 : 0).rounded(8));
-}
-
-// Settings ---------------------------------------------------------------------------------
-// The one Settings window (mods/shepherdr-settings): most of the window's height, at most 900
-// (it draws its own frame inside, centred). p: { space?: that space's own settings, section? }.
-export function openSettings(p = {}) {
-  return openOverlay({ mod: "shepherdr-settings", kind: "dialog", frame: "none", width: 860, height: 0.92, props: p });
-}
-
 // Toasts -------------------------------------------------------------------------------------
 // Everything that reaches the person as a toast goes through toast(): our own float draws it
 // (mods/toasts: the body wraps to 3 lines, an X on hover, alerts red), one title format for what
-// an agent says ("HERD-4 · what", "~ Assistant · what"). Where the shown layout has no toasts
+// an agent says ("Claude Code · what"). Where the shown layout has no toasts
 // float (another layout), Herdr's notify() shows it instead. Kept in shared "toasts", newest last.
 // n: { title, body, level: "info" | "success" | "warning" | "error" | "alert", action: { name,
 // args }, timeout (ms) }. "alert" is an agent saying it can't wait, or needing the person: red.
@@ -202,19 +173,9 @@ export function toast(n) {
   return id;
 }
 
-// Who a toast is from, its title's first half ("HERD-4 · what", "~ Assistant · what"): a task's
-// agent by its task (herdr-task names it "herd-4-fix-login"), an Assistant by its space, anything
-// else by its program. k: a terminal (terminals()); task: a task ref when known.
-export function toastWho(k, task = null) {
-  const l = k?.labels ?? {};
-  const ref = task ?? (l["herdr.task"] ? (/^([a-z][a-z0-9]*-\d+)/.exec(k?.name ?? "")?.[1] ?? "").toUpperCase() : "");
-  if (ref) return ref;
-  if (l["herdr.role"] === "coordinator") {
-    const id = l["herdr.coordinator.space"] ?? l["herdr.space"];
-    const m = String(k?.address ?? "").includes("/") ? k.address.split("/")[0] : null;
-    const name = id && spaces().find((s) => s.id === (m ? `${m}/${id}` : id))?.name;
-    return name ? `${name} Assistant` : "Assistant";
-  }
+// Who a toast is from, its title's first half ("Claude Code · what"): the agent's program.
+// k: a terminal (terminals()).
+export function toastWho(k) {
   return k?.program?.name ?? "Agent";
 }
 

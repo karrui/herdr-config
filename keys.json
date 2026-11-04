@@ -74,8 +74,6 @@
     "cmd-alt-[": "space-folders.prev"
   },
   "mod:chat": {
-    "ctrl-shift-d": "chat.dictate",
-    "ctrl-shift-space": "chat.call",
     "ctrl-f": "chat.find"
   }
 }

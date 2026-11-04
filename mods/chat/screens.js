@@ -6,9 +6,8 @@
 // from. A screen with nothing to choose makes no card (it may be a slow start), unless a card
 // came before and this one holds a link (a sign-in). An agent that reports a status (its
 // session started) or took a turn never gets one.
-// Cards live in shared "chat.screens" = { [address]: [card, ...] } (newest last), so the
-// agent's own chat and its Assistant's chat (a task worker's) show the same card and both see
-// how it closed: { id, addr, cli, words, choices: [{ label, description? }], at (the cursor's
+// Cards live in shared "chat.screens" = { [address]: [card, ...] } (newest last), so every
+// copy of the agent's chat shows the same card and sees how it closed: { id, addr, cli, words, choices: [{ label, description? }], at (the cursor's
 // choice), all (screenText), seen (sameScreen), state: "open" | "answered" | "closed", how,
 // opened, changed }.
 
@@ -238,11 +237,11 @@ export class ScreenWatch {
 // ---- the card --------------------------------------------------------------------------------
 
 // The card's strips for an open screen: the CLI's words, each choice a row that presses it, and
-// the terminal. opts: { who (whose screen: "Claude", "HERD-12"), links ([ctl] at the header's
-// right), press(i, cx), toTerminal(cx) (none: no link), busy (a press on its way), error }.
+// the terminal. opts: { who (whose screen: "Claude", "Codex"), press(i, cx), toTerminal(cx)
+// (none: no link), busy (a press on its way), error }.
 export function screenStrips(card, opts = {}) {
   const id = card.id.replace(/[^\w-]/g, "_");
-  const links = [...(opts.links ?? []), ...(opts.toTerminal ? [linkCtl(`scr-term-${id}`, "Answer in terminal", (cx) => opts.toTerminal(cx))] : [])];
+  const links = opts.toTerminal ? [linkCtl(`scr-term-${id}`, "Answer in terminal", (cx) => opts.toTerminal(cx))] : [];
   const out = [headStrip({ who: opts.who ?? card.cli, links }), { key: "title", kind: "title", text: `${card.cli} is waiting on its screen` }];
   if (card.words) out.push({ key: "words", kind: "detail", lines: card.words.split("\n"), clip: null });
   card.choices.forEach((c, i) => out.push({ key: `c${i}`, kind: "option", gap: i ? 1 : 8, num: i + 1, label: c.label, desc: c.description,

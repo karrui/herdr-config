@@ -4,16 +4,15 @@
 // strips of the timeline (strips.js). The host does the rest: host.reply(ask, text, cx) sends
 // the hook its answer, host.toTerminal(ask, cx) shows the agent's terminal,
 // host.chatAbout(ask, cx) goes where the person can write to it.
-// Every card the chat shows (these, a secret's, a CLI's start screen) starts with one header
-// strip (headStrip()): a red dot, "Claude asks" or "HERD-12 asks", quiet links at the right.
+// Every card the chat shows (these, a CLI's start screen) starts with one header strip
+// (headStrip()): a red dot, "Claude asks", quiet links at the right.
 
 import { div } from "gpui-kit";
 import { InputState } from "gpui-base";
 import { allow, deny, answer, answers, chatAbout, release } from "./asks.js";
 
-// A card's first strip. opts: { who ("Claude", "HERD-12"), asks (false: what follows `who`
-// instead, e.g. "Kept"), dot (its color; default red), links ([ctl] at the right) }.
-export const headStrip = (opts) => ({ key: "head", kind: "head", who: opts.asks === false ? opts.who : `${opts.who ?? "Claude"} asks`, dot: opts.dot, links: opts.links ?? [] });
+// A card's first strip. opts: { who ("Claude", "Codex"), links ([ctl] at the right) }.
+export const headStrip = (opts) => ({ key: "head", kind: "head", who: `${opts.who ?? "Claude"} asks`, links: opts.links ?? [] });
 
 // A quiet link of a card's header (strips.js ctl).
 export const linkCtl = (id, label, fn) => ({ id, label, look: "link", fn });
@@ -35,18 +34,15 @@ export class AskCards {
     this.keyed = null;
   }
 
-  // The strips of one ask's card. opts: { who (whose ask: "Claude", "HERD-12"), links (more
-  // quiet links at the header's right, e.g. "Open chat"), terminal (the "Answer in terminal"
-  // link; default on), chatHint (what "Chat about this" says) }.
+  // The strips of one ask's card. opts: { who (whose ask: "Claude", "Codex") }.
   strips(ask, opts = {}) {
     const w = ask.words;
     if (w.kind === "questions" && w.questions.length) return this.questions(ask, opts);
     const id = ask.id;
     const long = Boolean(w.detail) && longDetail(w.detail);
     const open = this.open.has(id);
-    const links = [...(opts.links ?? []),
-      ...(long ? [linkCtl(`ask-all-${id}`, open ? "Show less" : "Show all", () => { if (open) this.open.delete(id); else this.open.add(id); })] : []),
-      ...(opts.terminal !== false ? [this.terminalLink(ask)] : [])];
+    const links = [...(long ? [linkCtl(`ask-all-${id}`, open ? "Show less" : "Show all", () => { if (open) this.open.delete(id); else this.open.add(id); })] : []),
+      this.terminalLink(ask)];
     const out = [headStrip({ who: opts.who, links }), { key: "title", kind: "title", text: w.title }];
     if (w.detail) out.push({ key: "detail", kind: "detail", lines: w.detail.split("\n"), clip: long && !open ? SHORT : null });
     if (w.cut) out.push({ key: "cut", kind: "text", tone: "dim", text: "Some of it is too long for the chat; the terminal shows it all." });
@@ -186,8 +182,7 @@ export class AskCards {
     const n = w.questions.length, many = n > 1;
     const last = many ? n : n - 1;
     const step = Math.min(q.step, last);
-    const links = [...(opts.links ?? []), ...(opts.terminal !== false ? [this.terminalLink(ask)] : [])];
-    const out = [headStrip({ who: opts.who, links })];
+    const out = [headStrip({ who: opts.who, links: [this.terminalLink(ask)] })];
     if (many) {
       out.push({ key: "title", kind: "title", text: `${n} questions` });
       out.push({ key: "steps", kind: "controls", align: "start", ctls: [...w.questions.map((qq, i) => ({ label: qq.header || `Question ${i + 1}`, i })), { label: "Submit", i: n }]
@@ -207,7 +202,7 @@ export class AskCards {
         label: o.name, desc: o.description, tag: o.recommended ? "Recommended" : null, fn: () => this.pick(ask, step, k) }));
       out.push({ key: `q${step}-other`, kind: "option", gap: 2, on: q.other[step] !== null, multi: qq.multi, label: "Other…", fn: (cx) => this.openOther(ask, step, cx) });
       if (q.other[step] !== null) out.push({ key: `q${step}-box`, kind: "input", gap: 2, indent: 32, state: q.boxes[step] ?? null, placeholder: "Your answer" });
-      out.push({ key: `q${step}-chat`, kind: "option", gap: 2, label: "Chat about this", desc: opts.chatHint ?? "Or type your answer below.",
+      out.push({ key: `q${step}-chat`, kind: "option", gap: 2, label: "Chat about this", desc: "Or type your answer below.",
         fn: (cx) => { this.drop(ask); this.host.reply(ask, chatAbout(), cx); this.host.chatAbout(ask, cx); } });
       if (many && step < n - 1) out.push({ key: `next${step}`, kind: "controls", align: "end", gap: 4, ctls: [{ id: `q-next-${id}-${step}`, label: "Next", look: "plain", fn: () => this.go(ask, step + 1) }] });
     }

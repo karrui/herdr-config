@@ -1,4 +1,4 @@
-// Agents parked behind a chat pane (the pane-chat switch), known by their core label
+// Agents parked behind a chat pane (the pane-sandbox switch), known by their core label
 // herdr.chat=<chat pane>. Herdr lists an agent through its
 // pane, so an agent whose terminal is parked while its chat shows drops out of agents(), tab
 // and space status. Mods that list agents add these back, as the chat pane's agent.

@@ -1,14 +1,14 @@
-// A card in the conversation (DECISIONS, Chat: question/permission/plan/secret cards sit in
+// A card in the conversation (DECISIONS, Chat: question/permission/plan cards sit in
 // the timeline where they appeared and scroll with it). The timeline is a virtual list, whose
 // rows take no handlers, so a card is drawn as a run of strips, one list row each, that look
 // like one card (the first has its top edge, the last its bottom). A strip is one line of
 // things to press at most: the list says which strip was pressed (on_item_click) and the press
 // says where along it (hit()), with each control's drawn width measured outside the list
 // (measure()). A strip: { key, kind, gap (px above it), ... }:
-//   head: { who, dot, tone (who's color), links: [ctl] }   who asks, quiet links at the right
+//   head: { who, links: [ctl] }                            who asks, quiet links at the right
 //   title / text: { text, tone ("dim" | "muted" | "red" | "fg") }
 //   detail: { lines, clip (px it folds to, or null) }      what is asked for, in a box
-//   controls: { align ("start" | "end"), lead (words before), ctls: [ctl] }
+//   controls: { align ("start" | "end"), ctls: [ctl] }
 //   option: { on, multi, num, label, tag, desc, fn }       a whole-width choice
 //   review: { label, answer, missing, fn }                 an answer to check, opens its question
 //   input: { state, indent, placeholder }                  a box to type in (native: no handler)
@@ -61,8 +61,8 @@ function body(t, s, pre) {
     case "head":
       return h_flex().w_full().min_h(18).gap(LINK_GAP).items_center()
         .child(h_flex().flex_1().min_w(0).gap(8).items_center()
-          .child(div().size(8).flex_none().rounded(4).bg(s.dot ?? red()))
-          .child(div().min_w(0).truncate().text_size(TEXT.label).font_medium().text_color(s.dot ? t.muted : red()).child(s.who)))
+          .child(div().size(8).flex_none().rounded(4).bg(red()))
+          .child(div().min_w(0).truncate().text_size(TEXT.label).font_medium().text_color(red()).child(s.who)))
         .when((s.links ?? []).length > 0, (el) => el.child(h_flex().flex_none().gap(LINK_GAP).items_center().children(s.links.map((c) => ctlEl(t, c, pre)))));
     case "title":
       return div().min_w(0).text_size(TEXT.body).font_medium().text_color(t.foreground).child(s.text);
@@ -75,7 +75,6 @@ function body(t, s, pre) {
     case "controls":
       return h_flex().w_full().gap(s.ctls.every((c) => c.look === "pill") ? GAPS.pill : GAPS.controls).items_center()
         .when(s.align === "end", (el) => el.justify_end())
-        .when(Boolean(s.lead), (el) => el.child(div().flex_none().pr(2).text_size(TEXT.label).text_color(t.dim).child(s.lead)))
         .children(s.ctls.map((c) => ctlEl(t, c, pre)));
     case "option": {
       const mark = s.num != null
@@ -130,7 +129,7 @@ export function hit(s, x, inner, widths) {
   if (s.kind === "controls") {
     const gap = s.ctls.every((k) => k.look === "pill") ? GAPS.pill : GAPS.controls;
     if (s.align === "end") c = run(s.ctls, gap, true, inner.right);
-    else c = run(s.ctls, gap, false, inner.left + (s.lead ? (widths.get(`lead:${s.lead}`) ?? s.lead.length * 7 + 2) + gap : 0));
+    else c = run(s.ctls, gap, false, inner.left);
   }
   return c && !c.disabled && c.fn ? c : null;
 }
@@ -144,13 +143,10 @@ export function measure(t, strips, widths, onChange) {
   const ctls = [];
   for (const s of strips) {
     if (s.kind === "head") ctls.push(...(s.links ?? []));
-    if (s.kind === "controls") {
-      ctls.push(...s.ctls);
-      if (s.lead) ctls.push({ id: `lead:${s.lead}`, lead: s.lead });
-    }
+    if (s.kind === "controls") ctls.push(...s.ctls);
   }
   return div().absolute().top(0).left(0).h(0).overflow_hidden().opacity(0)
     .child(h_flex().items_start().children(ctls.map((c) => div().id(`mwb-${c.id}`).flex_none()
       .on_size_change((size, cx) => { if (widths.get(c.id) !== size.width) { widths.set(c.id, size.width); onChange?.(cx); } })
-      .child(c.lead ? div().flex_none().pr(2).text_size(TEXT.label).child(c.lead) : ctlEl(t, c, "mw-")))));
+      .child(ctlEl(t, c, "mw-")))));
 }

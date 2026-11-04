@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Restarts a chat's agent with another argv (model, effort or agent), parked behind the same
 # chat pane, through agent/launch: sandboxed when the old one was, with Herdr's instructions.
-# Stands in for Shepherdr's coordinator/restart.sh (agent.js restart()). Prints the new address.
+# Called by agent.js restart(). Prints the new address.
 # usage: HERDR_RESTART_CHAT=<chat pane> [HERDR_RESTART_RESUME=1] restart.sh <old address> <argv as JSON>
 #   HERDR_RESTART_RESUME=1: argv resumes the same conversation, so no handoff is sent.
 set -u

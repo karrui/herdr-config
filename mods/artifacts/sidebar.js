@@ -1,5 +1,5 @@
-// An artifact inside the Artifacts sidebar (the person's decision: drill in, same pane, like a
-// task's chat inside the Tasks panel). The layout's "artifacts" stack holds the list
+// An artifact inside the Artifacts sidebar (the person's decision: drill in, same pane). The
+// layout's "artifacts" stack holds the list
 // ("artifacts-list", this mod) and the view ("artifacts-view"): a header (this mod with props
 // { head: true }: ‹ Artifacts back to the list, the title and version) over a block that shows
 // the artifact's own mod ("artifacts-view-body"). Which artifact: shared "artifacts.view" =

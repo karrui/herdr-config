@@ -2,8 +2,8 @@
 """herdr-artifact: Herdr's artifacts, the one way to make and change them.
 
 An artifact is a tiny Herdr mod (main.js, maybe more .js and .svg files) an agent writes to show
-the person something: a report, a dashboard, a form, a small tool. It belongs to one folder, like
-a task: the repo root in git (a linked worktree counts as its main repo), else the folder itself.
+the person something: a report, a dashboard, a form, a small tool. It belongs to one folder: the
+repo root in git (a linked worktree counts as its main repo), else the folder itself.
 Each folder's artifacts are listed in ~/.herdr/artifacts/<slug>.json on the machine where the
 folder lives; every version's files are kept in ~/.herdr/artifacts/files/<id>/v<n>/ (the last 20).
 The current version is installed as the mod mods/art-<id>/ of the Herdr app on that machine (a
@@ -62,7 +62,7 @@ def git(cwd, *args):
     return r.returncode == 0, r.stdout.strip()
 
 
-# ---- where a folder's artifacts live (the same rule as herdr-task) ----------------------------
+# ---- where a folder's artifacts live ------------------------------------------------------------
 
 def locate(path):
     path = os.path.realpath(os.path.expanduser(path or os.getcwd()))
@@ -158,27 +158,8 @@ def find_anywhere(ref):
 # ---- who is publishing --------------------------------------------------------------------
 
 def me():
-    """This terminal's address and its task, from herdr-core: {terminal, task}."""
-    t = os.environ.get("HC_TERMINAL_ID") or None
-    task = None
-    if t:
-        r = run(["hc", "ls", "--json"])
-        try:
-            rows = json.loads(r.stdout)
-            rows = rows if isinstance(rows, list) else rows.get("terminals", [])
-        except ValueError:
-            rows = []
-        row = next((x for x in rows if x.get("address") == t), None)
-        key = (row or {}).get("labels", {}).get("herdr.task")
-        if key and "#" in key:
-            slug, n = key.rsplit("#", 1)
-            try:
-                with open(os.path.join(HOME, ".herdr", "tasks", slug + ".json")) as f:
-                    prefix = json.load(f).get("prefix")
-                task = f"{prefix}-{n}" if prefix else f"#{n}"
-            except (OSError, ValueError):
-                task = f"#{n}"
-    return {"terminal": t, "task": task}
+    """This terminal's address, from herdr-core: {terminal}."""
+    return {"terminal": os.environ.get("HC_TERMINAL_ID") or None}
 
 
 # ---- files -------------------------------------------------------------------------------
@@ -624,7 +605,7 @@ def review(specs):
 # ---- commands ----------------------------------------------------------------------------
 
 def public(a):
-    return {k: a.get(k) for k in ("id", "title", "version", "folder", "publisher", "task", "at", "created", "versions", "files")}
+    return {k: a.get(k) for k in ("id", "title", "version", "folder", "publisher", "at", "created", "versions", "files")}
 
 
 def cmd_publish(o):
@@ -646,11 +627,7 @@ def cmd_publish(o):
                     break
             art = {"id": aid, "created": now(), "versions": []}
             s.data["artifacts"].insert(0, art)
-        # A task's agent names its task first: "HAT-2: Coverage by package".
-        task = o.task or art.get("task") or who["task"]
-        if task and not title.upper().startswith(task.upper()):
-            title = f"{task}: {title}"
-        v = (art["versions"][-1]["v"] if art["versions"] else 0) + 1
+        v =(art["versions"][-1]["v"] if art["versions"] else 0) + 1
         draft = dict(art, title=title, version=v, folder=loc["folder"])
         err, warnings = check(src, files, draft)
         if err:
@@ -660,7 +637,7 @@ def cmd_publish(o):
         keep = os.path.join(FILES, art["id"], f"v{v}")
         copy_files(src, files, keep)
         at = now()
-        art.update(title=title, version=v, folder=loc["folder"], publisher=who["terminal"], task=task, at=at, files=files)
+        art.update(title=title, version=v, folder=loc["folder"], publisher=who["terminal"], at=at, files=files)
         art["versions"].append({"v": v, "at": at, "publisher": who["terminal"], **({"note": o.note} if o.note else {})})
         for old in art["versions"][:-KEEP]:
             shutil.rmtree(os.path.join(FILES, art["id"], f"v{old['v']}"), ignore_errors=True)
@@ -858,38 +835,11 @@ def live_terminals():
     return {x.get("address") for x in rows if x.get("state", "live") == "live"}
 
 
-def task_worker(task, folder, live):
-    """The live worker of a task ("HERD-47") of this folder, or None."""
-    prefix, _, n = (task or "").rpartition("-")
-    if not prefix or not n.isdigit():
-        return None
-    tdir = os.path.join(HOME, ".herdr", "tasks")
-    for f in sorted(os.listdir(tdir)) if os.path.isdir(tdir) else []:
-        if not f.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(tdir, f)) as fh:
-                d = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if d.get("folder") != folder or (d.get("prefix") or "").upper() != prefix.upper():
-            continue
-        t = next((x for x in d.get("tasks") or [] if str(x.get("id")) == n), None)
-        for ag in reversed((t or {}).get("agents") or []):
-            if ag.get("role") not in ("reviewer",) and ag.get("address") in live:
-                return ag["address"]
-    return None
-
-
-def keeper(a, folder):
-    """Who keeps an artifact: the agent that published it, while it runs; else its task's worker."""
-    live = live_terminals()
-    if a.get("publisher") in live:
+def keeper(a):
+    """Who keeps an artifact: the agent that published it, while it runs."""
+    if a.get("publisher") in live_terminals():
         return a["publisher"], "made it"
-    w = task_worker(a.get("task"), folder, live)
-    if w:
-        return w, f"works on {a['task']}"
-    raise Fail("The agent that made this artifact has ended" + (f", and {a['task']} has no agent running" if a.get("task") else "") + ".")
+    raise Fail("The agent that made this artifact has ended.")
 
 
 def attr(s):
@@ -973,7 +923,7 @@ def cmd_note(o):
     with Store(loc, write=False) as s:
         a = s.find(o.id)
     v = o.version or a["version"]
-    to, why = keeper(a, loc["folder"])
+    to, why = keeper(a)
     on = f' on="{attr(o.spot)}"' if o.spot else ""
     lines = [o.text.strip()]
     if v != a["version"]:
@@ -1094,20 +1044,6 @@ def cmd_guide(_o):
 
 # ---- another machine ------------------------------------------------------------------------
 
-# Shepherdr's installer holds every copy of the helpers to other machines (this file, removed by
-# `shepherdr doctor` once the install is whole), as herdr-task's base.sync_held.
-SYNC_HOLD = os.path.join(HOME, ".herdr", "sync-hold")
-
-
-def sync_held():
-    """Why copies to other machines wait now (the hold's first line), or None."""
-    try:
-        with open(SYNC_HOLD) as f:
-            return f.readline().strip() or "held by Shepherdr's installer"
-    except OSError:
-        return None
-
-
 def remote(machine, argv):
     """Runs herdr-artifact on the machine that holds the folder, installing it there first."""
     me_ = os.path.realpath(__file__)
@@ -1123,10 +1059,6 @@ def remote(machine, argv):
         installed = False
 
     def install():
-        held = sync_held()
-        if held:
-            raise Fail(f"herdr-artifact isn't current on {machine}, and copies to other machines wait: {held}. "
-                       "Run `shepherdr doctor` once the install is whole.")
         r = subprocess.run(["hc", "file", "write", "--on", machine, target], input=body, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if r.returncode != 0:
             raise Fail(f"Couldn't install herdr-artifact on {machine}: {r.stderr.decode().strip()}")
@@ -1135,8 +1067,7 @@ def remote(machine, argv):
         with open(mark, "w") as f:
             f.write(digest)
 
-    # Held (sync_held): no copy goes; the copy already there runs.
-    if not installed and not sync_held():
+    if not installed:
         install()
     call = ["hc", "exec", "--on", machine, "--", "sh", "-c", 'exec "$HOME/.local/bin/herdr-artifact" "$@"', "herdr-artifact", *argv]
     r = run(call)
@@ -1175,14 +1106,13 @@ def main():
     c.add_argument("--title", help="what it is, for people (needed for a new one)")
     c.add_argument("--id", help="an artifact's id: publish a new version of it")
     c.add_argument("--folder", help="the folder it belongs to (default: here)")
-    c.add_argument("--task", help="the task it's for (default: this agent's task)")
     c.add_argument("--note", help="what changed in this version")
     c = cmd("update", cmd_publish, "publish a new version of an artifact (publish --id)")
     c.add_argument("id")
     c.add_argument("dir")
     c.add_argument("--title")
     c.add_argument("--note")
-    c.set_defaults(folder=None, task=None)
+    c.set_defaults(folder=None)
     c = cmd("list", cmd_list, "a folder's artifacts, newest first")
     c.add_argument("--folder")
     c.add_argument("--all", action="store_true", help="every folder's on this machine")

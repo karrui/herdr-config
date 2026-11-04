@@ -2,7 +2,7 @@
 // form). Each folder's list is ~/.herdr/artifacts/<slug>.json on the machine the folder is on,
 // changed only through the herdr-artifact CLI (bin/herdr-artifact), which agents use. This panel
 // shows them: a click opens one inside this sidebar (drill in, ‹ Artifacts back; see sidebar.js);
-// a layout without that view opens it full window (artview.js), as chat cards and Ctrl+K do.
+// a layout without that view opens it full window (artview.js), as chat cards do.
 // A right-click opens it full window, shows its files in Finder, or deletes it. An artifact on another machine is pulled into this app
 // (art-<machine>-<id>) as it opens. With All, every folder's show, each with its folder.
 //
@@ -46,8 +46,8 @@ export default class Artifacts extends View {
     this.error = null;
     this.all = false;
     this.opening = null;
-    // The search field (Shepherdr's "Filter artifacts"): by title or the task that made them, as
-    // you type. Esc clears it; F gets to it while the list holds the keyboard.
+    // The search field (Shepherdr's "Filter artifacts"): by title or who made them, as you type.
+    // Esc clears it; F gets to it while the list holds the keyboard.
     this.query = InputState.new({ placeholder: "Filter artifacts" });
     this.query.on("change", (_e, cx) => cx.notify());
     this.query.on("focus", (_e, cx) => { this.searching = true; cx.notify(); });
@@ -123,7 +123,7 @@ export default class Artifacts extends View {
     this.loaded = key;
     this.items = items.filter((a) => a?.id);
     this.error = null;
-    // Pane headers show an open artifact by its title (mods/pane-chat reads this).
+    // Each artifact's title by its mod, for the viewer's toolbar (mods/chat-image artifact-bar.js).
     const titles = { ...(shared("artifacts.titles") ?? {}) };
     let changed = false;
     for (const a of this.items) {
@@ -195,15 +195,14 @@ export default class Artifacts extends View {
         .children(shown.map((a) => this.row(a, t))));
   }
 
-  // An artifact the search finds: by its title, the task that made it, who made it, or (with
-  // All) its folder.
+  // An artifact the search finds: by its title, who made it, or (with All) its folder.
   found(a, q) {
     const m = this.store?.machine;
     const who = a.publisher && agents().find((x) => x.address === (m ? `${m}/${a.publisher}` : a.publisher));
-    return matches(q, a.title, a.task, who?.program?.name, this.all ? folderName(a.folder) : null, this.all ? a.folder : null);
+    return matches(q, a.title, who?.program?.name, this.all ? folderName(a.folder) : null, this.all ? a.folder : null);
   }
 
-  // The search field, as the Tasks panel's: a magnifier, the box, and at its end F (its key)
+  // The search field: a magnifier, the box, and at its end F (its key)
   // while empty, or an X that clears it.
   searchField(t) {
     const q = this.query.value();
@@ -274,7 +273,7 @@ export default class Artifacts extends View {
         .child(div().min_w(0).truncate().child(a.title))
         .child(h_flex().min_w(0).gap(8).text_size(TEXT.label).text_color(t.dim)
           .child(div().flex_1().min_w(0).truncate().child(busy ? "Opening…" : open ? `Open · ${this.detail(a)}` : this.detail(a)))
-          // With All: its folder, dimmed, at the right (as task rows show where they ran).
+          // With All: its folder, dimmed, at the right.
           .when(this.all && Boolean(a.folder), (el) => el.child(div().flex_none().max_w(140).truncate().child(folderName(a.folder))))));
   }
 

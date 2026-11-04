@@ -139,13 +139,10 @@ const CODEX_INJECTED = /^\s*(# AGENTS\.md instructions|<(environment_context|use
 
 // What the person typed, without what the CLI or herdr-core wrapped around it.
 // A message another agent sent with `hc send` comes as <hc from="t3 name">text</hc>.
-// Reactions travel as Herdr tag lines (taught to agents by session-note.sh):
+// Reactions travel as Herdr tag lines (taught to agents by agent/instructions.md):
 //   the person  <hc from="person" reaction="👍" to="first words of the message"/>   (or reaction-removed=)
 //   the agent   <hc react="👀" to="first words of the person's message"/>   on a line of its own
 //               <hc no-reply/>   a reply that is only this shows nothing (<no-reply> too)
-// Task news Herdr sends an Assistant (herdr-task's news_pass) is one <herdr-news> tag per line:
-// each is a news item of its own ({ kind: "news", ref, event, text }), shown as a slim line in
-// an Assistant's chat (mods/chat newsLines()); the tags themselves never show.
 // None of these lines show in the chat; the reactions show on the messages they name.
 const TAG = /^<hc((?:\s+[\w-]+="[^"]*")*)\s*\/>$/;
 function tagOf(line) {
@@ -189,14 +186,6 @@ function replyOf(t) {
   return null;
 }
 
-// Task news in a message: [{ ref, event, text }], one per <herdr-news task=… event=…> tag.
-const unattr = (v) => String(v ?? "").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
-function newsOf(t) {
-  return [...String(t).matchAll(/<herdr-news\b([^>]*)>([\s\S]*?)<\/herdr-news\s*>/g)].map(([, a, text]) => ({
-    ref: unattr(/\btask="([^"]*)"/.exec(a)?.[1]), event: unattr(/\bevent="([^"]*)"/.exec(a)?.[1]), text: text.trim() })).filter((n) => n.ref && n.event);
-}
-
-// A message's words, with the task news it carries (news: shown as their own lines).
 // The annotations' list as notesTag() writes it: "1. "quote"" (or "1. Picture: paths"), then
 // "   Their comment: …" when there is one.
 function noteItems(body) {
@@ -210,14 +199,14 @@ function noteItems(body) {
   }).filter((x) => x.quote || x.comment);
 }
 
+// A message's words, with the annotations it carries.
 function cleanUser(t) {
-  const news = newsOf(t);
   let u = cleanWords(t);
   // Annotations (main.js notesTag()): hidden like Herdr's other tags, counted under the words,
   // each { quote, comment } to show when the count is clicked.
   const tag = /<herdr-annotations n="(\d+)">\n?([\s\S]*?)<\/herdr-annotations>/.exec(t);
   if (tag) u = { ...(u ?? { text: "" }), notes: Number(tag[1]), noteItems: noteItems(tag[2]) };
-  return news.length ? { ...(u ?? { text: "" }), news } : u;
+  return u;
 }
 
 function cleanWords(t) {
@@ -235,9 +224,7 @@ function cleanWords(t) {
   }
   if (INJECTED.test(t)) return null;
   t = t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").replace(/<\/?pasted_content\b[^>]*>\n?/g, "")
-    // Task mentions (#4) come with a tag line each for the agent; the chat shows the "#4".
-    .replace(/<hc task="[^"]*"[^>]*>[\s\S]*?<\/hc>\n?/g, "")
-    // Herdr's own tags for the agent (<herdr-news>, <herdr-github>, ...), wherever they are in a
+    // Herdr's own tags for the agent (<herdr-annotations>, ...), wherever they are in a
     // message: never shown, the words typed around them are.
     .replace(/<(herdr-[\w-]+)\b[^>]*>[\s\S]*?<\/\1\s*>\n?/g, "").replace(/<herdr-[\w-]+\b[^>]*\/>\n?/g, "").trim();
   if (!t) return null;
@@ -246,7 +233,7 @@ function cleanWords(t) {
   if (hc) {
     const from = /\bfrom="([^"]*)"/.exec(hc[1])?.[1];
     // An artifact's form (mods/artifacts) says which one: "Message from Coverage". Else the
-    // whole from= ("t7 herd-12-fix"): the chat names the sender from it (main.js sender()).
+    // whole from= ("t7 reviewer"): the chat names the sender from it (main.js sender()).
     const title = from === "artifact" ? /\btitle="([^"]*)"/.exec(hc[1])?.[1] : null;
     return from ? { text: hc[2].trim(), from: title || from } : null;
   }
@@ -269,8 +256,8 @@ function claudeUser(c) {
   const parts = c.filter((b) => b?.type === "text" && typeof b.text === "string")
     .map((b) => cleanUser(images ? b.text.replace(/\[Image #\d+\]\s*/g, "") : b.text)).filter(Boolean);
   if (!parts.length) return images ? { text: "", images } : null;
-  const reactions = parts.flatMap((p) => p.reactions ?? []), news = parts.flatMap((p) => p.news ?? []);
-  return { text: parts.map((p) => p.text).filter(Boolean).join("\n\n"), from: parts[0].from, images, reactions, news, notes: parts[0].notes, noteItems: parts[0].noteItems,
+  const reactions = parts.flatMap((p) => p.reactions ?? []);
+  return { text: parts.map((p) => p.text).filter(Boolean).join("\n\n"), from: parts[0].from, images, reactions, notes: parts[0].notes, noteItems: parts[0].noteItems,
     replyTo: parts[0].replyTo, quoted: parts[0].quoted, rest: parts[0].rest };
 }
 
@@ -440,7 +427,6 @@ export function pictures(text) {
 //   (images: how many were sent; paths: where the ones Claude Code read from files came from;
 //   replyTo: the start of the message it answers)
 //   { kind: "mark", id }  (a message of only reactions: ends the turn, shows nothing)
-//   { kind: "news", id, at, ref, event, text }  (one line of task news Herdr told an Assistant)
 //   { kind: "tools", id, steps: [{ id, kind, line, out? }] }  (calls in a row, between texts;
 //                                             out: where the call's result line is)
 //   { kind: "ask", id, text, closed? }  (the agent's own question tool; closed once its dialog
@@ -516,8 +502,6 @@ export class Conversation {
   user(id, u) {
     this.waiting = false;
     for (const r of u?.reactions ?? []) this.react("you", r);
-    // Task news: an item per line, at the moment Herdr told it.
-    (u?.news ?? []).forEach((n, i) => this.push({ kind: "news", id: `${id}:n${i}`, at: u.at, ...n }));
     // Only reactions: nothing to show, but the agent's turn before it is over (its actions and
     // pills stay while it answers, and its answer is a turn of its own).
     if (!u?.text && !u?.images && !u?.notes) { if (u?.reactions?.length) this.push({ kind: "mark", id }); return; }
@@ -595,7 +579,7 @@ export class Conversation {
     for (const line of String(text).split("\n")) {
       const a = tagOf(line);
       if (a?.react) this.react("agent", { emoji: a.react, to: a.to ?? "", on: true });
-      // <no-reply> too (an Assistant's answer to task news it has nothing to add to).
+      // <no-reply> too.
       else if (!(a && "no-reply" in a) && !/^<hc\s+no-reply\s*\/>/.test(line.trim()) && !/^<\/?no-reply\b/.test(line.trim())) out.push(line);
     }
     return out.join("\n").trim();

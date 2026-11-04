@@ -101,9 +101,7 @@ export function artifactBar(view, a, handle) {
   const stepper = kept.length > 1 || older;
   const marking = shared(MARKUP)?.mod === a.mod && shared(MARKUP)?.where === "viewer";
   const busy = view.art?.busy;
-  // In a modal (opened from a dialog) the bar sits on the modal's own surface, without "Open in
-  // the sidebar": the dialog under it covers the sidebar.
-  return h_flex().id("bar").size_full().pl(16).pr(8).gap(2).items_center().bg(a.modal ? t.popover : `${t.background}f2`)
+  return h_flex().id("bar").size_full().pl(16).pr(8).gap(2).items_center().bg(`${t.background}f2`)
     .track_focus(handle)
     .child(h_flex().flex_1().min_w(0).gap(8).items_center().text_size(TEXT.body)
       .child(svg("mods/artifacts/artifacts.svg").size(14).flex_none().text_color(t.muted))
@@ -124,7 +122,7 @@ export function artifactBar(view, a, handle) {
     .child(textBtn("markup", "mods/chat-image/markup.svg", marking ? "Done" : "Mark up", null,
       () => setShared(MARKUP, marking ? null : { mod: a.mod, where: "viewer", at: Date.now() }), marking, t))
     .child(rule(t))
-    .when(!a.modal && hasSidebarView(), (el) => el
+    .when(hasSidebarView(), (el) => el
       .child(iconBtn("sidebar", "mods/chat-image/panel-right.svg", "Open in sidebar", () => {
         if (marking) setShared(MARKUP, null);
         const done = showInSidebar({ ...a, latest });

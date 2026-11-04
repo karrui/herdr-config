@@ -1,7 +1,5 @@
-// "Open in the sidebar" for the artifact viewer, and Ctrl+K's artifact when no chat pane shows
-// (mods/jump): the same steps as mods/artifacts/sidebar.js (mods can't import each other's files;
-// keep the two in step). Shared: the source is lib/artifact-sidebar.js; edit it, never a mod's
-// copy, then run bin/sync-shared. The layout's "artifacts" stack
+// "Open in the sidebar" for the artifact viewer: the same steps as mods/artifacts/sidebar.js
+// (mods can't import each other's files; keep the two in step). The layout's "artifacts" stack
 // shows "artifacts-view", whose body block ("artifacts-view-body") gets the artifact's mod;
 // shared "artifacts.view" says which artifact its header names.
 

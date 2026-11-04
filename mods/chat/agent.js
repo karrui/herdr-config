@@ -1,13 +1,10 @@
 // What the agent runs on (agent, model, effort, speed, context), for the line under the
 // message box, and restarting it with other choices. The log says what it really runs on
 // (log.js `meta`); its arguments and settings fill in what the log doesn't say.
-// Restarting reuses Herdr's own ways: `herdr-task switch` for a task's agent, else the
-// coordinator's restart.sh. The same agent resumes its conversation; another gets a handoff.
-// Either way the new agent starts parked behind this chat (core label herdr.chat).
-// Shared: the source is lib/agent.js; bin/sync-shared copies it into each mod in lib/COPIES.
-// Edit lib/agent.js, never a mod's copy, then run bin/sync-shared.
+// Restarting goes through restart.sh: the same agent resumes its conversation; another gets a
+// handoff. The new agent starts parked behind this chat (core label herdr.chat).
 
-import { exec, hc, appHome } from "herdr";
+import { exec, appHome } from "herdr";
 
 export const NAMES = { claude: "Claude Code", codex: "Codex" };
 
@@ -269,10 +266,10 @@ export function argvFor(pick, old) {
     a.push("--settings", JSON.stringify({ fastMode: Boolean(pick.fast) }));
     if (pick.perm === "bypassPermissions") a.push("--dangerously-skip-permissions");
     else if (pick.perm) a.push("--permission-mode", pick.perm === "manual" ? "default" : pick.perm);
-    if (same && old.session) return { argv: [...a, "--resume", old.session], resume: true, base: a };
-    return { argv: a, resume: false, base: a };
+    if (same && old.session) return { argv: [...a, "--resume", old.session], resume: true };
+    return { argv: a, resume: false };
   }
-  // Codex runs its commands outside hc without --no-daemon (as herdr-task and restart.sh add).
+  // Codex runs its commands outside hc without --no-daemon.
   const a = [...flags, "--no-daemon"];
   if (pick.model) a.push("-m", pick.model);
   if (pick.effort) a.push("-c", `model_reasoning_effort="${pick.effort}"`);
@@ -280,8 +277,8 @@ export function argvFor(pick, old) {
   if (pick.perm === "full") a.push("--dangerously-bypass-approvals-and-sandbox");
   else if (pick.perm === "read-only") a.push("-s", "read-only", "-a", "on-request");
   else if (pick.perm) a.push("-s", "workspace-write", "-a", "on-request");
-  if (same && old.session) return { argv: ["codex", "resume", ...a, old.session], resume: true, base: ["codex", ...a] };
-  return { argv: ["codex", ...a], resume: false, base: ["codex", ...a] };
+  if (same && old.session) return { argv: ["codex", "resume", ...a, old.session], resume: true };
+  return { argv: ["codex", ...a], resume: false };
 }
 
 // The conversation's id, from its log's file name.
@@ -293,19 +290,6 @@ export function sessionOf(kind, path) {
 // Restarts the agent `t` (hc get's record) with `argv`, parked behind chat pane `pane`.
 // Resolves with the new agent's address.
 export async function restart(t, built, pane) {
-  const task = t.labels?.["herdr.task"];
-  if (task) {
-    // herdr-task resumes its own session when the agent stays the same.
-    const r = await exec("herdr-task", ["switch", task, "--folder", t.foreground?.cwd ?? t.cwd, "--argv", JSON.stringify(built.base), "--json"]);
-    let out = {};
-    try { out = JSON.parse(r.stdout || "{}"); } catch {}
-    if (r.code !== 0 || !out.terminal) throw new Error((r.stderr || r.stdout).trim() || "herdr-task switch failed");
-    const origin = t.labels?.["herdr.chat.origin"] || t.address;
-    await hc(["label", out.terminal, `herdr.chat=${pane}`, `herdr.chat.origin=${origin}`]);
-    // It started in the tab: park it behind this chat, as the Chat switch does.
-    await exec("herdr-app", ["do", "terminal.park", "--terminal", out.terminal]);
-    return out.terminal;
-  }
   const env = `HERDR_RESTART_CHAT="$1"${built.resume ? " HERDR_RESTART_RESUME=1" : ""}`;
   const r = await exec("sh", ["-c", `${env} bash "$2" "$3" "$4"`, "x", pane, `${appHome()}/mods/chat/restart.sh`, t.address, JSON.stringify(built.argv)]);
   const addr = r.stdout.trim().split("\n").pop();

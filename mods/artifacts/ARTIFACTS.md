@@ -21,11 +21,10 @@ herdr-artifact rm <id>
   `publish`. The last 20 versions are kept; the person can step back through them. An open copy
   reloads by itself.
 - The person can mark it up: point at a spot or drag over an area and write what should change.
-  It reaches you (or, once you've ended, your task's agent) as
+  It reaches you as
   `<hc from="artifact" id=… version=… title=… on="the 180×80 px area at x 120–300, …">note</hc>`,
   with a path to a picture of the panel, the spot outlined. Change it and `update`.
-- It belongs to the folder you run in (the repo root), like tasks; `--folder` picks another.
-  A task's agent gets its task in front of the title ("HAT-2: Coverage by package").
+- It belongs to the folder you run in (the repo root); `--folder` picks another.
 - Don't open it on the person's screen yourself; tell them it's there.
 
 ## Writing one

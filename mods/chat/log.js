@@ -32,7 +32,7 @@ true`;
 // Reads a log on the agent's machine, sending back only what the chat shows. Each kept line
 // comes back as "<offset>\t<kind>\t<data>": J a JSON line (images emptied), R a tool result's
 // ids only (outputs stay in the file, fetched when a row is opened), T a call too big to
-// send (its tool name). Lines the chat doesn't show (bookkeeping, thinking, requests) stay.
+// send (its tool name). Lines the chat doesn't show (bookkeeping, sealed reasoning, requests) stay.
 //   log tail <file> <from>            what was added since byte <from>: "T <size> <from> <end>"
 //   log page <file> <before> <want>   about <want> messages ending at byte <before> (or the
 //                                     last whole line), going back in growing chunks:
@@ -92,7 +92,8 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
   if (index(head, mine)) {
     if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\"")) || index(head, "\"subtype\":\"turn_duration\"") || index(head, "\"subtype\":\"compact_boundary\"") || index(head, "\"subtype\":\"api_error\"")) keep = 1
   } else if (index(head, "\"type\":\"response_item\"")) {
-    if (index(head, "\"type\":\"message\"") || index(head, "_call\"")) keep = 1
+    # Reasoning only when it says something: most is encrypted, its summary empty.
+    if (index(head, "\"type\":\"message\"") || index(head, "_call\"") || (index(head, "\"type\":\"reasoning\"") && index(line, "\"summary\":[{"))) keep = 1
   } else if (index(head, "\"type\":\"event_msg\"")) {
     if (index(head, "\"task_complete\"") || index(head, "\"turn_aborted\"") || index(head, "\"token_count\"") || index(head, "\"task_started\"") || index(head, "\"ContextCompaction\"")) keep = 1
   } else if (index(head, "\"type\":\"turn_context\"") || index(head, "\"type\":\"queue-operation\"")) {
@@ -103,6 +104,7 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
   if (count) next
   gsub(/"data":"[^"]*"/, "\"data\":\"\"", line)
   gsub(/"image_url":"data:[^"]*"/, "\"image_url\":\"\"", line)
+  if (codex && index(head, "\"type\":\"reasoning\"")) gsub(/"encrypted_content":"[^"]*"/, "\"encrypted_content\":\"\"", line)
   big = (index(line, "\"tool_use\"") || index(head, "_call\"")) ? 32768 : 262144
   if (length(line) > big) {
     nm = ""
@@ -307,6 +309,21 @@ const short = (p) => {
 export const whole = (s) => String(s).replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
 const clip = (s, n = 90) => { s = String(s ?? "").replace(/\s+/g, " ").trim(); return whole(s.length > n ? s.slice(0, n - 1) + "…" : s); };
 
+// A compaction in words: "Context compacted · 838k → 30k tokens", "Context compacted
+// automatically at 369k tokens" (an automatic one often says only its size before).
+function compactWords(auto, pre, post) {
+  const k = (n) => (n >= 999500 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.max(1, Math.round(n / 1000))}k`);
+  const how = auto ? "Context compacted automatically" : "Context compacted";
+  return pre > 0 && post > 0 ? `${how} · ${k(pre)} → ${k(post)} tokens` : pre > 0 ? `${how} at ${k(pre)} tokens` : how;
+}
+// What a Codex reasoning summary is on about, for the working line: its bold heading, else its
+// first sentence.
+function gist(text) {
+  const t = String(text ?? "").trim();
+  const head = t.match(/^\*\*([^*\n]+)\*\*/)?.[1];
+  return clip(head ?? t.replace(/[*_`#]/g, "").split(/(?<=[.!?])\s/)[0], 60);
+}
+
 // A command that publishes an artifact (mods/artifacts): the chat shows a card for it, found in
 // the artifacts' registry by who published it and when.
 const ARTIFACT = /\bherdr-artifact\b[^\n|;&]*\b(publish|update)\b/;
@@ -454,7 +471,11 @@ function codexStep(name, args) {
   }
   if (name === "web_search" || name === "web.run") return { kind: "web", line: "Searched the web", doing: "Searching the web" };
   if (name === "update_plan") return { kind: "plan", line: "Updated its plan", doing: "Planning" };
-  if (name === "spawn_agent") return { kind: "agent", line: `Asked a helper: ${clip(a.task ?? a.message ?? a.prompt ?? "", 70)}`, doing: "Starting a helper", spawn: clip(a.task ?? a.message ?? a.prompt ?? "a helper", 60) };
+  if (name === "spawn_agent") {
+    // Newer Codex seals the helper's message ("gAAAAA…"): then its task_name says what it's for.
+    const task = a.task ?? [a.message, a.prompt].find((m) => m && !/^gAAAAA/.test(m)) ?? String(a.task_name ?? "").replace(/_/g, " ");
+    return { kind: "agent", line: `Asked a helper: ${clip(task, 70)}`, doing: "Starting a helper", spawn: clip(task || "a helper", 60) };
+  }
   if (name === "wait_agent") return { kind: "agent", line: "Waited for helpers", doing: "Waiting for helpers", waiting: true };
   return { kind: "tool", line: `Used ${name}`, doing: `Using ${name}` };
 }
@@ -480,6 +501,9 @@ export function pictures(text) {
 //                                          is gone: "answered" | "dismissed")
 //   { kind: "error", id, text, retry? }  (retry: the API call is being tried again)
 //   { kind: "turnend", id, at?, stopped? }  (stopped: the person stopped the turn)
+//   { kind: "compacted", id, text, at }  (the context was compacted: how, in words)
+//   { kind: "plan", id, steps: [{ text, status, active? }], text }  (the turn's checklist, its
+//                                             latest state; status: pending | in_progress | completed)
 // `doing` is what it does right now (the last call not answered yet), for the status line.
 // `meta` is what the agent runs on, from its newest lines: { model, effort, speed, used, window }
 // (used: tokens in its context window now; window: that window's size when the log says it;
@@ -514,6 +538,10 @@ export class Conversation {
     // The error row of a request being retried, while it is: updated in place, gone once the
     // agent goes on (resume()), the error itself if it gives up (failed()).
     this.retry = null;
+    // This turn's checklist, updated in place (planned()); and Codex's count of a context just
+    // compacted (token_count), for its divider.
+    this.plan = null;
+    this.recount = null;
   }
 
   retrying(off, text) {
@@ -535,7 +563,19 @@ export class Conversation {
   }
 
   push(item) {
+    // A new turn gets a checklist of its own.
+    if (item.kind === "user" || item.kind === "turnend") this.plan = null;
     this.items.push(item);
+  }
+
+  // The turn's checklist (TodoWrite, update_plan): one card, each update its latest state. The
+  // step under way is what the working line says.
+  planned(off, steps) {
+    const text = steps.map((s) => s.text).join("\n");
+    if (this.plan) Object.assign(this.plan, { steps, text });
+    else this.push(this.plan = { kind: "plan", id: `p${off}`, steps, text });
+    const now = steps.find((s) => s.status === "in_progress");
+    if (!this.open.size) this.doing = clip(now?.active || now?.text, 60) || "Planning";
   }
 
   // Tool calls in a row join the last item when it is a tools row.
@@ -609,12 +649,14 @@ export class Conversation {
       replyTo = u.quoted;
       text = u.rest;
     }
+    // Claude Code writes the /compact line again once it's done, dated from before: once is enough.
+    const compact = /^\/compact\b/.test(text ?? "");
+    if (compact && u.at && this.compactedAt >= u.at) return;
     this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0, noteItems: u.noteItems, bang: u.bang });
     this.doing = null;
     const said = String(text ?? "").replace(/\s+/g, " ").trim();
     if (said) this.queued = this.queued.filter((q) => !said.includes(q.text.replace(/\s+/g, " ").trim()));
-    // (Claude Code writes the /compact line again after it's done, dated from before.)
-    if (/^\/compact\b/.test(text ?? "") && !((this.compactedAt ?? 0) >= (u.at ?? 0))) { this.compacting = true; this.doing = "Compacting conversation"; }
+    if (compact) { this.compacting = true; this.doing = "Compacting conversation"; }
   }
 
   // A task-notification: the helper (or background job) its tool-use-id names is done.
@@ -751,7 +793,12 @@ export class Conversation {
     // A turn ended (written once per turn, also for one no message of yours started, as a
     // helper's report does): the chat folds each turn by these (main.js foldTurns()).
     if (l.type === "system" && l.subtype === "turn_duration") { this.queued = []; this.push({ kind: "turnend", id: `te${off}` }); return; }
-    if (l.type === "system" && l.subtype === "compact_boundary") { this.queued = []; this.compacting = false; this.compactedAt = time(l.timestamp); this.doing = null; return; }
+    if (l.type === "system" && l.subtype === "compact_boundary") {
+      this.queued = []; this.compacting = false; this.compactedAt = time(l.timestamp); this.doing = null;
+      const m = l.compactMetadata ?? {};
+      this.push({ kind: "compacted", id: `cb${off}`, text: compactWords(m.trigger === "auto", m.preTokens, m.postTokens), at: this.compactedAt });
+      return;
+    }
     const said = l.type === "user" ? textOf(l.message?.content) : "";
     // A helper or a background job finished (Claude Code tells the agent so): it's done.
     if (l.type === "user" && l.origin?.kind === "task-notification") { this.finished(said); return; }
@@ -822,6 +869,10 @@ export class Conversation {
             // show-your-work's picture or recording: shown in the chat itself, not as a step.
             const paths = [b.input.path, ...(b.input.compare ? [b.input.compare] : [])].map(String);
             this.push({ kind: "shots", id: `s${off}`, paths, title: String(b.input.title ?? ""), at: time(l.timestamp) });
+          } else if (b.name === "TodoWrite" && Array.isArray(b.input?.todos)) {
+            // Its todo list: the turn's checklist, not a step. (TaskCreate and TaskUpdate say
+            // one task at a time, by ids only their results give: they stay steps.)
+            this.planned(off, b.input.todos.map((x) => ({ text: String(x?.content ?? ""), status: x?.status, active: x?.activeForm })));
           } else {
             if (b.name === "Agent" || b.name === "Task") this.helpers.set(String(b.id), { desc: String(b.input?.description ?? "a helper"), done: false, at: time(l.timestamp) });
             this.step(String(b.id), off, claudeStep(String(b.name ?? ""), b.input ?? {}), b.name === "Agent" || b.name === "Task" ? String(b.id) : null);
@@ -849,6 +900,13 @@ export class Conversation {
       } else if (p.type === "message" && p.role === "assistant") {
         const words = this.agentText((Array.isArray(p.content) ? p.content : []).filter((it) => it?.type === "output_text" && it.text?.trim()).map((it) => it.text.trim()).join("\n\n"));
         if (words) this.push({ kind: "agent", id: `a${off}`, text: words, at: time(l.timestamp) });
+      } else if (p.type === "reasoning") {
+        // Its reasoning's summary ("**Heading**", words under it at times): shown as Claude
+        // Code's thinking is, and its gist on the working line.
+        const parts = (Array.isArray(p.summary) ? p.summary : []).map((s) => String(s?.text ?? "").trim()).filter(Boolean);
+        if (!parts.length) return;
+        this.push({ kind: "thought", id: `th${off}`, text: parts.join("\n\n"), at: time(l.timestamp) });
+        if (!this.open.size) this.doing = gist(parts[parts.length - 1]);
       } else if ((p.type === "function_call" || p.type === "custom_tool_call" || p.type === "local_shell_call") && p.name !== "wait" && p.name !== "sleep") {
         const cid = String(p.call_id ?? p.id ?? `c${off}`);
         // Codex's own questions (Plan mode): answered in its terminal, shown here as asked.
@@ -861,6 +919,11 @@ export class Conversation {
           this.doing = "Asking you something";
           return;
         }
+        // Its checklist: the turn's card, not a step.
+        if (p.name === "update_plan") {
+          const a = typeof p.arguments === "string" ? parse(p.arguments) : p.arguments;
+          if (Array.isArray(a?.plan)) { this.planned(off, a.plan.map((x) => ({ text: String(x?.step ?? ""), status: x?.status }))); return; }
+        }
         const st = codexStep(String(p.name ?? "shell"), p.arguments ?? p.input ?? p.action);
         // Codex's helpers count as running until its turn ends (its log says no more).
         if (st?.spawn) this.helpers.set(cid, { desc: st.spawn, done: false, untilTurn: true });
@@ -871,7 +934,10 @@ export class Conversation {
       this.meta = { ...this.meta, model: p.model ?? this.meta.model, effort: p.effort ?? p.reasoning_effort ?? this.meta.effort, at: time(l.timestamp) };
     } else if (p.type === "token_count") {
       const i = p.info ?? {};
-      const used = i.last_token_usage?.total_tokens;
+      const last = i.last_token_usage ?? {}, used = last.total_tokens;
+      // A count with no request behind it (no tokens in or out): Codex counting the context it
+      // just compacted, right before saying so. The size before is the last request's.
+      if (used !== undefined) this.recount = !last.input_tokens && !last.output_tokens && used > 0 ? { pre: this.meta.used, post: used } : null;
       this.meta = { ...this.meta, used: used ?? this.meta.used, window: i.model_context_window ?? this.meta.window };
     } else if (p.type === "task_started") {
       // A turn no one's words started: Codex logs a /compact so, and nothing else (its other
@@ -879,9 +945,14 @@ export class Conversation {
       if (p.turn_attribution) this.attributed = true;
       else if (this.attributed) this.user(`u${off}`, { text: "/compact", at: time(l.timestamp) });
     } else if (p.type === "item_completed" && p.item?.type === "ContextCompaction") {
+      // A /compact is a turn of its own (task_started); one in a turn someone started is
+      // automatic (older Codex names no one: then it isn't known).
+      const auto = !this.compacting && this.attributed;
       this.compacting = false;
       this.compactedAt = time(l.timestamp);
       this.doing = null;
+      this.push({ kind: "compacted", id: `cb${off}`, text: compactWords(auto, this.recount?.pre, this.recount?.post), at: this.compactedAt });
+      this.recount = null;
     } else if (p.type === "task_complete" || p.type === "turn_aborted") {
       this.compacting = false;
       for (const h of this.helpers.values()) if (h.untilTurn) h.done = true;

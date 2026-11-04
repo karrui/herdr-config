@@ -212,6 +212,9 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
   A finished turn folds them behind "Worked for 4m 5s"; edits show as diffs.
   A step that failed stays outside the fold with a red mark, and a turn you stopped doesn't fold and ends with "You stopped after 12s".
   While Claude Code retries a failed request, one row counts the tries and goes away once the agent continues.
+  Codex's reasoning summaries show as Claude Code's thinking does, and their headings are what the working line says.
+  The agent's todo list (Claude Code's TodoWrite, Codex's update_plan) is one checklist per turn, updated in place, and stays outside the fold while steps are left.
+  A compaction, manual or automatic, is a line across the chat, such as "Context compacted · 839k → 30k tokens".
 - Ask about this, under a message or a picture, adds it to your next message as an annotation with an optional comment.
 - `/btw` opens Claude Code's answer in a panel over the chat; `/` lists commands and skills, `$` Codex's skills.
 

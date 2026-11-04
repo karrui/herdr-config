@@ -1613,12 +1613,13 @@ export default class Chat extends View {
   // Codex's way with a finished turn: the person's message, "Worked for 4m 5s", the last reply.
   // What came between (replies on the way, thoughts, tool steps, diffs) folds into that row and
   // opens on a click; the turn under way shows all of it as it comes. Questions, pictures and
-  // artifacts stay where they were, as do steps that failed. A turn ends at a message of yours
-  // or where Claude Code says one ended (turnend: a helper's report starts a turn of its own,
-  // with no message). One you stopped doesn't fold: all of it, then "You stopped after 12s".
+  // artifacts stay where they were, as do steps that failed, a checklist left unfinished and
+  // compactions. A turn ends at a message of yours or where Claude Code says one ended (turnend:
+  // a helper's report starts a turn of its own, with no message). One you stopped doesn't fold:
+  // all of it, then "You stopped after 12s".
   foldTurns(items, working) {
-    const FOLDS = new Set(["agent", "thought", "tools", "diff"]);
-    const folds = (x) => FOLDS.has(x.kind) && !x.steps?.some((s) => s.failed);
+    const FOLDS = new Set(["agent", "thought", "tools", "diff", "plan"]);
+    const folds = (x) => FOLDS.has(x.kind) && !x.steps?.some((s) => s.failed || (x.kind === "plan" && s.status !== "completed"));
     const out = [];
     let span = [], lead = null;
     const close = (last, stop = null) => {
@@ -1928,6 +1929,8 @@ export default class Chat extends View {
       case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
       case "thought": return 14 + lines(x.text, w) * 21;
       case "worked": return x.stopped ? 32 : 41;
+      case "compacted": return 20;
+      case "plan": return 54 + x.steps.reduce((n, s) => n + lines(s.text, w - 46) * 20, 0);
       case "gallery": return GALLERY_H + 8;
       case "diff": return 32 + (this.opened.has(x.id) ? 0 : 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0));
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.reduce((n, s) => n + (s.cmd || s.kind === "run" ? 36 : 19), 0) : 20;
@@ -2113,6 +2116,28 @@ export default class Chat extends View {
             .child(x.secs != null ? `Worked for ${duration(x.secs)}` : "Worked")
             .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none()))
           .child(div().w_full().h(1).bg(t.border)), 18, 6);
+      }
+      case "compacted":
+        // The context was compacted (log.js compactWords()): a quiet line across the column.
+        return col(h_flex().w_full().h(20).gap(10).items_center().text_size(12).text_color(t.dim)
+          .child(div().flex_1().min_w(12).h(1).bg(t.border))
+          .child(div().min_w(0).truncate().child(x.text))
+          .child(div().flex_1().min_w(12).h(1).bg(t.border)), 18, 0);
+      case "plan": {
+        // The turn's checklist as it stands (log.js planned()): each step to do, under way or
+        // done, marked as the agents list marks idle, working and done.
+        const done = x.steps.filter((s) => s.status === "completed").length;
+        const mark = (s) => (s.status === "completed" ? svg("mods/chat/check.svg").size(13).text_color(t.done)
+          : s.status === "in_progress" ? div().size(8).rounded(4).bg(t.working)
+          : div().size(8).rounded(4).border(1.5).border_color(t.dim));
+        return pad(v_flex().w_full().gap(4).px(12).py(10).rounded(10).border_1().border_color(t.border)
+          .child(div().text_size(12).font_medium().text_color(t.dim).child(`Plan · ${done} of ${x.steps.length} done`))
+          .children(x.steps.map((s) => h_flex().w_full().gap(8).items_start()
+            .child(h_flex().w(14).h(20).flex_none().items_center().justify_center().child(mark(s)))
+            .child(div().flex_1().min_w(0).whitespace_normal()
+              .text_color(s.status === "completed" ? t.dim : s.status === "in_progress" ? t.foreground : t.muted)
+              .when(s.status === "completed", (el) => el.line_through())
+              .child(s.text || " ")))));
       }
       case "codehead": {
         const done = this.copied === x.id;

@@ -144,7 +144,8 @@ export default class Pane extends View {
     const k = agentOf(p.pane);
     if (!k) return { ...p, chat: true };
     const status = ["working", "blocked", "done", "idle"].includes(k.status) ? k.status : null;
-    return { ...p, chat: true, terminal: k.address, program: k.program, app: k.status?.app ?? k.app, status, cwd: k.foreground?.cwd ?? k.cwd, title: k.title };
+    // (A terminal's app is in its report, as parked.js reads it.)
+    return { ...p, chat: true, terminal: k.address, program: k.program, app: k.report?.app ?? k.app, status, cwd: k.foreground?.cwd ?? k.cwd, title: k.title };
   }
 
   swap(fn) {

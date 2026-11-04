@@ -1982,8 +1982,9 @@ export default class Chat extends View {
     const theirs = (text) => h_flex().w_full().justify_start().child(
       div().w_full().text_color(t.foreground)
         .child(x.clip ? this.clipped(t.background, x.clip, div().id(`${pre}fold-in-${x.id}`).flex_none()
-          // Its words' drawn height: a reply shorter than it looked isn't folded (foldOf()).
-          .on_size_change((size, cx) => { const was = this.natural.get(x.id); if (!was || Math.abs(was - size.height) > 1) { this.natural.set(x.id, size.height); cx.notify(); } })
+          // Its words' drawn height: a reply shorter than it looked isn't folded (foldOf()). Taken
+          // in the measurer only: a handler on a row the list draws throws, and the list goes blank.
+          .when(pre === "m-", (el) => el.on_size_change((size, cx) => { const was = this.natural.get(x.id); if (!was || Math.abs(was - size.height) > 1) { this.natural.set(x.id, size.height); cx.notify(); } }))
           .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(text) || " ").selectable(true)))
           : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(text) || " ").selectable(true)));
     const fileLine = (label, icon = "paperclip") => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)

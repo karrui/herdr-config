@@ -7,7 +7,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { panes, props, run, theme, home, hc, appHome, readTextFile, settings, exec as execFile } from "herdr";
+import { panes, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, exec as execFile } from "herdr";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -30,13 +30,15 @@ export function bangs(text) {
   return [...new Set(found.map((c) => c.trim()))].filter((c) => c && !/<[a-z][^>]*>/i.test(c));
 }
 
-// What Claude Code said since you last wrote to it: its transcript's assistant text after
-// the last prompt (a tool's result is not one). The status line feed names the transcript.
-async function suggestions(terminal) {
+// The agent's transcript, as the status line feed names it.
+async function transcript(terminal) {
   const feed = await readTextFile(`${appHome()}/usage/claude/${terminal}.json`).catch(() => null);
-  let file = null;
-  try { file = JSON.parse(feed ?? "null")?.transcript; } catch {}
-  if (!file) return [];
+  try { return JSON.parse(feed ?? "null")?.transcript ?? null; } catch { return null; }
+}
+
+// What Claude Code said since you last wrote to it: its transcript's assistant text after
+// the last prompt (a tool's result is not one).
+async function suggestions(file) {
   // ponytail: the last 300 entries; a reply longer than that loses its start.
   const r = await execFile("/usr/bin/tail", ["-n", "300", file]).catch(() => null);
   const texts = [];
@@ -51,7 +53,7 @@ async function suggestions(terminal) {
 }
 
 export default class Pane extends View {
-  init() { this.hovered = false; this.cmds = []; this.seen = null; }
+  init() { this.hovered = false; this.cmds = []; this.seen = null; this.watched = null; }
 
   me() {
     return panes().find((p) => p.pane === props()?.pane);
@@ -64,10 +66,27 @@ export default class Pane extends View {
     this.seen = key;
     if (p.app !== "claude-code" || !p.terminal) { this.cmds = []; return; }
     cx.spawn(async (cx) => {
-      const cmds = await suggestions(p.terminal);
+      const file = await transcript(p.terminal);
+      const cmds = file ? await suggestions(file) : [];
       if (this.seen !== key) return;
       this.cmds = cmds;
+      if (file) this.watch(file, cx);
       cx.notify();
+    });
+  }
+
+  // The status can turn before Claude Code has written the reply out, so its transcript
+  // is read again whenever it changes while the agent isn't working.
+  watch(file, cx) {
+    if (this.watched === file) return;
+    this.watched = file;
+    const dir = file.slice(0, file.lastIndexOf("/")), name = file.slice(dir.length + 1);
+    cx.spawn(async (cx) => {
+      while (this.watched === file) {
+        const changed = await watchFolder(dir).catch(() => null);
+        if (!changed) return;
+        if (this.watched === file && changed.some((f) => f.endsWith(name)) && this.me()?.status !== "working") { this.seen = null; cx.notify(); }
+      }
     });
   }
 

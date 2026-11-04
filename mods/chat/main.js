@@ -18,10 +18,10 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, VirtualListScrollHandle, TextView, v_virtual_list, InputState, Input } from "gpui-base";
-import { focused, props, run, theme, hc, exec, shared, setShared, watchFolder, window, settings, playSound, appHome, readTextFile, writeTextFile, nextCommand, openOverlay, closeOverlay, knownAgents } from "herdr";
+import { focused, props, run, theme, hc, exec, shared, setShared, watchFolder, window, settings, playSound, appHome, home, readTextFile, writeTextFile, nextCommand, openOverlay, closeOverlay, knownAgents } from "herdr";
 import { agents, panes, terminals, spaces, inRender } from "./live.js";
 import * as fs from "fs/promises";
-import { FIND, LOG, Conversation, records, resultText, summary, excerpt, names } from "./log.js";
+import { FIND, LOG, EVENTS, MAIN_ROLLOUT, Conversation, Live, records, eventLines, resultText, summary, excerpt, names } from "./log.js";
 import { words } from "./asks.js";
 import { AskCards } from "./cards.js";
 import * as strips from "./strips.js";
@@ -98,6 +98,9 @@ function findModel(menus, name) {
 }
 // About how many lines words take at a width (px), for a row's height before it's measured.
 const wrapLines = (text, width) => String(text ?? "").split("\n").reduce((n, l) => n + Math.max(1, Math.ceil((l.length * 7) / Math.max(120, width))), 0);
+// What a row's height depends on besides its id (Chat.key()), with its words: a streaming reply's
+// row and the logged one that takes its place are the same shape (Chat.carried()).
+const shapeOf = (x, key) => `${key.slice(key.indexOf("|"))}\u0000${x.text ?? x.code ?? ""}`;
 const shellWord = (s) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${String(s).replace(/'/g, `'"'"'`)}'`);
 // A message's time: 14:05 today, else 3 Nov 14:05.
 function clock(at) {
@@ -215,6 +218,11 @@ export default class Chat extends View {
     // each reports its size again. A box that kept its id reports only a change, and a row
     // whose height came out the same at the new width then stayed on its guess (squeezed).
     this.measureGen = 0;
+    // A streaming reply's rows (log.js Live): their last heights by row id, and by what they
+    // show (carried()); and each one's latest key, so its earlier heights don't pile up.
+    this.liveH = new Map();
+    this.shapes = new Map();
+    this.liveKey = new Map();
     this.range = null;
     this.scroll = VirtualListScrollHandle.new();
     // Its placeholder is drawn by composer(): it changes while a card asks ("Reply instead…").
@@ -353,11 +361,14 @@ export default class Chat extends View {
     cx.timer.every(1500, (cx) => {
       if (!this.blank) return;
       this.blank = false;
-      this.heights.clear(); this.measuredAt.clear(); this.measureGen++;
+      this.heights.clear(); this.measuredAt.clear(); this.shapes.clear(); this.liveH.clear(); this.measureGen++;
       this.anchor = null; this.pinned = true; this.stick = true;
       cx.notify();
     });
     if (this.addr && !this.machine) cx.spawn(async (cx) => this.watchAsks(cx));
+    // What the agent shows as it happens, beside its log (log.js Live).
+    this.live = new Live();
+    if (!this.transcript) cx.spawn(async (cx) => this.watchEvents(cx));
     // Keys (keys.json "mod:chat") for this chat.
     // At most 5 s per wait (one pending nextCommand), so a reload's old build ends at its next
     // cx use instead of staying in memory.
@@ -470,8 +481,14 @@ export default class Chat extends View {
   // Where the hook leaves this agent's asks. A sandboxed agent can write only its own broker
   // spool (sandbox/agent-sandbox), so its hook uses that, and no agent answers another's prompt.
   get askDir() {
+    return `${this.spool}/chat-asks`;
+  }
+
+  // The folder for the agent's asks and live events: its broker spool when sandboxed, else
+  // Herdr's data folder (the hooks' $HERDR_HC_SPOOL rule).
+  get spool() {
     const box = terminals().find((x) => x.address === this.addr)?.labels?.["herdr.sandbox"];
-    return box ? `${appHome()}/sandbox/broker/${box}/chat-asks` : `${appHome()}/data/chat-asks`;
+    return box ? `${appHome()}/sandbox/broker/${box}` : `${appHome()}/data`;
   }
 
   // The hook's flag: this chat is showing. Touched every few seconds; stale after 15. From the
@@ -535,10 +552,11 @@ export default class Chat extends View {
       action: tab ? { name: "tab.select", args: { id: tab } } : undefined });
   }
 
-  // An ask closed: its quiet line. Questions have theirs from the log already (log.js "ask").
+  // An ask closed: its quiet line. Claude Code's questions have theirs from the log already
+  // (log.js "ask"); Codex's log doesn't say how one went.
   askEnded(ask, how) {
     this.loadAskEnds();
-    if (ask.words.kind === "questions" || this.askEnds.some((e) => e.id === ask.id)) return;
+    if ((ask.words.kind === "questions" && this.kind !== "codex") || this.askEnds.some((e) => e.id === ask.id)) return;
     this.askEnds = [...this.askEnds, { id: ask.id, title: ask.words.title, how, at: askAt(ask.id) }].slice(-20);
     try { localStorage.setItem(`askends:${this.addr}`, JSON.stringify(this.askEnds)); } catch {}
   }
@@ -717,6 +735,12 @@ export default class Chat extends View {
     }
     const f = await exec("sh", ["-c", FIND, "chat", kind, String(pid)], { on: this.machine });
     let path = f.stdout.trim().split("\n").pop() ?? "";
+    // Codex whose processes hold no rollout open: the one its tap joined (log.js Live), the
+    // newest that is the conversation itself.
+    if (!path && kind === "codex" && !this.machine && this.live.rollouts.length) {
+      const joined = this.live.rollouts.map((r) => r.path.replace(/^(\$HOME|~)(?=\/)/, home())).reverse();
+      path = (await exec("sh", ["-c", MAIN_ROLLOUT, "x", ...joined]).catch(() => null))?.stdout.trim() ?? "";
+    }
     // Not in its session yet (no report, no turn): perhaps on its own start screen, which
     // shows as a card under an empty chat.
     if (!path && starting(t)) path = "pending";
@@ -907,6 +931,63 @@ export default class Chat extends View {
     }
   }
 
+  // ---- live events --------------------------------------------------------------------------
+
+  // The session (Claude Code: its log's name) or thread (Codex: the id its rollout ends in)
+  // whose live events count (log.js Live).
+  own() {
+    const f = String(this.path ?? "");
+    if (!f.endsWith(".jsonl")) return null;
+    if (this.kind === "codex") return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(f)?.[1] ?? null;
+    return f.slice(f.lastIndexOf("/") + 1, -6);
+  }
+
+  // Follows the agent's live events file (log.js EVENTS): what's new as it's written, at most
+  // 64 KB at a time, and no more often than every 150 ms (a reply streams in many pieces). Another
+  // agent, or another session in it, starts over from the file's start. Only here: a hook on
+  // another machine writes there.
+  async watchEvents(cx) {
+    for (;;) {
+      if (!this.addr || this.machine) { await cx.sleep(4000); continue; }
+      const file = `${this.spool}/chat-events/${this.addr}.jsonl`, own = this.own();
+      if (file !== this.evFile || own !== this.live.own) {
+        this.live = new Live(own);
+        this.evFile = file;
+        this.evOff = 0;
+        cx.notify();
+      }
+      let more = false;
+      try {
+        const got = eventLines((await exec("sh", ["-c", EVENTS, "events", file, String(this.evOff), "65536"])).stdout);
+        if (got && file === this.evFile) {
+          this.evOff = got.next;
+          more = got.more;
+          if (this.live.feed(got.lines)) { if (this.pinned) this.stick = true; cx.notify(); }
+        }
+      } catch {}
+      await cx.sleep(more ? 30 : 150);
+      if (!more) await this.eventsChanged(cx, file);
+    }
+  }
+
+  // Until the agent's events file changes, or a few seconds pass (the folder holds every agent's).
+  async eventsChanged(cx, file) {
+    const dir = file.slice(0, file.lastIndexOf("/")), name = file.slice(dir.length);
+    const end = Date.now() + 4000;
+    while (Date.now() < end) {
+      // One watch at a time, as for the log; none while the folder isn't there yet.
+      if (this.evWatch?.dir !== dir) this.evWatch = { dir, next: watchFolder(dir).catch(() => null).finally(() => { this.evWatch = null; }) };
+      const got = await Promise.race([this.evWatch.next, cx.sleep(Math.max(0, end - Date.now()))]);
+      if (got === null) { await cx.sleep(Math.max(0, end - Date.now())); return; }
+      if (!Array.isArray(got) || got.some((p) => p === dir || String(p).endsWith(name))) return;
+    }
+  }
+
+  // Compacting: a /compact in the log, or what the agent says as it happens (auto too).
+  compacting() {
+    return Boolean(this.conv?.compacting || this.live?.compacting(this.conv, this.status() === "working"));
+  }
+
   // ---- sending ------------------------------------------------------------------------------
 
   // Enter: now (while the agent works, it takes it mid-turn). Ctrl+Enter while it
@@ -1026,7 +1107,7 @@ export default class Chat extends View {
       // Not in the log after a while, with the agent no longer busy: say so, and keep it until it shows up.
       for (let i = 0; i < 60 && this.pending.includes(p) && !p.failed; i++) {
         await cx.sleep(i ? 5000 : 20000);
-        if (this.status() !== "working" && !this.conv?.compacting) { p.late = true; cx.notify(); break; }
+        if (this.status() !== "working" && !this.compacting()) { p.late = true; cx.notify(); break; }
       }
     });
   }
@@ -1691,7 +1772,8 @@ export default class Chat extends View {
     if (this.start === 0) out.push({ kind: "top", id: "top" });
     else if (this.start) out.push({ kind: "loading", id: "loading" });
     const working = this.status() === "working";
-    const items = this.foldTurns(this.conv?.items ?? [], working);
+    // With what the agent shows as it happens after the log's last record (log.js Live.over()).
+    const items = this.foldTurns(this.live.over(this.conv, working), working);
     const arts = this.resolveArts(items);
     this.loadAskEnds();
     // Start screens answered or gone (screens.js).
@@ -1764,13 +1846,13 @@ export default class Chat extends View {
         if (ps.length === 1 && ps[0].type === "md") out.push(clip(0) ? { ...x, clip: clip(0) } : x);
         else ps.forEach((p, n) => {
           if (fold && !fold.open && n > fold.last) return;
-          if (p.type === "md") out.push({ kind: "agent", id: `${x.id}:${n}`, text: p.text, clip: clip(n), dim: x.dim });
+          if (p.type === "md") out.push({ kind: "agent", id: `${x.id}:${n}`, text: p.text, clip: clip(n), dim: x.dim, live: x.live });
           else {
-            out.push({ kind: "codehead", id: `${x.id}:h${n}`, lang: p.lang, code: p.code, dim: x.dim });
-            out.push({ kind: "code", id: `${x.id}:c${n}`, lang: p.lang, code: p.code, clip: clip(n), dim: x.dim });
+            out.push({ kind: "codehead", id: `${x.id}:h${n}`, lang: p.lang, code: p.code, dim: x.dim, live: x.live });
+            out.push({ kind: "code", id: `${x.id}:c${n}`, lang: p.lang, code: p.code, clip: clip(n), dim: x.dim, live: x.live });
           }
         });
-        if (fold) out.push({ kind: "fold", id: `fold:${x.id}`, of: x.id, open: fold.open, dim: x.dim });
+        if (fold) out.push({ kind: "fold", id: `fold:${x.id}`, of: x.id, open: fold.open, dim: x.dim, live: x.live });
         // Pictures the reply points at (![…](/path)): drawn under it.
         if (x.paths?.length) out.push({ kind: "imgs", id: `i:${x.id}`, paths: x.paths, side: "agent" });
         // Every message of the agent's gets its own actions and reactions, also while it works;
@@ -1816,7 +1898,7 @@ export default class Chat extends View {
       const from = out.length;
       if (p.replyTo) out.push({ kind: "replyref", id: `rr:${p.id}`, to: p.replyTo, of: p.id, side: "user" });
       // Typed in while it compacts: Claude Code holds it (its log keeps no words for it).
-      const held = Boolean(p.delivered && !p.failed && this.conv?.compacting);
+      const held = Boolean(p.delivered && !p.failed && this.compacting());
       out.push({ kind: "pending", id: p.id, text: p.text, files: p.files, notes: p.notes, failed: p.failed, late: p.late, delivered: p.delivered && !held, queued: held });
       if (p.paths?.length) out.push({ kind: "imgs", id: `i:${p.id}`, paths: p.paths, faded: !p.delivered });
       block(from, p.id);
@@ -1939,7 +2021,15 @@ export default class Chat extends View {
     const found = q && String(x.text ?? x.code ?? "").toLowerCase().includes(q.toLowerCase()) ? `|f:${q}` : "";
     const open = (x.kind === "tools" || x.kind === "brief") && this.opened.has(x.id);
     const shown = open && x.steps ? x.steps.filter((s) => this.results.get(s.id) != null).length : 0;
-    return `${x.id}|${x.kind}${x.closed ? `.${x.closed}` : ""}|${open ? `o${x.steps?.length ?? 1}.${shown}` : ""}|${x.text?.length ?? x.code?.length ?? 0}|${x.from ? 1 : 0}${x.steer ? 1 : 0}${x.failed ? 1 : 0}${x.late ? 1 : 0}${x.images ? 1 : 0}${x.files?.length ?? 0}|${x.paths?.length ?? 0}${x.paths?.every((p) => this.views[p]) ? "v" : ""}|${(x.pills ?? []).map((p) => p.emoji + (p.you ? 1 : 0) + (p.agent ? 1 : 0)).join("")}|${x.bar ? "b" : ""}${x.kind === "artifact" ? `|a${x.version ?? ""}${x.line ? "l" : ""}${x.pending ? "p" : ""}` : ""}${x.kind === "cardstrip" ? `|cs${x.sig}${x.first ? "F" : ""}${x.last ? "L" : ""}` : ""}|${x.clip ? `c${x.clip}` : ""}${x.open ? "o" : ""}${x.kind === "day" ? x.text : ""}|${x.top0 ? "T" : ""}${x.bot0 ? "B" : ""}${x.h ?? ""}${found}`;
+    return `${x.id}|${x.kind}${x.closed ? `.${x.closed}` : ""}|${open ? `o${x.steps?.length ?? 1}.${shown}` : ""}|${x.text?.length ?? x.code?.length ?? 0}|${x.from ? 1 : 0}${x.steer ? 1 : 0}${x.failed ? 1 : 0}${x.late ? 1 : 0}${x.queued ? 1 : 0}${x.images ? 1 : 0}${x.files?.length ?? 0}|${x.paths?.length ?? 0}${x.paths?.every((p) => this.views[p]) ? "v" : ""}|${(x.pills ?? []).map((p) => p.emoji + (p.you ? 1 : 0) + (p.agent ? 1 : 0)).join("")}|${x.bar ? "b" : ""}${x.kind === "artifact" ? `|a${x.version ?? ""}${x.line ? "l" : ""}${x.pending ? "p" : ""}` : ""}${x.kind === "cardstrip" ? `|cs${x.sig}${x.first ? "F" : ""}${x.last ? "L" : ""}` : ""}|${x.clip ? `c${x.clip}` : ""}${x.open ? "o" : ""}${x.kind === "day" ? x.text : ""}|${x.top0 ? "T" : ""}${x.bot0 ? "B" : ""}${x.h ?? ""}${found}`;
+  }
+
+  // A row not measured yet that a streaming reply's row was: its words as the log has them now
+  // (the same words in the same place), or the streaming row a line longer. Its height stands in,
+  // so neither the swap nor a new line jumps to a guess first.
+  carried(x, key) {
+    if (!["agent", "code", "codehead", "fold"].includes(x.kind)) return undefined;
+    return this.shapes.get(shapeOf(x, key)) ?? (x.live ? this.liveH.get(x.id) : undefined);
   }
 
   // A row's height before it is measured: bands and gaps are as tall as spaced() made them.
@@ -2080,7 +2170,7 @@ export default class Chat extends View {
           .when(x.files?.length > 0, (el) => el.child(fileLine(x.files.join(", "))))
           .when(x.notes > 0, (el) => el.child(noteLine(x.notes)))
           .when(Boolean(x.failed), (el) => el.child(div().text_size(12).text_color(t.blocked).cursor_pointer().child(`Not sent: ${String(x.failed).replace(/\.$/, "")}. Click to try again.`)))
-          .when(Boolean(x.queued), (el) => el.child(div().text_size(12).text_color(t.dim).child(this.conv?.compacting ? "Queued · Sends once compacting ends" : "Queued · Sends when the agent is free")))
+          .when(Boolean(x.queued), (el) => el.child(div().text_size(12).text_color(t.dim).child(this.compacting() ? "Queued · Sends once compacting ends" : "Queued · Sends when the agent is free")))
           .when(!x.failed && x.late, (el) => el.child(div().text_size(12).text_color(t.dim).child("Not in the conversation. Check the terminal."))));
       case "replyref":
         // The message this one answers, in one dim line above it.
@@ -2251,19 +2341,20 @@ export default class Chat extends View {
         // Red while its dialog is open; once it's gone (answered, or closed without an answer), calm.
         return pad(v_flex().w_full().gap(4).px(12).py(10).rounded(10).border_1().border_color(t.border)
           .child(div().text_size(12).font_medium().text_color(x.closed ? t.dim : t.blocked)
-            .child(x.closed === "answered" ? "Asked you · Answered" : x.closed ? "Asked you · Closed without an answer" : "Asked you"))
+            .child(x.closed === "answered" ? "Asked you · Answered" : x.closed === "dismissed" ? "Asked you · Closed without an answer" : "Asked you"))
           .child(div().text_color(x.closed ? t.muted : t.foreground).child(TextView.markdown(`${pre}chat-md-${x.id}`, x.text).selectable(true))));
       case "error":
         // While it's being tried again, calm: it may yet go through (log.js retrying()).
         return pad(div().w_full().text_size(12.5).text_color(x.retry ? t.muted : t.blocked).child(x.text));
       case "tools": {
         const open = this.opened.has(x.id);
-        const failed = x.steps.filter((s) => s.failed).length;
+        const denied = x.steps.filter((s) => s.denied).length, failed = x.steps.filter((s) => s.failed && !s.denied).length;
         return col(v_flex().w_full().px(6).py(QUIET_PY).rounded(7).cursor_pointer()
           .hover((s) => s.bg(t.hover))
           .child(h_flex().gap(6).items_center().text_size(12).text_color(t.dim)
             .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none())
             .child(div().min_w(0).truncate().child(summary(x.steps)))
+            .when(denied > 0, (el) => el.child(div().flex_none().child("·")).child(div().flex_none().text_color(t.blocked).child(`${denied} denied`)))
             .when(failed > 0, (el) => el.child(div().flex_none().child("·")).child(div().flex_none().text_color(t.blocked).child(`${failed} failed`))))
           .when(open, (el) => el.child(v_flex().pl(18).pt(4).pb(2).gap(3).text_size(12).text_color(t.muted)
             .children(x.steps.flatMap((s) => {
@@ -2275,7 +2366,7 @@ export default class Chat extends View {
               // marked in the chevron's column, on its last line (where the call ended).
               const lines = s.line.split("\n");
               return [...lines.map((line, n) => { const [label, code] = part(line); return v_flex().min_w(0).gap(1)
-                .when(Boolean(s.failed) && n === lines.length - 1, (el) => el.relative()
+                .when(Boolean(s.failed || s.denied) && n === lines.length - 1, (el) => el.relative()
                   .child(svg("mods/chat/x.svg").absolute().left(-17).top(3).size(11).text_color(t.blocked)))
                 .child(div().truncate().child(label))
                 .when(Boolean(code), (el) => el.child(div().truncate().font_family(mono).text_size(11.5).text_color(t.dim).child(code))); }),
@@ -2374,7 +2465,7 @@ export default class Chat extends View {
       // edges (same width and padding), so Stop's right edge is the box's.
       const secs = Math.max(0, Math.floor((Date.now() - (this.workingSince ?? Date.now())) / 1000));
       const report = terminals().find((x) => x.address === this.addr)?.report?.msg;
-      const doing = this.stopping ? "Stopping…"
+      const doing = this.stopping ? "Stopping…" : this.live?.compacting(this.conv, true) ? "Compacting conversation"
         : this.conv?.doing ?? (typeof report === "string" && report.trim() && !/^answer:/i.test(report) ? report.trim() : "Working");
       // Only waiting (hc wait, a sleep, a monitor, a helper it waits on): calm, no spinner; a
       // message wakes it (or comes in at once).
@@ -3001,11 +3092,11 @@ export default class Chat extends View {
     // What sits under the list (an ask card, the working line) changes its height: stay on the newest.
     const below = `${this.asks.length}|${(this.addr && openCard(this.addr)?.id) ?? ""}|${st}|${this.focused}|${this.queue.length}|${this.files.length}|${Boolean(this.quote)}|${this.notes.length}`;
     if (below !== this.below) { this.below = below; if (this.pinned) this.stick = true; }
-    if (Math.abs(this.heightsFor - this.width) > 1) { this.heights.clear(); this.measuredAt.clear(); this.heightsFor = this.width; this.measureGen++; }
+    if (Math.abs(this.heightsFor - this.width) > 1) { this.heights.clear(); this.measuredAt.clear(); this.shapes.clear(); this.liveH.clear(); this.heightsFor = this.width; this.measureGen++; }
     const keys = rows.map((x) => this.key(x));
     // Every size a real number of pixels: one NaN, zero or runaway height leaves the list blank.
     const sizes = rows.map((x, i) => {
-      const h = this.heights.get(keys[i]) ?? this.guess(x);
+      const h = this.heights.get(keys[i]) ?? this.carried(x, keys[i]) ?? this.guess(x);
       return Number.isFinite(h) && h > 0 ? Math.min(h, 40000) : 60;
     });
     this.follow_bottom(rows);
@@ -3090,6 +3181,17 @@ export default class Chat extends View {
       .child(div().flex_none().h(12));
   }
 
+  // A streaming reply's row measured: for carried(). Its height under its last words is dropped,
+  // as those words won't show again.
+  liveMeasured(x, key, h) {
+    const was = this.liveKey.get(x.id);
+    if (was && was !== key) { this.heights.delete(was); this.measuredAt.delete(was); }
+    this.liveKey.set(x.id, key);
+    this.liveH.set(x.id, h);
+    this.shapes.set(shapeOf(x, key), h);
+    for (const m of [this.liveKey, this.liveH, this.shapes]) if (m.size > 200) m.delete(m.keys().next().value);
+  }
+
   // Rows not measured yet, drawn once out of sight at the list's width; their heights go to
   // the list, which then places every row exactly. Those near what is shown go first.
   measurer(rows, keys, t) {
@@ -3109,6 +3211,7 @@ export default class Chat extends View {
       .child(v_flex().w_full().children(order.map((i) => div().id(`m${this.measureGen}-${keys[i]}`).flex_none().w_full()
         .on_size_change((size, cx) => {
           if (!this.measuredAt.has(keys[i])) this.measuredAt.set(keys[i], Date.now());
+          if (rows[i].live) this.liveMeasured(rows[i], keys[i], size.height);
           if (this.heights.get(keys[i]) === size.height) return;
           this.heights.set(keys[i], size.height);
           if (this.pinned) this.stick = true;

@@ -205,7 +205,11 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
 - Pictures an agent shows with show-your-work, or links as Markdown images, show inline; a recording shows its first frame and opens in your player.
 - Questions (AskUserQuestion) and permission prompts come as cards to answer, for sandboxed agents too: `agent/launch` adds the hook for agents Herdr starts, and a sandboxed agent's hook talks to the chat through its own broker folder, so it can't answer another agent's prompt.
   Codex's approvals and questions come as the same cards, answered in the chat or its terminal, whichever is first.
-- Live events fill in what the session log can't say yet, such as compacting or a reply as it streams.
+- Live events fill in what the session log can't say yet, after its last record, until the log says the same or the turn ends.
+  A reply streams in as it will look once logged, and the logged one takes its place without moving the list.
+  The working line says "Compacting conversation" for automatic compactions too, and a message sent meanwhile shows as queued until it ends.
+  An API error that ended a Claude Code turn shows as the turn's error, and a call its auto mode refused is marked denied.
+  Codex's reconnects show as a retry row ("Retrying 2/5"), its plan updates as it goes, and a question card answered in the chat or its terminal leaves a closing line.
   For Claude Code, `agent/launch` adds an async hook (`mods/chat/event-hook.sh`).
   Codex runs through `agent/codex-live`, which keeps its TUI in the terminal on a private app-server that `mods/chat/codex-tap.py` also joins.
   Both write to `chat-events/<terminal>.jsonl` next to the cards' files, and `event-hook.sh` describes the events.

@@ -492,14 +492,14 @@ export function pictures(text) {
 
 // The conversation in one log, built from LOG's records ({ off, kind, data }) in file order.
 // Items (ids come from byte offsets, so they stay the same when earlier pages are added):
-//   { kind: "user", id, text, from?, at, images, paths?, steer }   { kind: "agent", id, text, at }
+//   { kind: "user", id, text, from?, at, images, paths?, steer }   { kind: "agent", id, text, at, mid? }
 //   (images: how many were sent; paths: where the ones Claude Code read from files came from;
 //   replyTo: the start of the message it answers; steer: it came while the turn was under way)
 //   { kind: "mark", id }  (a message of only reactions: ends the turn, shows nothing)
 //   { kind: "tools", id, steps: [{ id, kind, line, out?, failed?, files }] }  (calls in a row,
 //                                             between texts; out: where the call's result line is)
 //   { kind: "ask", id, text, closed? }  (the agent's own question tool; closed once its dialog
-//                                          is gone: "answered" | "dismissed")
+//                                          is gone: "answered" | "dismissed" | "ended" (Codex's))
 //   { kind: "error", id, text, retry? }  (retry: the API call is being tried again)
 //   { kind: "turnend", id, at?, stopped? }  (stopped: the person stopped the turn)
 //   { kind: "compacted", id, text, at }  (the context was compacted: how, in words)
@@ -626,7 +626,9 @@ export class Conversation {
 
   done(id, off, failed = false) {
     const q = this.questions.get(id);
-    if (q) q.closed ??= "dismissed";
+    // (Codex's log doesn't say whether its question got an answer: the chat's line for the
+    // card does, main.js askEnded().)
+    if (q) q.closed ??= this.kind === "codex" ? "ended" : "dismissed";
     const s = this.calls.get(id);
     if (s) { s.out = off; s.failed = failed; this.calls.delete(id); }
     this.waits.delete(id);
@@ -798,7 +800,7 @@ export class Conversation {
     this.resume();
     // A turn ended (written once per turn, also for one no message of yours started, as a
     // helper's report does): the chat folds each turn by these (main.js foldTurns()).
-    if (l.type === "system" && l.subtype === "turn_duration") { this.queued = []; this.mid = false; this.push({ kind: "turnend", id: `te${off}` }); return; }
+    if (l.type === "system" && l.subtype === "turn_duration") { this.queued = []; this.mid = false; this.push({ kind: "turnend", id: `te${off}`, at: time(l.timestamp) }); return; }
     if (l.type === "system" && l.subtype === "compact_boundary") {
       this.queued = []; this.compacting = false; this.compactedAt = time(l.timestamp); this.doing = null;
       const m = l.compactMetadata ?? {};
@@ -912,7 +914,8 @@ export class Conversation {
         if (u) this.user(`u${off}`, { ...u, at: time(l.timestamp) });
       } else if (p.type === "message" && p.role === "assistant") {
         const words = this.agentText((Array.isArray(p.content) ? p.content : []).filter((it) => it?.type === "output_text" && it.text?.trim()).map((it) => it.text.trim()).join("\n\n"));
-        if (words) this.push({ kind: "agent", id: `a${off}`, text: words, at: time(l.timestamp) });
+        // (mid: the message's id, which its live words carry too: Live.logged().)
+        if (words) this.push({ kind: "agent", id: `a${off}`, text: words, at: time(l.timestamp), mid: p.id });
       } else if (p.type === "reasoning") {
         // Its reasoning's summary ("**Heading**", words under it at times): shown as Claude
         // Code's thinking is, and its gist on the working line.
@@ -1062,3 +1065,216 @@ export function summary(steps) {
   return s ? s[0].toUpperCase() + s.slice(1) : "Worked";
 }
 
+// ---- live events ------------------------------------------------------------------------------
+// What the agent shows as it happens, from Claude Code's hooks (event-hook.sh, which has the
+// contract) and Codex's app-server (codex-tap.py): one JSON line each in
+// chat-events/<terminal>.jsonl. The log stays the record. These fill in only what it can't say
+// yet (compacting, a reply as it streams, an error that ended the turn, a reconnect), after its
+// last record, and each goes once the log says the same or the turn is over.
+
+// Reads the events file from byte <from>, at most <cap> bytes of it: "E <size> <from> <more>
+// <emptied>", then the bytes. A file shorter than <from> was emptied: read from its start. One
+// read to its end past 256 KB is emptied (its writers do that at 1 MB only when no chat reads).
+export const EVENTS = String.raw`
+f="$1"; o="$2"; cap="$3"
+[ -f "$f" ] || { echo "E 0 0 0 0"; exit 0; }
+s=$(wc -c < "$f" | tr -d ' ')
+[ "$s" -lt "$o" ] && o=0
+n=$((s - o)); more=0
+[ "$n" -gt "$cap" ] && { n="$cap"; more=1; }
+cut=0; [ "$more" = 0 ] && [ "$s" -gt 262144 ] && cut=1
+echo "E $s $o $more $cut"
+[ "$n" -gt 0 ] && tail -c +$((o + 1)) "$f" | head -c "$n"
+[ "$cut" = 1 ] && : > "$f"
+true`;
+
+// The first of these Codex rollouts that is a conversation, not a helper's or Codex's reviewer's
+// (their first line names them a subagent, near its start).
+export const MAIN_ROLLOUT = `for f in "$@"; do [ -f "$f" ] && ! head -c 2000 "$f" | grep -q '"source":{"subagent"' && { echo "$f"; exit 0; }; done; true`;
+
+// A string's size in the file (UTF-8 bytes), as offsets there count.
+function bytes(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n++;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c < 0xdc00) { n += 4; i++; } else n += 3;
+  }
+  return n;
+}
+
+// EVENTS' output: its whole lines and where to read next ({ lines, next, more }). A line still
+// being written waits for the next read; one longer than a read (never, by the contract) is skipped.
+export function eventLines(stdout) {
+  const nl = stdout.indexOf("\n");
+  const [tag, , from, more, cut] = (nl < 0 ? stdout : stdout.slice(0, nl)).trim().split(" ");
+  if (tag !== "E") return null;
+  const data = nl < 0 ? "" : stdout.slice(nl + 1);
+  let end = data.lastIndexOf("\n") + 1;
+  if (!end && more === "1") end = data.length;
+  return { lines: data.slice(0, end).split("\n").filter(Boolean), next: cut === "1" ? 0 : Number(from) + bytes(data.slice(0, end)), more: more === "1" };
+}
+
+const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+// A reply streaming in, as the chat shows it: without Herdr's tag lines (reactions, no-reply),
+// which sit on lines of their own (Conversation.agentText()), half-written ones too.
+const streamed = (text) => String(text).split("\n").filter((l) => !/^\s*<(hc\b|\/?no-reply\b)/.test(l)).join("\n").trim();
+// Codex's plan steps' states in the checklist's words (Conversation.planned()).
+const STEP = { inProgress: "in_progress", in_progress: "in_progress", completed: "completed", pending: "pending" };
+// Codex's reconnect ("Reconnecting... 2/5") as Claude Code's retry row says one.
+function retryWords(msg) {
+  const m = /(\d+)\s*\/\s*(\d+)/.exec(String(msg ?? ""));
+  return `Retrying${m ? ` ${m[1]}/${m[2]}` : ""} · ${/network/i.test(String(msg)) ? "Waiting for the network" : "Connection dropped"}`;
+}
+
+export class Live {
+  constructor(own = null) {
+    // The session (Claude Code) or thread (Codex) the log is: only its events count. Others are
+    // a helper's, Codex's reviewer's, or an earlier agent's at this address.
+    this.own = own;
+    // When the latest turn began or ended (events' t): what streamed before it is over.
+    this.turnAt = 0;
+    // The reply streaming in: { id, start, parts, whole } (whole: seen from its start).
+    this.tail = null;
+    // Compacting since { at }; an API error that ended the turn { at, text } (Claude Code's
+    // StopFailure); a reconnect { at, text } (Codex's); its plan { at, steps } (Codex's).
+    this.compact = null;
+    this.error = null;
+    this.retry = null;
+    this.plan = null;
+    // Calls auto mode refused (Claude Code's PermissionDenied): call id -> reason.
+    this.denied = new Map();
+    // Codex rollouts its tap joined, newest last: [{ path, t }] (main.js locate()).
+    this.rollouts = [];
+  }
+
+  // New lines of the file. Hooks run async, so they go in by when they ran. True when something
+  // the chat shows may have changed.
+  feed(lines) {
+    const evs = lines.map(parse).filter((e) => e && typeof e === "object").sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0));
+    let changed = false;
+    for (const e of evs) changed = this.apply(e) || changed;
+    return changed;
+  }
+
+  apply(e) {
+    if (e.src === "codex" && e.ev === "joined") {
+      if (e.rollout) this.rollouts = [...this.rollouts.filter((r) => r.path !== e.rollout), { path: String(e.rollout), t: e.t }].slice(-20);
+      return false;
+    }
+    if (!this.own || (e.src === "claude-hook" ? e.sid !== this.own || e.agent : e.thread !== this.own)) return false;
+    const t = Number(e.t) || 0;
+    switch (`${e.src}:${e.ev}`) {
+      case "claude-hook:UserPromptSubmit": this.turn(t); this.error = null; return true;
+      case "claude-hook:Stop": case "codex:turn/started": case "codex:turn/completed": this.turn(t); return true;
+      case "claude-hook:StopFailure":
+        this.turn(t);
+        this.error = { at: t, text: whole(String(e.text || e.details || `API error: ${e.error ?? "unknown"}`)) };
+        return true;
+      case "claude-hook:PreCompact": this.compact = { at: t }; return true;
+      case "claude-hook:PostCompact": if (this.compact && this.compact.at <= t) this.compact = null; return true;
+      // Whole lines of the reply by their index (a long one comes only at the end, with final).
+      case "claude-hook:MessageDisplay": return this.stream(String(e.msg), t, e.i, String(e.delta ?? ""));
+      case "claude-hook:PermissionDenied":
+        if (!e.id) return false;
+        this.denied.set(String(e.id), String(e.reason ?? ""));
+        if (this.denied.size > 200) this.denied.delete(this.denied.keys().next().value);
+        return true;
+      // Anything Codex does next: it got past a reconnect.
+      case "codex:item/started":
+        this.retry = null;
+        if (e.type === "contextCompaction") this.compact = { at: t };
+        else if (e.type === "agentMessage") this.stream(String(e.item), t, 0, "");
+        return true;
+      case "codex:item/completed":
+        this.retry = null;
+        if (e.type === "contextCompaction") this.compact = null;
+        return true;
+      case "codex:item/agentMessage/delta": this.retry = null; return this.stream(String(e.item), t, null, String(e.delta ?? ""));
+      case "codex:turn/plan/updated":
+        this.plan = { at: t, steps: (Array.isArray(e.plan) ? e.plan : []).map((s) => ({ text: String(s?.step ?? ""), status: STEP[s?.status] ?? "pending" })) };
+        return true;
+      // A reconnect (the turn goes on); an error that ends the turn is in the log (task_complete).
+      case "codex:error": if (!e.retry) return false; this.retry = { at: t, text: retryWords(e.error) }; return true;
+    }
+    return false;
+  }
+
+  // A turn began or ended: what streamed in the last one is done.
+  turn(t) {
+    if (t < this.turnAt) return;
+    this.turnAt = t;
+    this.tail = this.retry = this.plan = null;
+    if (this.compact && this.compact.at < t) this.compact = null;
+  }
+
+  // A piece of the reply streaming in: at index i (Claude Code's lines), else after the rest
+  // (Codex's deltas; its item's start is index 0). One whose start was missed (the file read
+  // from the middle, or Codex's tap joining late) isn't shown.
+  stream(id, t, i, delta) {
+    if (t < this.turnAt) return false;
+    if (this.tail?.id !== id) {
+      if (this.tail && t < this.tail.start) return false;
+      this.tail = { id, start: t, parts: [], whole: false };
+    }
+    if (Number.isInteger(i)) this.tail.parts[i] = delta; else this.tail.parts.push(delta);
+    if (i === 0) this.tail.whole = true;
+    return true;
+  }
+
+  // Compacting, as far as the log doesn't say it's done (its divider after it began).
+  compacting(conv, working) {
+    return Boolean(working && this.own && this.compact && !((conv?.compactedAt ?? 0) >= this.compact.at - 1000));
+  }
+
+  // Is the streaming reply in the log now? Codex's by its message id. Claude Code's lines carry
+  // no id the log has: a reply logged since it began, with the same words so far.
+  logged(items, text) {
+    const t = this.tail, a = norm(text);
+    for (let i = items.length - 1; i >= 0 && i >= items.length - 80; i--) {
+      const x = items[i];
+      if (x.kind !== "agent") continue;
+      if (x.mid !== undefined) { if (x.mid === t.id) return true; continue; }
+      const b = norm(x.text), n = Math.min(a.length, b.length, 200);
+      if ((x.at ?? 0) >= t.start - 3000 && n > 0 && a.slice(0, n) === b.slice(0, n)) return true;
+    }
+    return false;
+  }
+
+  // The conversation's items with what the log doesn't say yet, after its last record. While the
+  // agent works: the reply streaming in, a reconnect, Codex's plan as it changes. An API error
+  // that ended the turn shows until the log says it, working or not. Steps auto mode refused are
+  // marked denied.
+  over(conv, working) {
+    let items = conv?.items ?? [];
+    if (!this.own || !conv) return items;
+    // The latest turn: from your last message on (a steer goes on with it).
+    let k = items.length;
+    while (k > 0 && !(items[k - 1].kind === "user" && !items[k - 1].steer)) k--;
+    const since = (items[k - 1]?.at ?? 0) - 2000;
+    const turn = items.slice(k);
+    const add = [];
+    const err = this.error;
+    if (err && err.at >= since && !turn.some((x) => x.kind === "error" && !x.retry)) {
+      // In place of the log's retry row, as the log's own error would be (Conversation.failed()).
+      if (conv.retry && turn.includes(conv.retry)) items = items.map((x) => (x === conv.retry ? { ...x, text: err.text, retry: false } : x));
+      else add.push({ kind: "error", id: `le${err.at}`, text: err.text });
+    }
+    if (this.denied.size) items = items.map((x) => (x.kind === "tools" && x.steps.some((s) => this.denied.has(s.id))
+      ? { ...x, steps: x.steps.map((s) => (this.denied.has(s.id) ? { ...s, denied: true } : s)) } : x));
+    if (working) {
+      const t = this.tail;
+      const text = t?.whole && t.start >= since ? streamed(t.parts.join("")) : "";
+      // (A turn the log already ended, stopped too, streams no more.)
+      if (text && !turn.some((x) => x.kind === "turnend" && (x.at ?? 0) >= t.start) && !this.logged(items, text)) add.push({ kind: "agent", id: `live:${t.id}`, text, at: t.start, live: true });
+      if (this.retry && this.retry.at >= since) add.push({ kind: "error", id: "live:retry", text: this.retry.text, retry: true });
+      if (this.plan?.steps.length && this.plan.at >= since) {
+        const p = { steps: this.plan.steps, text: this.plan.steps.map((s) => s.text).join("\n") };
+        if (conv.plan && turn.includes(conv.plan)) items = items.map((x) => (x === conv.plan ? { ...x, ...p } : x));
+        else add.push({ kind: "plan", id: "live:plan", ...p });
+      }
+    }
+    return add.length ? [...items, ...add] : items;
+  }
+}

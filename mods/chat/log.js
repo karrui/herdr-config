@@ -78,12 +78,12 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
   }
   keep = 0
   if (index(head, mine)) {
-    if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\"")) || index(head, "\"subtype\":\"turn_duration\"")) keep = 1
+    if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\"")) || index(head, "\"subtype\":\"turn_duration\"") || index(head, "\"subtype\":\"compact_boundary\"")) keep = 1
   } else if (index(head, "\"type\":\"response_item\"")) {
     if (index(head, "\"type\":\"message\"") || index(head, "_call\"")) keep = 1
   } else if (index(head, "\"type\":\"event_msg\"")) {
-    if (index(head, "\"task_complete\"") || index(head, "\"turn_aborted\"") || index(head, "\"token_count\"")) keep = 1
-  } else if (index(head, "\"type\":\"turn_context\"")) {
+    if (index(head, "\"task_complete\"") || index(head, "\"turn_aborted\"") || index(head, "\"token_count\"") || index(head, "\"task_started\"") || index(head, "\"ContextCompaction\"")) keep = 1
+  } else if (index(head, "\"type\":\"turn_context\"") || index(head, "\"type\":\"queue-operation\"")) {
     keep = 1
   }
   if (!keep) next
@@ -489,6 +489,12 @@ export class Conversation {
     // run on its own is done when its task-notification comes.
     this.helpers = new Map();
     this.questions = new Map();
+    // Messages Claude Code holds until it can take them (typed mid-turn), from its
+    // queue-operation lines: { id, raw, text, at }. Taken, they come back as messages. (Those
+    // typed while it compacts are queued with no words: main.js shows the chat's own copy.)
+    this.queued = [];
+    // A /compact running (it ends at the log's compact_boundary).
+    this.compacting = false;
   }
 
   push(item) {
@@ -567,6 +573,10 @@ export class Conversation {
     }
     this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0, noteItems: u.noteItems, bang: u.bang });
     this.doing = null;
+    const said = String(text ?? "").replace(/\s+/g, " ").trim();
+    if (said) this.queued = this.queued.filter((q) => !said.includes(q.text.replace(/\s+/g, " ").trim()));
+    // (Claude Code writes the /compact line again after it's done, dated from before.)
+    if (/^\/compact\b/.test(text ?? "") && !((this.compactedAt ?? 0) >= (u.at ?? 0))) { this.compacting = true; this.doing = "Compacting conversation"; }
   }
 
   // A task-notification: the helper (or background job) its tool-use-id names is done.
@@ -668,12 +678,26 @@ export class Conversation {
     }
   }
 
+  // Claude Code's queue: enqueue (with the words), remove (those words, taken or edited away),
+  // popAll (all of it, back in its prompt to edit). Its dequeue isn't followed: it names no
+  // words, and the same message can be queued twice. A message is out of the queue once the
+  // log has it (user()), and anything left goes when the turn or the compacting ends.
+  queueOp(l, off) {
+    const raw = typeof l.content === "string" ? l.content : null;
+    const text = raw === null ? "" : claudeUser(raw)?.text ?? "";
+    if (l.operation === "enqueue" && text) this.queued.push({ id: `qd${off}`, raw, text, at: time(l.timestamp) });
+    else if (l.operation === "remove") this.queued = this.queued.filter((q) => q.raw !== raw);
+    else if (l.operation === "popAll") this.queued = [];
+  }
+
   claude(l, off) {
     // A helper's lines, in its parent's log; a helper's own log (side) is all of them.
     if (Boolean(l.isSidechain) !== Boolean(this.side)) return;
     // A turn ended (written once per turn, also for one no message of yours started, as a
     // helper's report does): the chat folds each turn by these (main.js foldTurns()).
-    if (l.type === "system" && l.subtype === "turn_duration") { this.push({ kind: "turnend", id: `te${off}` }); return; }
+    if (l.type === "system" && l.subtype === "turn_duration") { this.queued = []; this.push({ kind: "turnend", id: `te${off}` }); return; }
+    if (l.type === "system" && l.subtype === "compact_boundary") { this.queued = []; this.compacting = false; this.compactedAt = time(l.timestamp); this.doing = null; return; }
+    if (l.type === "queue-operation") { this.queueOp(l, off); return; }
     if (l.type === "user" && l.origin?.kind === "task-notification") {
       // A helper or a background job finished (Claude Code tells the agent so): it's done.
       const c = l.message?.content;
@@ -801,7 +825,17 @@ export class Conversation {
       const i = p.info ?? {};
       const used = i.last_token_usage?.total_tokens;
       this.meta = { ...this.meta, used: used ?? this.meta.used, window: i.model_context_window ?? this.meta.window };
+    } else if (p.type === "task_started") {
+      // A turn no one's words started: Codex logs a /compact so, and nothing else (its other
+      // turns name who started them; older Codex named no one, so it counts only after one did).
+      if (p.turn_attribution) this.attributed = true;
+      else if (this.attributed) this.user(`u${off}`, { text: "/compact", at: time(l.timestamp) });
+    } else if (p.type === "item_completed" && p.item?.type === "ContextCompaction") {
+      this.compacting = false;
+      this.compactedAt = time(l.timestamp);
+      this.doing = null;
     } else if (p.type === "task_complete" || p.type === "turn_aborted") {
+      this.compacting = false;
       for (const h of this.helpers.values()) if (h.untilTurn) h.done = true;
       this.open.clear();
       this.waits.clear();

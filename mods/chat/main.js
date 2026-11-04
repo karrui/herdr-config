@@ -180,8 +180,14 @@ function parts(text) {
 }
 
 let bound = false;
+// Messages sent from a chat and not in its log yet, per agent (its origin, as drafts): a view is
+// made again on each Chat ⇄ Terminal switch, and these outlive it.
+const pendingOf = new Map();
 
 export default class Chat extends View {
+  get pending() { return pendingOf.get(this.originKey) ?? []; }
+  set pending(v) { if (this.originKey) pendingOf.set(this.originKey, v); }
+
   init(_props, cx) {
     const P = props();
     this.origin = P?.terminal ?? null;
@@ -195,7 +201,6 @@ export default class Chat extends View {
     // the box (openHelper()): { path, kind, title }. Read-only, following the log as it grows.
     this.transcript = P?.transcript ?? null;
     if (this.transcript) { this.path = this.transcript.path; this.kind = KINDS[this.transcript.kind] ?? "claude"; }
-    this.pending = [];
     this.opened = new Set();
     this.results = new Map();
     this.pinned = true;
@@ -758,7 +763,8 @@ export default class Chat extends View {
   // path becomes an image, a quote stays in front).
   settlePending() {
     if (!this.conv) return;
-    const users = this.conv.items.filter((x) => x.kind === "user");
+    // Held in Claude Code's queue counts: it shows as queued (rows()) until taken.
+    const users = [...this.conv.items.filter((x) => x.kind === "user"), ...(this.conv.queued ?? [])];
     // An answer written in the box is in once the log has it as an answer.
     if (this.replied?.length) this.replied = this.replied.filter((r) => !users.some((u) => u.answer && (u.at ?? 0) >= r.at - 5000 && norm(u.text).includes(norm(r.text))));
     if (!this.pending?.length) return;
@@ -1018,7 +1024,7 @@ export default class Chat extends View {
       // Not in the log after a while, with the agent no longer busy: say so, and keep it until it shows up.
       for (let i = 0; i < 60 && this.pending.includes(p) && !p.failed; i++) {
         await cx.sleep(i ? 5000 : 20000);
-        if (this.status() !== "working") { p.late = true; cx.notify(); break; }
+        if (this.status() !== "working" && !this.conv?.compacting) { p.late = true; cx.notify(); break; }
       }
     });
   }
@@ -1759,15 +1765,19 @@ export default class Chat extends View {
     while (ti < timed.length) { dated(timed[ti].at); put(timed[ti++]); }
     // Words that answered a card, shown at once, until the log has them right after their
     // question (log.js answers()): they are the newest thing said, so they go last.
-    if (this.replied.length || this.pending.length) dated(Date.now());
+    if (this.replied.length || this.pending.length || this.conv?.queued?.length) dated(Date.now());
     for (const r of this.replied) out.push({ kind: "user", id: `rp:${r.id}`, text: r.text });
     for (const p of this.pending) {
       const from = out.length;
       if (p.replyTo) out.push({ kind: "replyref", id: `rr:${p.id}`, to: p.replyTo, of: p.id, side: "user" });
-      out.push({ kind: "pending", id: p.id, text: p.text, files: p.files, notes: p.notes, failed: p.failed, late: p.late, delivered: p.delivered });
+      // Typed in while it compacts: Claude Code holds it (its log keeps no words for it).
+      const held = Boolean(p.delivered && !p.failed && this.conv?.compacting);
+      out.push({ kind: "pending", id: p.id, text: p.text, files: p.files, notes: p.notes, failed: p.failed, late: p.late, delivered: p.delivered && !held, queued: held });
       if (p.paths?.length) out.push({ kind: "imgs", id: `i:${p.id}`, paths: p.paths, faded: !p.delivered });
       block(from, p.id);
     }
+    // Messages the agent holds until it can take them (typed mid-turn in its terminal): faded, marked.
+    for (const q of this.conv?.queued ?? []) out.push({ kind: "pending", id: q.id, text: q.text, delivered: false, queued: true });
     if (this.note) out.push({ kind: "note", id: this.note.id, text: this.note.text });
     if (out.length) out.push({ kind: "end", id: "end" });
     return this.spaced(out);
@@ -2020,6 +2030,7 @@ export default class Chat extends View {
           .when(x.files?.length > 0, (el) => el.child(fileLine(x.files.join(", "))))
           .when(x.notes > 0, (el) => el.child(noteLine(x.notes)))
           .when(Boolean(x.failed), (el) => el.child(div().text_size(12).text_color(t.blocked).cursor_pointer().child(`Not sent: ${String(x.failed).replace(/\.$/, "")}. Click to try again.`)))
+          .when(Boolean(x.queued), (el) => el.child(div().text_size(12).text_color(t.dim).child(this.conv?.compacting ? "Queued · Sends once compacting ends" : "Queued · Sends when the agent is free")))
           .when(!x.failed && x.late, (el) => el.child(div().text_size(12).text_color(t.dim).child("Not in the conversation. Check the terminal."))));
       case "replyref":
         // The message this one answers, in one dim line above it.

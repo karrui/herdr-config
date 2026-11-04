@@ -125,7 +125,19 @@ function clock(at) {
   const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   return d.toDateString() === now.toDateString() ? hm : `${d.getDate()} ${MONTHS[d.getMonth()]} ${hm}`;
 }
-const ICONS = { copy: "copy", reply: "reply", rewind: "rewind", fork: "git-fork", react: "smile-plus" };
+const ICONS = { copy: "copy", reply: "reply", annotate: "annotate", rewind: "rewind", fork: "git-fork", react: "smile-plus" };
+// Annotations as the agent reads them, ahead of the message's words: what the person points at
+// (a reply, quoted; pictures, by path), each with their comment. Plain words in a herdr- tag,
+// so any agent reads them and the chat shows only their count (log.js cleanUser).
+function notesTag(notes) {
+  if (!notes?.length) return "";
+  const items = notes.map((n, i) => {
+    const q = n.text.length > 2000 ? `${n.text.slice(0, 1999)}…` : n.text;
+    const what = n.paths?.length ? `Picture${n.paths.length > 1 ? "s" : ""}: ${n.paths.join(", ")}${q ? ` (${q})` : ""}` : `"${q}"`;
+    return `${i + 1}. ${what}${n.comment ? `\n   Their comment: ${n.comment}` : ""}`;
+  });
+  return `<herdr-annotations n="${notes.length}">\nThe person points at these parts of this conversation:\n${items.join("\n")}\n</herdr-annotations>\n`;
+}
 // Reaction pills: this wide, this far apart; and the gap before the first and after the last.
 const PILL = 46, PILL_GAP = 4, PILL_EDGE = 6;
 // A task's id as shown and typed: herdr-task's PREFIX-n (`ref`, e.g. HAT-1), else #n.
@@ -307,6 +319,8 @@ export default class Chat extends View {
     // The box's extras: files to send, a quoted message, messages held until the agent is free.
     this.files = [];
     this.quote = null;
+    // Annotations waiting in the box ("Ask about this"): { of, text, paths, comment: InputState }.
+    this.notes = [];
     this.queue = [];
     this.recall = -1;
     this.slashSel = 0;
@@ -1060,7 +1074,7 @@ export default class Chat extends View {
     if (this.replied?.length) this.replied = this.replied.filter((r) => !users.some((u) => u.answer && (u.at ?? 0) >= r.at - 5000 && norm(u.text).includes(norm(r.text))));
     if (!this.pending?.length) return;
     this.pending = this.pending.filter((p) => !users.some((u) => (u.at ?? 0) >= p.at - 5000 &&
-      (same(u.text, p.sent) || (p.match && norm(u.text).includes(p.match)) || (!p.match && u.images))));
+      (same(u.text, p.sent) || (p.match && norm(u.text).includes(p.match)) || (!p.match && (u.images || u.notes)))));
   }
 
   // The newest page first; after that, what the log gained since.
@@ -1207,8 +1221,10 @@ export default class Chat extends View {
   send(cx, hold = false) {
     const text = this.box.value().trim();
     // Also while the agent asks in its terminal: the words answer it there (deliver()).
-    if (!text && !this.files.length) return;
-    const msg = { id: `m${Date.now()}`, text, files: this.files, quote: this.quote };
+    if (!text && !this.files.length && !this.notes.length) return;
+    const msg = { id: `m${Date.now()}`, text, files: this.files, quote: this.quote,
+      notes: this.notes.map((n) => ({ text: n.text, paths: n.paths, comment: n.comment.value().trim() })) };
+    this.notes = [];
     this.box.set_value("");
     // If the textarea still adds Enter's new line after this, take it out again.
     cx.timer.after(30, () => { if (!this.box.value().trim()) this.box.set_value(""); });
@@ -1270,9 +1286,9 @@ export default class Chat extends View {
     // Herdr tag lines before the words: the message it replies to, the tasks it mentions.
     const reply = msg.quote ? `<hc reply-to="${excerpt(msg.quote.text, 80)}"/>\n` : "";
     const tasks = this.taskTags(msg.text);
-    const body = reply + tasks + msg.text;
+    const body = reply + tasks + notesTag(msg.notes) + msg.text;
     const p = { id: `pending-${msg.id}`, text: msg.text, replyTo: msg.quote ? excerpt(msg.quote.text, 80) : null, files: msg.files.filter((f) => !f.image).map((f) => f.name),
-      paths: msg.files.filter((f) => f.image).map((f) => f.path), at: Date.now(), sent: body,
+      notes: msg.notes?.length ?? 0, paths: msg.files.filter((f) => f.image).map((f) => f.path), at: Date.now(), sent: body,
       match: norm(msg.text).slice(0, 60) || null, msg };
     this.pending.push(p);
     const menu = msg.files.length ? null : slash.opensMenu(this.kind, msg.text);
@@ -1910,11 +1926,24 @@ export default class Chat extends View {
       this.box.focus();
       this.saveSoon(cx);
     }
+    if (what === "annotate") this.annotate(row, cx);
     if (what === "rewind") this.rewind(row, cx);
     if (what === "fork") this.fork(cx);
     if (what === "react") { this.keepIcons = row.of; this.openReactions(row, this.hitLeft); }
     // A pill: your reaction on or off.
     if (what.startsWith("pill:")) this.toggleReaction(row.of, row.target, what.slice(5), cx);
+  }
+
+  // "Ask about this" (a reply's or a picture's band): into the box as an annotation, with a
+  // comment of its own, sent with the next message (notesTag()). Herdr can't read a selection
+  // within a message, so it's the whole of one.
+  annotate(row, cx) {
+    if (this.notes.some((n) => n.of === row.of)) return;
+    const comment = InputState.new({ placeholder: "Add an optional comment…" });
+    comment.on("submit", (_e, cx) => { this.box.focus(); cx.notify(); });
+    this.notes.push({ of: row.of, text: String(row.text ?? "").trim(), paths: row.paths ?? [], comment });
+    comment.focus();
+    cx.notify();
   }
 
   // ---- reactions ------------------------------------------------------------------------------
@@ -2508,7 +2537,8 @@ export default class Chat extends View {
       const id = `w:${u.id}`, end = turn[fin].at ?? 0;
       out.push({ kind: "worked", id, secs: u.at && end > u.at ? Math.round((end - u.at) / 1000) : null });
       const open = this.opened.has(id);
-      turn.forEach((x, k) => { if (open || k >= fin || !FOLDS.has(x.kind)) out.push(x); });
+      // Opened, what it folds is drawn faded (rowBare(), dim), so the last reply stands out.
+      turn.forEach((x, k) => { if (k >= fin || !FOLDS.has(x.kind)) out.push(x); else if (open) out.push({ ...x, dim: true }); });
     }
     return out;
   }
@@ -2607,13 +2637,13 @@ export default class Chat extends View {
         if (ps.length === 1 && ps[0].type === "md") out.push(clip(0) ? { ...x, clip: clip(0) } : x);
         else ps.forEach((p, n) => {
           if (fold && !fold.open && n > fold.last) return;
-          if (p.type === "md") out.push({ kind: "agent", id: `${x.id}:${n}`, text: p.text, clip: clip(n) });
+          if (p.type === "md") out.push({ kind: "agent", id: `${x.id}:${n}`, text: p.text, clip: clip(n), dim: x.dim });
           else {
-            out.push({ kind: "codehead", id: `${x.id}:h${n}`, lang: p.lang, code: p.code });
-            out.push({ kind: "code", id: `${x.id}:c${n}`, lang: p.lang, code: p.code, clip: clip(n) });
+            out.push({ kind: "codehead", id: `${x.id}:h${n}`, lang: p.lang, code: p.code, dim: x.dim });
+            out.push({ kind: "code", id: `${x.id}:c${n}`, lang: p.lang, code: p.code, clip: clip(n), dim: x.dim });
           }
         });
-        if (fold) out.push({ kind: "fold", id: `fold:${x.id}`, of: x.id, open: fold.open });
+        if (fold) out.push({ kind: "fold", id: `fold:${x.id}`, of: x.id, open: fold.open, dim: x.dim });
         // Pictures the reply points at (![…](/path)): drawn under it.
         if (x.paths?.length) out.push({ kind: "imgs", id: `i:${x.id}`, paths: x.paths, side: "agent" });
         // Every message of the agent's gets its own actions and reactions, also while it works;
@@ -2621,15 +2651,28 @@ export default class Chat extends View {
         // under its last row.
         if (!(working && i === items.length - 1) && out.length > first) {
           const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, side: "agent", at: x.at, pills: this.pills(x.id),
-            acts: ["reply", "copy", ...(this.kind ? ["fork"] : [])] };
+            acts: ["annotate", "copy", ...(this.kind ? ["fork"] : [])] };
           out[out.length - 1] = { ...out[out.length - 1], bar };
           out.push({ kind: "band", id: `ab:${x.id}`, bar });
         }
         block(first, x.id);
+      } else if (x.kind === "thought") {
+        // Narration between steps: Ask about this and Copy under it, as a reply has.
+        const first = out.length;
+        out.push(x);
+        if (!(working && i === items.length - 1)) {
+          const bar = { id: `b:${x.id}`, of: x.id, target: x.text, text: x.text, side: "agent", at: x.at, pills: this.pills(x.id), acts: ["annotate", "copy"] };
+          out[out.length - 1] = { ...x, bar };
+          out.push({ kind: "band", id: `ab:${x.id}`, bar, dim: x.dim });
+        }
+        block(first, x.id);
       } else if (x.kind === "shots") {
-        // show-your-work: what the agent shows you (a screenshot, a recording), on its side.
+        // show-your-work: what the agent shows you (a screenshot, a recording), on its side,
+        // with Ask about this under it.
         const from = out.length;
-        out.push({ kind: "imgs", id: `i:${x.id}`, paths: x.paths, side: "agent", title: x.title });
+        const bar = { id: `b:${x.id}`, of: x.id, target: x.title || "picture", text: x.title ?? "", side: "agent", at: x.at, pills: this.pills(x.id), acts: ["annotate"], paths: x.paths };
+        out.push({ kind: "imgs", id: `i:${x.id}`, paths: x.paths, side: "agent", title: x.title, bar, dim: x.dim });
+        out.push({ kind: "band", id: `ab:${x.id}`, bar });
         block(from, x.id);
       } else if (x.kind !== "mark") out.push(x);
     }
@@ -2641,7 +2684,7 @@ export default class Chat extends View {
     for (const p of this.pending) {
       const from = out.length;
       if (p.replyTo) out.push({ kind: "replyref", id: `rr:${p.id}`, to: p.replyTo, of: p.id, side: "user" });
-      out.push({ kind: "pending", id: p.id, text: p.text, files: p.files, failed: p.failed, late: p.late, delivered: p.delivered });
+      out.push({ kind: "pending", id: p.id, text: p.text, files: p.files, notes: p.notes, failed: p.failed, late: p.late, delivered: p.delivered });
       if (p.paths?.length) out.push({ kind: "imgs", id: `i:${p.id}`, paths: p.paths, faded: !p.delivered });
       block(from, p.id);
     }
@@ -2792,7 +2835,7 @@ export default class Chat extends View {
       case "code": return 16 + (x.clip ?? String(x.code).split("\n").length * 19);
       case "fold": return 26;
       case "day": return 18;
-      case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
+      case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0) + (x.notes ? 20 : 0);
       case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
       case "thought": return 14 + lines(x.text, w) * 21;
       case "worked": return 41;
@@ -2851,6 +2894,7 @@ export default class Chat extends View {
   }
 
   rowBare(x, t, pre = "") {
+    if (x.dim) return div().w_full().opacity(0.5).child(this.rowBare({ ...x, dim: false }, t, pre));
     // A readable column, centered when the pane is wide.
     // At a block's edge a row drops its outer room there: spaced() puts the gap between blocks.
     const col = (el, px = 18, py = 6) => h_flex().w_full().justify_center()
@@ -2870,8 +2914,9 @@ export default class Chat extends View {
           .on_size_change((size, cx) => { const was = this.natural.get(x.id); if (!was || Math.abs(was - size.height) > 1) { this.natural.set(x.id, size.height); cx.notify(); } })
           .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(text) || " ").selectable(true)))
           : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(text) || " ").selectable(true)));
-    const fileLine = (label) => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
-      .child(svg("mods/chat/paperclip.svg").size(12).flex_none()).child(div().truncate().child(label));
+    const fileLine = (label, icon = "paperclip") => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
+      .child(svg(`mods/chat/${icon}.svg`).size(12).flex_none()).child(div().truncate().child(label));
+    const noteLine = (n) => fileLine(n === 1 ? "1 annotation" : `${n} annotations`, "annotate");
     switch (x.kind) {
       case "end":
         return div().w_full().h(10);
@@ -2887,11 +2932,13 @@ export default class Chat extends View {
         return pad(v_flex().w_full().items_end().gap(3)
           .when(Boolean(x.from), (el) => el.child(div().text_size(12).text_color(t.dim).child(`From ${this.sender(x.from, x.text)}`)))
           .when(Boolean(x.text), (el) => el.child(bubble(x.text, false)))
-          .when(x.images > (x.paths?.length ?? 0), (el) => el.child(fileLine(x.images === 1 ? "1 image" : `${x.images} images`))));
+          .when(x.images > (x.paths?.length ?? 0), (el) => el.child(fileLine(x.images === 1 ? "1 image" : `${x.images} images`)))
+          .when(x.notes > 0, (el) => el.child(noteLine(x.notes))));
       case "pending":
         return pad(v_flex().w_full().items_end().gap(3)
           .when(Boolean(x.text), (el) => el.child(bubble(x.text, !x.delivered || Boolean(x.failed))))
           .when(x.files?.length > 0, (el) => el.child(fileLine(x.files.join(", "))))
+          .when(x.notes > 0, (el) => el.child(noteLine(x.notes)))
           .when(Boolean(x.failed), (el) => el.child(div().text_size(12).text_color(t.blocked).cursor_pointer().child(`Not sent: ${String(x.failed).replace(/\.$/, "")}. Click to try again.`)))
           .when(!x.failed && x.late, (el) => el.child(div().text_size(12).text_color(t.dim).child("Not in the conversation. Check the terminal."))));
       case "replyref":
@@ -3264,8 +3311,18 @@ export default class Chat extends View {
 
   // Files waiting to go: small tiles above the box, each removable.
   tiles(t) {
-    if (!this.files.length && !this.quote) return null;
+    if (!this.files.length && !this.quote && !this.notes.length) return null;
+    const noteLabel = (n) => (n.paths?.length ? `Picture${n.paths.length > 1 ? "s" : ""}${n.text ? ` · ${norm(n.text)}` : ""}` : norm(n.text));
     return v_flex().w_full().px(10).pt(8).gap(6)
+      // Annotations: what each points at, its comment, and × to drop it.
+      .children(this.notes.map((n, i) => h_flex().id(`note-${i}`).w_full().h(30).pl(8).pr(2).gap(8).items_center().rounded(8).bg(t.raised)
+        .child(svg("mods/chat/annotate.svg").size(13).flex_none().text_color(t.muted))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(noteLabel(n)))
+        .child(div().w(220).flex_none().child(Input.new(n.comment).w_full().text_size(12).text_color(t.foreground)))
+        .child(div().id(`note-x-${i}`).size(22).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer().text_color(t.dim)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.notes = this.notes.filter((x) => x !== n); cx.notify(); })
+          .child(svg("mods/chat/x.svg").size(12)))))
       .when(Boolean(this.quote), (el) => el.child(h_flex().w_full().h(24).pl(4).gap(6).items_center()
         .child(svg("mods/chat/reply.svg").size(12).flex_none().text_color(t.dim))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(norm(this.quote.text)))
@@ -3874,7 +3931,7 @@ export default class Chat extends View {
     const lit = new Set(found.map((m) => m.id));
     this.needViews([...this.files.filter((f) => f.image).map((f) => f.path), ...rows.flatMap((r) => (r.kind === "imgs" ? r.paths : []))], cx);
     // What sits under the list (an ask card, the working line) changes its height: stay on the newest.
-    const below = `${this.asks.length}|${this.sasks.map((a) => a.name + (a.kept ? "+" : "")).join(",")}|${this.wasks.map((a) => a.id).join(",")}|${[this.addr, ...this.workerTasks().keys()].map((a) => openCard(a)?.id ?? "").join("")}|${st}|${this.focused}|${this.queue.length}|${Boolean(this.call)}|${this.files.length}|${Boolean(this.quote)}`;
+    const below = `${this.asks.length}|${this.sasks.map((a) => a.name + (a.kept ? "+" : "")).join(",")}|${this.wasks.map((a) => a.id).join(",")}|${[this.addr, ...this.workerTasks().keys()].map((a) => openCard(a)?.id ?? "").join("")}|${st}|${this.focused}|${this.queue.length}|${Boolean(this.call)}|${this.files.length}|${Boolean(this.quote)}|${this.notes.length}`;
     if (below !== this.below) { this.below = below; if (this.pinned) this.stick = true; }
     if (Math.abs(this.heightsFor - this.width) > 1) { this.heights.clear(); this.measuredAt.clear(); this.heightsFor = this.width; this.measureGen++; }
     const keys = rows.map((x) => this.key(x));

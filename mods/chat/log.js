@@ -198,7 +198,10 @@ function newsOf(t) {
 // A message's words, with the task news it carries (news: shown as their own lines).
 function cleanUser(t) {
   const news = newsOf(t);
-  const u = cleanWords(t);
+  let u = cleanWords(t);
+  // Annotations (main.js notesTag()): hidden like Herdr's other tags, counted under the words.
+  const notes = Number(/<herdr-annotations n="(\d+)"/.exec(t)?.[1] ?? 0);
+  if (notes) u = { ...(u ?? { text: "" }), notes };
   return news.length ? { ...(u ?? { text: "" }), news } : u;
 }
 
@@ -252,7 +255,7 @@ function claudeUser(c) {
     .map((b) => cleanUser(images ? b.text.replace(/\[Image #\d+\]\s*/g, "") : b.text)).filter(Boolean);
   if (!parts.length) return images ? { text: "", images } : null;
   const reactions = parts.flatMap((p) => p.reactions ?? []), news = parts.flatMap((p) => p.news ?? []);
-  return { text: parts.map((p) => p.text).filter(Boolean).join("\n\n"), from: parts[0].from, images, reactions, news,
+  return { text: parts.map((p) => p.text).filter(Boolean).join("\n\n"), from: parts[0].from, images, reactions, news, notes: parts[0].notes,
     replyTo: parts[0].replyTo, quoted: parts[0].quoted, rest: parts[0].rest };
 }
 
@@ -443,7 +446,7 @@ export class Conversation {
     (u?.news ?? []).forEach((n, i) => this.push({ kind: "news", id: `${id}:n${i}`, at: u.at, ...n }));
     // Only reactions: nothing to show, but the agent's turn before it is over (its actions and
     // pills stay while it answers, and its answer is a turn of its own).
-    if (!u?.text && !u?.images) { if (u?.reactions?.length) this.push({ kind: "mark", id }); return; }
+    if (!u?.text && !u?.images && !u?.notes) { if (u?.reactions?.length) this.push({ kind: "mark", id }); return; }
     // A reply names the message it answers. An old blockquote reply counts when it matches an
     // earlier message's start; else it stays a quote.
     let text = u.text, replyTo = u.replyTo ?? null;
@@ -451,7 +454,7 @@ export class Conversation {
       replyTo = u.quoted;
       text = u.rest;
     }
-    this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0 });
+    this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0 });
     this.doing = null;
   }
 

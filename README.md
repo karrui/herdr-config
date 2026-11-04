@@ -177,6 +177,13 @@ Right-click the Linear button to link a different ticket, stop or restore detect
 
   ![The Usage popup with Claude Code's and Codex's limits](docs/usage.png)
 
+### Closing and resuming agents
+
+`cmd-w` on a tab running an agent doesn't end it: the tab closes, and the agent keeps running without a pane.
+The tab's × still ends it.
+**Resume a session…** in the tab bar's **+** menu lists this space's parked agents (**Open** gives one a tab again), then the Claude Code and Codex sessions that ran in its folders and ended.
+**Resume** starts one again in a new tab, in the sandbox; **No sandbox** starts it outside.
+
 ### Pane headers
 
 When Claude Code's latest reply asks you to run a command with `!`, like `` `! gh auth login` ``, the pane's header shows it with a play button.
@@ -218,6 +225,7 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `mods/tabs-sandbox` | The tab bar, with the Changes, Linear and containers buttons. |
 | `mods/worktree-hooks`, `worktree-setup`, `resources` | The worktree dialogs, the setup editor and a worktree's containers. |
 | `mods/menu-hooks` | Right-click menus, including Restart agent. |
+| `mods/resume`, `agent/sessions` | Resume a session: parked agents and past sessions in a space's folders. |
 | `mods/pane-sandbox` | Herdr's pane header, with Run for the `!` commands Claude Code asks you to run. |
 | `mods/brand-sandbox` | The sidebar's top bar: only search. |
 | `mods/agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists` | Herdr's agents list, + menu, status bar and a sandbox lists editor, adapted to the sandbox. |

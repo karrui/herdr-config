@@ -69,6 +69,7 @@
     "cmd-backspace": "send:\u0015"
   },
   "layout:main-sandbox": {
+    "cmd-w": "tabs-sandbox.close",
     "cmd-alt-]": "space-folders.next",
     "cmd-alt-[": "space-folders.prev"
   }

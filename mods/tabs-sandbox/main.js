@@ -1,7 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, focused, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome, home } from "herdr";
+import { spaces, panes, focused, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome, home, hc, nextCommand, notify } from "herdr";
 import { KEY_CHANGED, LINKS, readKey, findTicket } from "./linear-resolve.js";
 
 // The branch to compare against: origin's default branch, else the usual names.
@@ -36,6 +36,33 @@ export default class Tabs extends View {
     this.asked = {}; this.asking = {};
     cx.timer.every(15000, (cx) => { if (window()?.active) { this.countResources(cx, true); this.countBranch(cx, true); } });
     cx.timer.every(300000, (cx) => { if (window()?.active) this.findLinear(cx, true); });
+    // "tabs-sandbox.close" in keys.json (cmd-w).
+    cx.spawn(async (cx) => {
+      for (;;) {
+        if (String(await nextCommand()).split(".").pop() === "close") this.closeKey();
+        cx.notify();
+      }
+    });
+  }
+
+  // cmd-w doesn't end agents: a tab running one closes but its agents are parked, still
+  // running with no pane, labeled with their space so the + menu's Resume a session (mods/
+  // resume) can give them a tab again. Other tabs close as the × does. A space's last tab
+  // gets a shell beside it first, so parking never leaves the space empty, which closes it.
+  closeKey() {
+    const space = spaces().find((s) => s.active), tab = space?.tabs?.find((c) => c.active);
+    if (!tab) return;
+    const mine = panes().filter((p) => p.tab === tab.id && p.terminal);
+    const agents = mine.filter((p) => p.program?.agent);
+    if (!agents.length) return this.closeTab(tab, space);
+    if (space.tabs.length === 1) run("tab.new", { space: space.id });
+    for (const p of agents) {
+      hc(["label", p.terminal, `parked.space=${space.id}`]);
+      run("terminal.park", { terminal: p.terminal });
+    }
+    for (const p of mine) if (!p.program?.agent) run("pane.close", { pane: p.pane });
+    notify({ title: `Parked ${agents.length === 1 ? agents[0].program.name : `${agents.length} agents`}`,
+      body: "Still running. + \u2192 Resume a session gives it a tab again.", level: "info" });
   }
 
   // One look at a time per answer; asked for again meanwhile, it looks once more after.
@@ -202,7 +229,7 @@ export default class Tabs extends View {
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))
-      .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu-sandbox", kind: "popup", width: 250, height: 543 })))
+      .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu-sandbox", kind: "popup", width: 250, height: 574 })))
       // Only on a space whose worktree setup started something: how much is running.
       .when((res?.total ?? 0) > 0, el => el.child(
         h_flex().id("resources").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)

@@ -51,7 +51,7 @@ export default class NewMenu extends View {
     const space = spaces().find(s => s.active);
     const installed = this.agents.filter(a => a.installed);
     const choices = [...installed, ...this.agents.filter(a => !a.installed).slice(0, 2)];
-    return v_flex().min_h(0).w_full().h(Math.min(522, 198 + Math.max(1, choices.length) * 31)).bg(t.popover).p(5).text_size(12.8)
+    return v_flex().min_h(0).w_full().h(Math.min(553, 229 + Math.max(1, choices.length) * 31)).bg(t.popover).p(5).text_size(12.8)
       .id("new-menu").track_focus(this.handle)
       .on_key_down((e) => {
         if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
@@ -70,6 +70,8 @@ export default class NewMenu extends View {
         .children(choices.map((a, i) => this.row(a.key, a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14), a.name,
           () => run("tab.new", { name: a.name, space: space?.id, argv: a.run }), a.installed ? (i < 9 ? String(i + 1) : "") : "not installed", a.installed)))
         .when(this.agents.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim).child(this.failed ? "Could not load agents" : "Checking installed agents…"))))
+      // Agents cmd-w parked here, and sessions that ran in this space's folders (mods/resume).
+      .child(this.row("resume", svg("mods/workspace-chrome/clock.svg").size(14), "Resume a session\u2026", () => openOverlay({ mod: "resume", kind: "dialog", width: 520, height: 480, props: { space: space?.id } }), "", Boolean(space)))
       .child(div().h(1).mx(4).my(5).bg(t.border))
       .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new")))
       .child(this.row("worktree", svg("mods/workspace-chrome/branch.svg").size(14), "New worktree…", () => openOverlay({ mod: "worktree-hooks", kind: "dialog", width: 460, height: 320, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))

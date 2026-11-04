@@ -1,0 +1,37 @@
+#!/bin/bash
+# The Claude Code and Codex sessions started in these folders, newest first, as a JSON
+# array of { app: "claude" | "codex", id, title, at, folder } (at: last activity, in seconds),
+# for the + menu's Resume a session. Codex sessions still running are left out (Claude
+# Code's are left out by the caller, which knows them from the status line feed).
+# usage: sessions <folder>...
+set -u
+jq=/usr/bin/jq
+{
+  for d in "$@"; do
+    # Claude Code keeps a folder's sessions under its path with every other character a -.
+    dir="$HOME/.claude/projects/$(printf %s "$d" | sed 's/[^A-Za-z0-9]/-/g')"
+    for f in $(ls -t "$dir"/*.jsonl 2>/dev/null | head -40); do
+      # Interactive ones only: claude -p and the desktop app's are elsewhere to resume.
+      head -n 40 "$f" | grep -q '"entrypoint":"cli"' || continue
+      title=$(grep '"type":"ai-title"' "$f" | tail -1 | $jq -r '.aiTitle // empty')
+      [ -n "$title" ] || title=$(grep '"type":"last-prompt"' "$f" | tail -1 | $jq -r '.lastPrompt // empty' | head -c 120)
+      [ -n "$title" ] || continue
+      $jq -nc --arg id "$(basename "$f" .jsonl)" --arg title "$title" --argjson at "$(stat -f %m "$f")" --arg folder "$d" '{ app: "claude", id: $id, title: $title, at: $at, folder: $folder }'
+    done
+  done
+  # Codex keeps every session by date; the first line names its folder and where it came
+  # from: "cli" is its own TUI (codex exec runs and sub-agents are left out).
+  live=$(lsof -c codex -Fn 2>/dev/null | sed -n 's|^n.*/rollout-.*\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)\.jsonl$|\1|p')
+  for f in $(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -300); do
+    IFS= read -r meta < "$f" || continue
+    [[ $meta == *'"source":"cli"'* ]] || continue
+    for d in "$@"; do
+      [[ $meta == *"\"cwd\":\"$d\""* ]] || continue
+      id=$($jq -r '.payload.id' <<<"$meta")
+      grep -qx "$id" <<<"$live" && break
+      title=$(grep "\"id\":\"$id\"" "$HOME/.codex/session_index.jsonl" 2>/dev/null | tail -1 | $jq -r '.thread_name // empty')
+      $jq -nc --arg id "$id" --arg title "${title:-Codex session}" --argjson at "$(stat -f %m "$f")" --arg folder "$d" '{ app: "codex", id: $id, title: $title, at: $at, folder: $folder }'
+      break
+    done
+  done
+} | $jq -sc 'unique_by(.id) | sort_by(-.at) | .[:40]'

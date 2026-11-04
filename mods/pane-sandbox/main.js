@@ -1,13 +1,14 @@
 // A pane's header (Herdr's `pane` mod, cloned), plus Run: the commands Claude Code's
 // latest reply asks you to run with `!` (`! gh auth login`, inline or in a code block).
 // Run types `! <command>` into the agent, so it runs in its session and its output
-// lands in the conversation; several are listed on hover. Props from the app:
+// lands in the conversation; for a sandboxed agent, where the command would hit the
+// sandbox too, it runs in a shell outside it, split below. Several are listed on hover. Props from the app:
 // { pane, terminal }. Click: focus the pane.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { panes, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, exec as execFile } from "herdr";
+import { panes, terminals, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, exec as execFile } from "herdr";
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -90,9 +91,15 @@ export default class Pane extends View {
     });
   }
 
+  sandboxed(p) {
+    return Boolean(terminals().find((x) => x.address === p.terminal)?.labels?.["herdr.sandbox"]);
+  }
+
   runCmd(p, cmd) {
     this.cmds = this.cmds.filter((c) => c !== cmd);
-    hc(["send", p.terminal, `! ${cmd}`]);
+    if (!this.sandboxed(p)) return hc(["send", p.terminal, `! ${cmd}`]);
+    // An interactive login shell (your PATH, a prompt to answer) that stays open after.
+    run("pane.split", { direction: "down", pane: p.pane, argv: ["/bin/zsh", "-lic", 'cd "$1" && print -r -- "$ $2" && eval "$2"; exec zsh -l', "zsh", p.cwd ?? home(), cmd] });
   }
 
   runChip(t, p) {
@@ -103,7 +110,7 @@ export default class Pane extends View {
       .child(svg("mods/pane-sandbox/play.svg").size(10).flex_none());
     if (this.cmds.length === 1) {
       const [cmd] = this.cmds;
-      return stop(chip).tooltip(`Run in Claude Code: ! ${cmd}`)
+      return stop(chip).tooltip(this.sandboxed(p) ? `Run outside the sandbox, in a new pane: ${cmd}` : `Run in Claude Code: ! ${cmd}`)
         .on_click((_e, cx) => { cx.stop_propagation(); this.runCmd(p, cmd); cx.notify(); })
         .child(div().min_w(0).truncate().font_family(mono).child(cmd));
     }
@@ -114,7 +121,8 @@ export default class Pane extends View {
     return HoverCard.new(`ph-runs-${p.pane}`).open_delay(150).anchor("top_right")
       .trigger(stop(chip).child(`Run (${this.cmds.length})`))
       .content(v_flex().w(380).p(4).gap(1).rounded(10).bg(t.popover).border(1).border_color(t.border).text_size(12)
-        .child(div().px(8).pt(4).pb(2).text_size(11).text_color(t.dim).child("Claude Code asks you to run"))
+        .child(div().px(8).pt(4).pb(2).text_size(11).text_color(t.dim)
+          .child(this.sandboxed(p) ? "Claude Code asks you to run (outside the sandbox, in a new pane)" : "Claude Code asks you to run"))
         .children(this.cmds.map(item)));
   }
 

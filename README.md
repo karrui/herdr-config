@@ -181,6 +181,7 @@ Right-click the Linear button to link a different ticket, stop or restore detect
 
 When Claude Code's latest reply asks you to run a command with `!`, like `` `! gh auth login` ``, the pane's header shows it with a play button.
 Click it to type `! <command>` into Claude Code, which runs it in its session so the output lands in the conversation.
+For a sandboxed agent, where the sandbox would block the command too, it runs instead in a shell outside the sandbox, in a new pane below, which stays open.
 Several show as `Run (3)`; hover it for the list.
 Commands with a placeholder to fill in, like `<path>`, are left out.
 It needs the status line set up above.

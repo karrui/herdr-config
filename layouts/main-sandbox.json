@@ -95,7 +95,7 @@
                 "pane": {
                   "header": {
                     "content": {
-                      "mod": "pane"
+                      "mod": "pane-sandbox"
                     },
                     "reveal": "always",
                     "height": 30,

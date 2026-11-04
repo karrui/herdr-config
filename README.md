@@ -177,6 +177,14 @@ Right-click the Linear button to link a different ticket, stop or restore detect
 
   ![The Usage popup with Claude Code's and Codex's limits](docs/usage.png)
 
+### Pane headers
+
+When Claude Code's latest reply asks you to run a command with `!`, like `` `! gh auth login` ``, the pane's header shows it with a play button.
+Click it to type `! <command>` into Claude Code, which runs it in its session so the output lands in the conversation.
+Several show as `Run (3)`; hover it for the list.
+Commands with a placeholder to fill in, like `<path>`, are left out.
+It needs the status line set up above.
+
 ## Updating
 
 Pull, then run `./install.sh` again.
@@ -209,6 +217,7 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `mods/tabs-sandbox` | The tab bar, with the Changes, Linear and containers buttons. |
 | `mods/worktree-hooks`, `worktree-setup`, `resources` | The worktree dialogs, the setup editor and a worktree's containers. |
 | `mods/menu-hooks` | Right-click menus, including Restart agent. |
+| `mods/pane-sandbox` | Herdr's pane header, with Run for the `!` commands Claude Code asks you to run. |
 | `mods/brand-sandbox` | The sidebar's top bar: only search. |
 | `mods/agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists` | Herdr's agents list, + menu, status bar and a sandbox lists editor, adapted to the sandbox. |
 

@@ -116,7 +116,7 @@ export default class Tabs extends View {
     const at = this.spaceFolder();
     const worktree = space && !space.machine && (space.tabs ?? []).length === 1 && at?.space.id === space.id
       && at.folder.startsWith(`${home()}/.herdr/worktrees/`);
-    if (worktree) openOverlay({ mod: "worktree-hooks", kind: "dialog", width: 440, height: 200, props: { space: space.id, action: "close" } });
+    if (worktree) openOverlay({ mod: "worktree-hooks", kind: "dialog", width: 440, height: 260, props: { space: space.id, action: "close" } });
     else run("tab.close", { id: c.id });
   }
 

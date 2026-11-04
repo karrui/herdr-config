@@ -142,7 +142,8 @@ export default class Worktree extends View {
     this.repo = undefined; // undefined: looking, null: not in git
     this.dirty = false;
     this.unpushed = [];
-    // Remove: the worktree's branch goes too, unless unchecked; `lost` counts its
+    // Remove, and Close when it deletes the worktree: the worktree's branch goes too,
+    // unless unchecked; `lost` counts its
     // commits that aren't on any remote.
     this.branch = null;
     this.deleteBranch = true;
@@ -169,7 +170,9 @@ export default class Worktree extends View {
           this.dirty = (await git(repo.top, ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain"], this.on)).out !== "";
           this.unpushed = (await submodules(repo.top, this.on)).unpushed;
         }
-        if (repo?.linked && props()?.action === "remove") {
+        // Close deletes the worktree only when it's clean, local, and no other space is in it.
+        const deletes = props()?.action === "remove" || (props()?.action === "close" && !this.on && !this.dirty && !this.sharedWith);
+        if (repo?.linked && deletes) {
           this.branch = (await git(repo.top, ["branch", "--show-current"], this.on)).out || null;
           if (this.branch) this.lost = Number((await git(repo.top, ["rev-list", "--count", "HEAD", "--not", "--remotes"], this.on)).out) || 0;
         }
@@ -280,7 +283,8 @@ export default class Worktree extends View {
     if (!s) return "";
     if (this.on || !this.repo?.linked || this.sharedWith) { run("space.close", { id: s.id, confirmed: true }); return ""; }
     setShared("worktree.teardown", { ...(shared("worktree.teardown") ?? {}), [s.id]: Date.now() });
-    const r = await hc(["run", "--bg", "--cwd", this.repo.top, "--", "/bin/zsh", "-lic", 'exec "$0" closed "$1" "$2"', HOOKS(), this.repo.top, s.id]);
+    const branch = this.deleteBranch ? this.branch ?? "" : "";
+    const r = await hc(["run", "--bg", "--cwd", this.repo.top, "--", "/bin/zsh", "-lic", 'exec "$0" closed "$1" "$2" "$3"', HOOKS(), this.repo.top, s.id, branch]);
     return r.code === 0 ? "" : r.stderr.trim() || "Couldn't start the teardown.";
   }
 
@@ -376,7 +380,7 @@ export default class Worktree extends View {
           : closing && this.sharedWith
             ? `Its agents and terminals stop. ${this.sharedWith.name} is still working in ${tilde(r.top, this.userHome)}, so the worktree stays.`
           : closing
-            ? `Its agents and terminals stop. This repo's teardown runs first, then the space closes${this.dirty ? "." : ` and ${tilde(r.top, this.userHome)} is deleted. The branch stays.`}`
+            ? `Its agents and terminals stop. This repo's teardown runs first, then the space closes${this.dirty ? "." : ` and ${tilde(r.top, this.userHome)} is deleted.`}`
           : remove
             ? !r.linked
               ? "This is the repository's main checkout, not a worktree."
@@ -396,8 +400,8 @@ export default class Worktree extends View {
       .child(div().text_color(t.muted).child(detail))
       .when(remove && this.dirty, (el) => el.child(div().text_color(t.blocked).child("It has uncommitted changes: they will be lost.")))
       .when(closing && this.dirty && !this.sharedWith, (el) => el.child(div().text_color(t.ansi3).child(`It has uncommitted changes, so ${tilde(r.top, this.userHome)} is kept.`)))
-      .when(remove && Boolean(r?.linked && this.branch), (el) => el.child(this.checkbox(t)))
-      .when(remove && this.deleteBranch && this.lost > 0, (el) => el.child(div().text_color(t.blocked)
+      .when((remove || closing) && Boolean(r?.linked && this.branch), (el) => el.child(this.checkbox(t)))
+      .when((remove || closing) && Boolean(this.branch) && this.deleteBranch && this.lost > 0, (el) => el.child(div().text_color(t.blocked)
         .child(`${this.branch} has ${this.lost} commit${this.lost === 1 ? " that isn't" : "s that aren't"} pushed anywhere: ${this.lost === 1 ? "it" : "they"} will be lost.`)))
       .when(remove && this.unpushed.length > 0, (el) => el.child(div().text_color(t.blocked).child(`Submodule ${this.unpushed.join(", ")} has commits that aren't pushed anywhere: they will be lost.`)))
       .when(!remove && !closing && !blocked, (el) =>

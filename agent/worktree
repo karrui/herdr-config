@@ -16,8 +16,10 @@
 #                                             run the teardown, then close the space, remove
 #                                             the worktree and delete <branch> (local only);
 #                                             output to logs/<space>.log
-#   worktree closed <path> [<space>]          the teardown, then close the space (if given)
-#                                             and remove the worktree if clean; output to
+#   worktree closed <path> [<space> [<branch>]]
+#                                             the teardown, then close the space (if given)
+#                                             and remove the worktree and delete <branch>
+#                                             (local only) if clean; output to
 #                                             logs/<space>.log, else logs/closed-<name>.log
 #   worktree resources <path> [stop|start|remove]
 #                                             the containers and volumes its setup started
@@ -190,10 +192,10 @@ case "$cmd" in
     ;;
   closed)
     # Closing its space: run the teardown, then remove the worktree when that loses
-    # nothing uncommitted. Its branch stays either way. With <space> (the Close dialog),
+    # nothing uncommitted, and delete <branch> (local only) with it. With <space> (the Close dialog),
     # the space stays up, struck through, until the teardown is done, then closes; without
     # (it already closed some other way), this only cleans up. Exits 3 when it kept it.
-    space="${1:-}"
+    space="${1:-}"; branch="${2:-}"
     mkdir -p "$here/logs"
     if [ -n "$space" ]; then exec >"$here/logs/$space.log" 2>&1; else exec >"$here/logs/closed-$(basename "$dir").log" 2>&1; fi
     script="$(has teardown && get "$conf" teardown)"
@@ -202,7 +204,8 @@ case "$cmd" in
     [ -z "$dirty" ] || echo "Kept: it has uncommitted changes"
     [ -z "$space" ] || herdr-app do space.close --id "$space" --confirmed true >/dev/null
     [ -z "$dirty" ] || exit 3
-    cd "$main" && git worktree remove "$dir" && echo "Removed"
+    cd "$main" && git worktree remove "$dir" && echo "Removed" || exit
+    [ -z "$branch" ] || { git branch -D "$branch" && echo "Deleted branch $branch"; }
     ;;
   resources)
     # What this worktree's setup started, as JSON with each container's state now; or,

@@ -127,7 +127,7 @@ To turn the sandbox on or off for an agent, click "Sandbox: …" in the footer.
 Closing a worktree space from its menu, its tab menu or its last tab's **×** asks first, then runs the repo's teardown.
 The space stays in the sidebar, struck through with the teardown's progress, and closes when it's done.
 The worktree folder is then deleted if it has no uncommitted changes; otherwise it's kept and a toast says so.
-The branch always stays.
+Its local branch is deleted with it, unless you uncheck **Delete branch** in the Close dialog; closing any other way keeps the branch.
 
 Closing its last tab with `cmd-w` can't wait for the teardown, so the teardown runs right after the space is gone.
 **Remove worktree** in a space's menu deletes the worktree even with uncommitted changes, after warning.

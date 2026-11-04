@@ -133,7 +133,7 @@ export default class Menu extends View {
       execFile(`${appHome()}/sandbox/agent-restart`, [it[2].address, it[2].mode])
         .catch((e) => ({ code: 1, stderr: String(e) }))
         .then((r) => r.code === 0 || notify({ title: "Couldn't restart the agent", body: r.stderr.trim(), level: "error" }));
-    else if (it[1] === "worktree") openOverlay({ mod: "worktree-hooks", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: it[2].action === "close" ? 200 : 300 }), props: it[2] });
+    else if (it[1] === "worktree") openOverlay({ mod: "worktree-hooks", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: it[2].action === "close" ? 260 : 300 }), props: it[2] });
     else run(it[1], it[2]);
   }
 

@@ -25,11 +25,20 @@ The user may follow you in Herdr's chat view instead of your terminal.
 There, things you show come through as more than text:
 - Pictures and recordings show inline: use show-your-work's `show_image` or `show_video`, or put a Markdown image with an absolute path in your reply (`![Login page](/tmp/login.png)`).
 - Questions you ask with AskUserQuestion, and permission prompts, show as cards to answer.
-- For something richer, such as a report, a chart, a board or a form, make an artifact: run `herdr-artifact guide` first, then `herdr-artifact publish`.
-  It shows in Herdr's Artifacts panel and in your chat.
-  From the sandbox, the user approves its code before it first runs, so tell them it's waiting for that.
 - A reaction to your message arrives as `<hc from="person" reaction="👍" to="first words of your message"/>`.
   It needs no reply: if that's all you got, answer only `<hc no-reply/>`.
+
+## Artifacts
+
+To show the user something richer than a reply, such as a report, a comparison, a plan to approve, a chart, a dashboard, a checklist or a form, make a Herdr artifact.
+Run `herdr-artifact guide` first, then `herdr-artifact publish`.
+It opens beside their work in Herdr's Artifacts panel and as a card in your chat.
+It can read files and run commands as it shows, so it stays current, and it can send the user's choices back to you.
+They can also mark it up, and their notes come back to you to act on.
+- Use it instead of Claude Code's `Artifact` tool (claude.ai pages), lavish, or an HTML file opened in a browser.
+  Use those only when the user asks for a link, or the page is for people outside Herdr.
+- Change it with `herdr-artifact update`, not a second `publish`.
+- From the sandbox, the user approves its code before it first runs: tell them it's waiting for that.
 
 ## Shared browser
 

@@ -58,6 +58,8 @@ const COLUMN = 760;
 const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex" };
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const same = (a, b) => norm(a) === norm(b);
+// "45s", "4m 5s", "1h 2m": how long a turn worked.
+const duration = (s) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
 // When an ask was made: its id is <terminal>.<seconds>.<pid> (ask-hook.sh), taken at the end of
 // that second so it sits after what was said in it.
 const askAt = (id) => { const p = String(id).split("."); const sec = Number(p[p.length - 2]); return Number.isFinite(sec) && sec > 1e9 ? sec * 1000 + 999 : Date.now(); };
@@ -2484,14 +2486,41 @@ export default class Chat extends View {
 
   // ---- the conversation's rows ----------------------------------------------------------------
 
+  // Codex's way with a finished turn: the person's message, "Worked for 4m 5s", the last reply.
+  // What came between (replies on the way, thoughts, tool steps) folds into that row and opens
+  // on a click; the turn under way shows all of it as it comes. Questions, pictures and
+  // artifacts stay where they were.
+  foldTurns(items, working) {
+    const FOLDS = new Set(["agent", "thought", "tools"]);
+    const out = [];
+    let i = 0;
+    while (i < items.length) {
+      if (items[i].kind !== "user") { out.push(items[i++]); continue; }
+      const u = items[i];
+      out.push(u);
+      let j = i + 1;
+      while (j < items.length && items[j].kind !== "user") j++;
+      const turn = items.slice(i + 1, j);
+      i = j;
+      let fin = -1;
+      for (let k = turn.length - 1; k >= 0; k--) if (turn[k].kind === "agent") { fin = k; break; }
+      if ((working && j === items.length) || !turn.slice(0, Math.max(0, fin)).some((x) => FOLDS.has(x.kind))) { out.push(...turn); continue; }
+      const id = `w:${u.id}`, end = turn[fin].at ?? 0;
+      out.push({ kind: "worked", id, secs: u.at && end > u.at ? Math.round((end - u.at) / 1000) : null });
+      const open = this.opened.has(id);
+      turn.forEach((x, k) => { if (open || k >= fin || !FOLDS.has(x.kind)) out.push(x); });
+    }
+    return out;
+  }
+
   rows() {
     const out = [];
     // The rows from `from` on are one message's block (spaced()).
     const block = (from, blk) => { for (let k = from; k < out.length; k++) out[k] = { ...out[k], blk }; };
     if (this.start === 0) out.push({ kind: "top", id: "top" });
     else if (this.start) out.push({ kind: "loading", id: "loading" });
-    const items = this.conv?.items ?? [];
     const working = this.status() === "working";
+    const items = this.foldTurns(this.conv?.items ?? [], working);
     const arts = this.resolveArts(items);
     // The space's tasks' news lines (newsLines()): Herdr's in place, the rest each before the
     // first thing said after its moment.
@@ -2765,6 +2794,8 @@ export default class Chat extends View {
       case "day": return 18;
       case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
       case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
+      case "thought": return 14 + lines(x.text, w) * 21;
+      case "worked": return 41;
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
       case "artifact": return x.pending || x.line ? 20 : 62;
       case "tasknews": return x.accept ? 26 : 20;
@@ -2894,6 +2925,19 @@ export default class Chat extends View {
       }
       case "agent":
         return pad(theirs(x.text));
+      case "thought":
+        // Its thinking, written out: Claude Code's narration between steps, which its terminal
+        // shows as messages (and the log keeps only as thinking). Never a turn's last reply.
+        return pad(div().w_full().child(TextView.markdown(`${pre}chat-th-${x.id}`, this.findMark(x.text) || " ").selectable(true)));
+      case "worked": {
+        // A finished turn's work, folded (foldTurns()): opens on a click (clickRow()).
+        const open = this.opened.has(x.id);
+        return col(v_flex().w_full().gap(8)
+          .child(h_flex().h(20).gap(4).items_center().cursor_pointer().text_size(12.5).text_color(t.dim).hover((s) => s.text_color(t.muted))
+            .child(x.secs != null ? `Worked for ${duration(x.secs)}` : "Worked")
+            .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none()))
+          .child(div().w_full().h(1).bg(t.border)), 18, 6);
+      }
       case "codehead": {
         const done = this.copied === x.id;
         return col(h_flex().w_full().h(28).pl(12).pr(4).items_center().rounded_t(8).bg(t.surface).border_1().border_b(0).border_color(t.border)
@@ -3025,10 +3069,10 @@ export default class Chat extends View {
       if (c?.kind === "input") (c.state ?? null)?.focus();
       else c?.fn?.(cx);
     }
-    else if (row.kind === "brief") { if (this.opened.has(key)) this.opened.delete(key); else this.opened.add(key); }
+    else if (row.kind === "brief" || row.kind === "worked") { if (this.opened.has(key)) this.opened.delete(key); else this.opened.add(key); }
     else if (row.kind === "fold") {
       // Only on its words (as rowBare() draws them: the column's edge, the bubble's padding in).
-      const off = (this.press?.x ?? -1) - this.edges().left - 12;
+      const off = (this.press?.x ?? -1) - this.edges().left;
       if (off >= -4 && off <= 100) this.toggleFold(row, rows);
     }
     else if (row.kind === "replyref") {

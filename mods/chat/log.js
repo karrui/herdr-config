@@ -594,6 +594,8 @@ export class Conversation {
       }
       for (const b of Array.isArray(m.content) ? m.content : []) {
         if (b?.type === "thinking" && !this.open.size) this.doing = "Thinking";
+        // Its thinking, when it's written out (not redacted): Claude Code's narration between steps.
+        if (b?.type === "thinking" && String(b.thinking ?? "").trim()) this.push({ kind: "thought", id: `th${off}`, text: String(b.thinking).trim(), at: time(l.timestamp) });
         const said = b?.type === "text" ? this.agentText(b.text ?? "") : "";
         if (said) {
           // One reply can be written over several lines with the same id.

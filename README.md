@@ -208,6 +208,10 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
 - Artifacts are small Herdr panels agents publish with `herdr-artifact`, shown in the Artifacts panel (the tab bar's grid button) and as cards in the chat.
   Herdr runs them outside the sandbox, so one a sandboxed agent made only runs once you've read its code and approved it; a new version asks again.
 - Reactions work, and a chat agent shows in the Agents list, the tab bar and the footer like any other.
+- Like Codex's: the agent's words span the column, your messages are bubbles, and its narration and steps stream in as it works.
+  A finished turn folds them behind "Worked for 4m 5s"; edits show as diffs.
+- Ask about this, under a message or a picture, adds it to your next message as an annotation with an optional comment.
+- `/btw` opens Claude Code's answer in a panel over the chat; `/` lists commands and skills, `$` Codex's skills.
 
 cmd-w on a tab in Chat parks its agent, as for a terminal; the tab's × ends it.
 Shepherdr's tasks, assistants, voice and other machines aren't included.

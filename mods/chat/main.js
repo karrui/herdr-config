@@ -125,6 +125,9 @@ function clock(at) {
   const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   return d.toDateString() === now.toDateString() ? hm : `${d.getDate()} ${MONTHS[d.getMonth()]} ${hm}`;
 }
+// An edit's card (log.js diffOf()): at most this many of its lines show.
+const DIFF_SHOWN = 40;
+const fileName = (p) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
 const ICONS = { copy: "copy", reply: "reply", annotate: "annotate", rewind: "rewind", fork: "git-fork", react: "smile-plus" };
 // Annotations as the agent reads them, ahead of the message's words: what the person points at
 // (a reply, quoted; pictures, by path), each with their comment. Plain words in a herdr- tag,
@@ -2520,7 +2523,7 @@ export default class Chat extends View {
   // on a click; the turn under way shows all of it as it comes. Questions, pictures and
   // artifacts stay where they were.
   foldTurns(items, working) {
-    const FOLDS = new Set(["agent", "thought", "tools"]);
+    const FOLDS = new Set(["agent", "thought", "tools", "diff"]);
     const out = [];
     let i = 0;
     while (i < items.length) {
@@ -2839,6 +2842,7 @@ export default class Chat extends View {
       case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
       case "thought": return 14 + lines(x.text, w) * 21;
       case "worked": return 41;
+      case "diff": return 32 + (this.opened.has(x.id) ? 0 : 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0));
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
       case "artifact": return x.pending || x.line ? 20 : 62;
       case "tasknews": return x.accept ? 26 : 20;
@@ -2976,6 +2980,30 @@ export default class Chat extends View {
         // Its thinking, written out: Claude Code's narration between steps, which its terminal
         // shows as messages (and the log keeps only as thinking). Never a turn's last reply.
         return pad(div().w_full().child(TextView.markdown(`${pre}chat-th-${x.id}`, this.findMark(x.text) || " ").selectable(true)));
+      case "diff": {
+        // An edit (log.js diffOf()): "Edited <file> +N −M" over its lines, red and green, open
+        // until its header is clicked shut (clickRow(); opened here means shut).
+        const shut = this.opened.has(x.id);
+        const shown = x.lines.slice(0, DIFF_SHOWN), left = x.lines.length - shown.length + (x.more ?? 0);
+        const tint = (l) => (l.t === "+" ? green() : l.t === "-" ? red() : null);
+        const line = (l) => (l.t === "@"
+          ? div().h(18).px(10).text_color(t.dim).child("⋯")
+          // Long lines wrap, as Codex's do (the measurer takes each card's drawn height).
+          : h_flex().min_h(18).items_start().when(Boolean(tint(l)), (el) => el.bg(tint(l) + "24"))
+            .child(div().w(20).h(18).flex_none().text_center().text_color(tint(l) ?? t.dim).child(l.t === " " ? "" : l.t === "-" ? "−" : "+"))
+            .child(div().flex_1().min_w(0).pr(10).whitespace_normal().text_color(t.foreground).child(l.s || " ")));
+        return col(v_flex().w_full().gap(6)
+          .child(h_flex().h(20).gap(6).items_center().cursor_pointer().text_size(12.5).text_color(t.dim).hover((s) => s.text_color(t.muted))
+            .child(div().flex_none().child("Edited"))
+            .child(div().flex_none().font_medium().text_color(t.foreground).child(fileName(x.file)))
+            .when(x.add > 0, (el) => el.child(div().flex_none().text_color(green()).child(`+${x.add}`)))
+            .when(x.del > 0, (el) => el.child(div().flex_none().text_color(red()).child(`−${x.del}`)))
+            .child(svg(`mods/workspace-chrome/chevron-${shut ? "right" : "down"}.svg`).size(12).flex_none()))
+          .when(!shut, (el) => el.child(v_flex().w_full().py(4).rounded(8).border_1().border_color(t.border).bg(t.surface).overflow_hidden()
+            .font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
+            .children(shown.map(line))
+            .when(left > 0, (el) => el.child(div().h(18).px(10).text_color(t.dim).child(`${left} more line${left === 1 ? "" : "s"}`))))), 18, 4);
+      }
       case "worked": {
         // A finished turn's work, folded (foldTurns()): opens on a click (clickRow()).
         const open = this.opened.has(x.id);
@@ -3116,7 +3144,7 @@ export default class Chat extends View {
       if (c?.kind === "input") (c.state ?? null)?.focus();
       else c?.fn?.(cx);
     }
-    else if (row.kind === "brief" || row.kind === "worked") { if (this.opened.has(key)) this.opened.delete(key); else this.opened.add(key); }
+    else if (row.kind === "brief" || row.kind === "worked" || row.kind === "diff") { if (this.opened.has(key)) this.opened.delete(key); else this.opened.add(key); }
     else if (row.kind === "fold") {
       // Only on its words (as rowBare() draws them: the column's edge, the bubble's padding in).
       const off = (this.press?.x ?? -1) - this.edges().left;

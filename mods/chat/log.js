@@ -290,9 +290,62 @@ const cmdWords = (c) => clip(String(c ?? "").replace(/^(cd [^&;]+(&&|;)\s*)+/, "
 const base = (p) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
 const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return clip(u, 40); } };
 
+// An edit as the chat shows it: { file, add, del, lines: [{ t: "+" | "-" | " " | "@", s }] }, "@"
+// where unchanged lines are left out. Lines changed are kept with 3 around them, at most 400.
+const DIFF_MAX = 400;
+function lineDiff(a, b) {
+  const A = String(a ?? "").split("\n"), B = String(b ?? "").split("\n");
+  if (A.length * B.length > 250000) return [...A.map((s) => ({ t: "-", s })), ...B.map((s) => ({ t: "+", s }))];
+  const n = A.length, m = B.length, L = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { out.push({ t: " ", s: A[i] }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) out.push({ t: "-", s: A[i++] });
+    else out.push({ t: "+", s: B[j++] });
+  }
+  while (i < n) out.push({ t: "-", s: A[i++] });
+  while (j < m) out.push({ t: "+", s: B[j++] });
+  return out;
+}
+function diffOf(file, lines) {
+  const near = lines.map((l, i) => l.t !== " " || lines.slice(Math.max(0, i - 3), i + 4).some((x) => x.t === "+" || x.t === "-"));
+  const kept = [];
+  let gap = false;
+  lines.forEach((l, i) => { if (near[i] && l.t !== "@") { if (gap && kept.length) kept.push({ t: "@", s: "" }); gap = false; kept.push(l); } else gap = true; });
+  return { file, add: lines.filter((l) => l.t === "+").length, del: lines.filter((l) => l.t === "-").length, lines: kept.slice(0, DIFF_MAX), more: Math.max(0, kept.length - DIFF_MAX) };
+}
+function claudeDiffs(name, input) {
+  const f = input.file_path;
+  if (!f) return [];
+  if (name === "Edit") return [diffOf(f, lineDiff(input.old_string, input.new_string))];
+  if (name === "MultiEdit") return [diffOf(f, (input.edits ?? []).flatMap((e, k) => [...(k ? [{ t: "@", s: "" }] : []), ...lineDiff(e.old_string, e.new_string)]))];
+  if (name === "Write") return [diffOf(f, String(input.content ?? "").split("\n").map((s) => ({ t: "+", s })))];
+  return [];
+}
+// Codex's apply_patch: a diff per file it touches.
+function patchDiffs(patch) {
+  const out = [];
+  let cur = null;
+  for (const l of String(patch ?? "").split("\n")) {
+    const f = /^\*\*\* (?:Update|Add|Delete) File: (.+)/.exec(l);
+    if (f) { cur = { file: f[1].trim(), lines: [] }; out.push(cur); continue; }
+    if (!cur || /^\*\*\* /.test(l)) continue;
+    if (l.startsWith("@@")) cur.lines.push({ t: "@", s: "" });
+    else if (/^[+\- ]/.test(l)) cur.lines.push({ t: l[0], s: l.slice(1) });
+  }
+  return out.map((d) => diffOf(d.file, d.lines));
+}
+
 // One tool call in words: its kind (for the summary), a line for the open row, and what it is
 // doing (for the working line: "Editing main.js", "Run the auth tests").
 function claudeStep(name, input = {}) {
+  const st = claudeStepOnly(name, input);
+  if (st?.kind === "edit") st.diffs = claudeDiffs(name, input);
+  return st;
+}
+function claudeStepOnly(name, input = {}) {
   switch (name) {
     case "Read": return { kind: "read", line: `Read ${short(input.file_path)}`, doing: `Reading ${base(input.file_path)}` };
     case "Edit": case "MultiEdit": case "NotebookEdit":
@@ -345,7 +398,8 @@ function codexStep(name, args) {
   }
   if (name === "apply_patch") {
     const files = [...String(a.input ?? args ?? "").matchAll(/\*\*\* (?:Update|Add|Delete) File: (.+)/g)].map((m) => short(m[1]));
-    return { kind: "edit", line: files.length ? `Edited ${files.join(", ")}` : "Edited files", doing: files.length ? `Editing ${files.map(base).slice(0, 3).join(", ")}` : "Editing files", count: Math.max(1, files.length) };
+    return { kind: "edit", line: files.length ? `Edited ${files.join(", ")}` : "Edited files", doing: files.length ? `Editing ${files.map(base).slice(0, 3).join(", ")}` : "Editing files", count: Math.max(1, files.length),
+      diffs: patchDiffs(a.input ?? args) };
   }
   if (name === "web_search" || name === "web.run") return { kind: "web", line: "Searched the web", doing: "Searching the web" };
   if (name === "update_plan") return { kind: "plan", line: "Updated its plan", doing: "Planning" };
@@ -415,6 +469,8 @@ export class Conversation {
     this.open.set(id, st.doing);
     if (st.waiting) this.waits.add(id);
     if (st.bg) this.bg = [...this.bg.slice(-20), { id, ...st.bg }];
+    // An edit's diff: a card of its own under the step (the next step starts a new tools row).
+    (st.diffs ?? []).forEach((d, k) => { if (d.add || d.del) this.push({ kind: "diff", id: `d${off}:${id}:${k}`, ...d }); });
     if (this.open.size > 50) this.open.delete(this.open.keys().next().value);
     this.doing = st.doing;
     this.waiting = Boolean(st.waiting);

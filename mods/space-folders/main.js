@@ -235,7 +235,7 @@ export default class Spaces extends View {
     cx.timer.every(700, (cx) => this.watchTeardown(cx));
     // Herdr's worktree spaces shown at the last look: id -> { top }.
     this.worktrees = {};
-    cx.timer.every(1000, (cx) => this.watchClosed(cx));
+    cx.timer.every(1000, (cx) => { this.watchClosed(cx); this.watchArtifacts(cx); });
     // "space-folders.next" and ".prev" in keys.json: the next space down the
     // list as it shows, where Herdr's own space.next goes by its own order.
     this.seen = [];
@@ -1081,6 +1081,45 @@ export default class Spaces extends View {
       });
     }
     this.worktrees = now;
+  }
+
+  // A closed space takes its agents' artifacts with it. Only those its own agents published
+  // (every version): the Artifacts panel lists by folder, which other spaces may share. Each
+  // space's agents are gathered while it runs: its panes' terminals, the chat agents parked
+  // behind it (parked.js), and their sub-agents.
+  watchArtifacts(cx) {
+    if (machines().find((m) => m.name === null)?.layout !== "ready") return;
+    const sp = spaces().filter((s) => !s.machine), ids = new Set(sp.map((s) => s.id));
+    const ps = panes(), ts = terminals(), chats = chatAgents();
+    this.spaceAgents ??= {};
+    for (const s of sp) {
+      const tabs = new Set(s.tabs.map((t) => t.id));
+      const mine = new Set(this.spaceAgents[s.id]?.who ?? []);
+      for (const p of ps) if (tabs.has(p.tab) && p.terminal) mine.add(p.terminal);
+      for (const c of chats) if (c.space === s.id) mine.add(c.address);
+      for (const k of ts) if (k.parent && mine.has(k.parent)) mine.add(k.address);
+      this.spaceAgents[s.id] = { name: s.name, who: [...mine] };
+    }
+    for (const [id, x] of Object.entries(this.spaceAgents)) {
+      if (ids.has(id)) continue;
+      delete this.spaceAgents[id];
+      if (x.who.length) this.dropArtifacts(id, x.name, new Set(x.who), cx);
+    }
+  }
+
+  dropArtifacts(id, name, who, cx) {
+    cx.spawn(async () => {
+      // Gone for good, not a blip: still gone a moment later.
+      await exec("sleep", ["3"]);
+      if (spaces().some((s) => s.id === id)) return;
+      const cli = `${appHome()}/mods/artifacts/bin/herdr-artifact`;
+      let arts = [];
+      try { arts = JSON.parse((await exec(cli, ["list", "--all", "--json"])).stdout || "{}").artifacts ?? []; } catch {}
+      const gone = arts.filter((a) => who.has(a.publisher) && (a.versions ?? []).every((v) => !v.publisher || who.has(v.publisher)));
+      let n = 0;
+      for (const a of gone) if ((await exec(cli, ["rm", a.id]).catch(() => ({ code: 1 }))).code === 0) n++;
+      if (n) notify({ title: `Removed ${n} artifact${n === 1 ? "" : "s"}`, body: `${name ? `${name} closed` : "Its space closed"}, and its agents made ${n === 1 ? "it" : "them"}.`, level: "info" });
+    });
   }
 
   cleanUp(id, w, cx) {

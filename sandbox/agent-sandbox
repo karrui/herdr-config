@@ -114,9 +114,9 @@ mkdir -p "$spool"
   echo "(allow file-read-data file-write* (subpath $(q "$spool")))"
   echo "(allow file-read-data (subpath $(q "$dir/bin")))"
   # What agents run or read from Herdr: the usage feed scripts, Herdr's instructions, the
-  # shared Chrome's launcher, and the mods (hooks like Shepherdr's run scripts from there).
-  # Not data/, which holds keys (Linear's).
-  echo "(allow file-read-data (subpath $(q "$app/usage")) (subpath $(q "$app/agent")) (subpath $(q "$app/browser")) (subpath $(q "$app/mods")))"
+  # shared Chrome's launcher, the mods (hooks like Shepherdr's run scripts from there), and
+  # files sent from the chat (mods/chat/attach.js). Not data/, which holds keys (Linear's).
+  echo "(allow file-read-data (subpath $(q "$app/usage")) (subpath $(q "$app/agent")) (subpath $(q "$app/browser")) (subpath $(q "$app/mods")) (subpath $(q "$app/attach")))"
 } > "$profile"
 
 [ "$term" != none ] && hc label "$term" "herdr.sandbox=$file" >/dev/null 2>&1 || true

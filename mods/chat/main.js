@@ -557,6 +557,13 @@ export default class Chat extends View {
     if (this.typing) hc(["label", addr, `herdr.typing=${at}`]).catch(() => {});
   }
 
+  // Where files are sent (attach.deliver): a sandboxed agent gets copies of files from outside
+  // its folder, which it couldn't read.
+  deliverTo() {
+    const t = terminals().find((x) => x.address === this.addr);
+    return { sandbox: Boolean(t?.labels?.["herdr.sandbox"]), folder: t?.foreground?.cwd ?? t?.cwd ?? null };
+  }
+
   addFiles(list) {
     for (const f of list) if (!this.files.some((x) => x.path === f.path)) this.files.push(f);
     this.files = this.files.slice(0, 20);
@@ -1271,7 +1278,7 @@ export default class Chat extends View {
     cx.spawn(async (cx) => {
       let r;
       try {
-        const paths = await attach.deliver(msg.files, this.addr, this.machine);
+        const paths = await attach.deliver(msg.files, this.addr, this.machine, this.deliverTo());
         p.sent = [body, ...paths].filter(Boolean).join("\n\n");
         r = await this.typed(() => hc(["send", this.addr, p.sent]));
         // Its own dialog is open in its terminal (a question or a permission with no card
@@ -1513,7 +1520,7 @@ export default class Chat extends View {
       this.wasFocused = false;
       if (machine && msg?.files.length) {
         // On another machine: the files once the agent runs there.
-        cx.spawn(async () => { const paths = await attach.deliver(msg.files, this.addr, this.machine).catch(() => []); if (paths.length) await hc(["send", this.addr, paths.join("\n")]); });
+        cx.spawn(async () => { const paths = await attach.deliver(msg.files, this.addr, this.machine, this.deliverTo()).catch(() => []); if (paths.length) await hc(["send", this.addr, paths.join("\n")]); });
       }
       cx.spawn(async (cx) => this.follow(cx));
       if (!this.machine) cx.spawn(async (cx) => this.watchAsks(cx));

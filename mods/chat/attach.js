@@ -1,7 +1,8 @@
 // Files for the message box: pasted (a clipboard image, or copied files) or dropped. They go
 // to the agent the way its CLI reads them: as file paths in the message (Claude Code turns an
 // image path into an image). An agent on another machine gets a copy there first (`hc put`).
-// Pasted images are kept in data/chat-attach until the person sends or removes them.
+// Pasted images and texts are kept in DIR until the person sends or removes them. DIR is outside
+// data/ (which holds keys), so a sandboxed agent can read it (sandbox/agent-sandbox).
 
 import { exec, hc, appHome } from "herdr";
 import * as fs from "fs/promises";
@@ -9,30 +10,34 @@ import * as fs from "fs/promises";
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i;
 const base = (p) => String(p).split("/").filter(Boolean).pop() ?? p;
 export const isImage = (p) => IMAGE.test(p);
+const DIR = `${appHome()}/attach`;
 
-// The clipboard's files or image, here (Wayland). [{ path, name, image, temp }] or [].
+// The clipboard's copied files, else its image saved as a PNG (clipboard.jxa, macOS).
+// [{ path, name, image, temp }] or [].
 export async function fromClipboard() {
-  const types = (await exec("sh", ["-c", "wl-paste --list-types 2>/dev/null"]).catch(() => null))?.stdout?.split("\n") ?? [];
-  if (types.includes("text/uri-list")) {
-    const r = await exec("sh", ["-c", "wl-paste -n -t text/uri-list 2>/dev/null"]);
-    return paths(r.stdout.split(/\r?\n/).filter((l) => l.startsWith("file://")).map((l) => decodeURIComponent(l.slice(7))));
-  }
-  const type = types.find((t) => /^image\/(png|jpeg|gif|webp|bmp)$/.test(t));
-  if (!type) return [];
-  const dir = `${appHome()}/data/chat-attach`;
-  const name = `pasted-${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}.${type.split("/")[1].replace("jpeg", "jpg")}`;
-  const r = await exec("sh", ["-c", 'mkdir -p "$1" && wl-paste -n -t "$2" > "$1/$3" && [ -s "$1/$3" ] && echo ok', "x", dir, type, name]);
-  return r.stdout.trim() === "ok" ? [{ path: `${dir}/${name}`, name, image: true, temp: true }] : [];
+  const stem = `pasted-${new Date().toISOString().replace(/[-:]/g, "").replace(/\..*/, "")}`;
+  const r = await exec("osascript", ["-l", "JavaScript", `${appHome()}/mods/chat/clipboard.jxa`, DIR, stem]);
+  const lines = r.stdout.split("\n").map((l) => l.split("\t")).filter(([k, p]) => p && (k === "F" || k === "I"));
+  const image = lines.find(([k]) => k === "I");
+  if (image) return [{ path: image[1], name: base(image[1]), image: true, temp: true }];
+  return paths(lines.map(([, p]) => p));
 }
 
 // Dropped or pasted file paths as attachments.
 export const paths = (list) => list.filter(Boolean).map((p) => ({ path: p, name: base(p), image: isImage(p), temp: false }));
 
 // The message's file lines: each file's path where the agent is. For another machine, a copy
-// lands beside the agent's terminal.
-export async function deliver(files, addr, machine) {
+// lands beside the agent's terminal. A sandboxed agent can't read most of home (Desktop,
+// Downloads): a file from outside its folder goes as a copy in DIR (a clone, so no extra space).
+// Folders, and files in its folder, go by their own path.
+export async function deliver(files, addr, machine, { sandbox = false, folder = null } = {}) {
   const out = [];
   for (const f of files) {
+    if (!machine && sandbox && !f.path.startsWith(`${DIR}/`) && !(folder && f.path.startsWith(`${folder}/`))) {
+      const r = await exec("sh", ["-c", '[ -f "$2" ] || exit 3; d="$1/sent-$(date +%s)-$$"; mkdir -p "$d" && cp -c "$2" "$d/" 2>/dev/null || cp "$2" "$d/" && printf %s "$d/${2##*/}"', "x", DIR, f.path]);
+      out.push(r.code === 0 && r.stdout ? r.stdout : f.path);
+      continue;
+    }
     if (!machine) { out.push(f.path); continue; }
     const r = await hc(["put", addr, f.path, "--json"]);
     let landed = null;
@@ -46,10 +51,10 @@ export async function deliver(files, addr, machine) {
 // A pasted image removed before sending goes. Sent ones stay a day (the agent may read them
 // later), then go.
 export function drop(f) {
-  if (f.temp && f.path.startsWith(`${appHome()}/data/chat-attach/`)) exec("rm", ["-f", f.path]);
+  if (f.temp && f.path.startsWith(`${DIR}/`)) exec("rm", ["-f", f.path]);
 }
 export function prune() {
-  exec("sh", ["-c", 'find "$1" -name "pasted-*" -mmin +1440 -delete 2>/dev/null; true', "x", `${appHome()}/data/chat-attach`]);
+  exec("sh", ["-c", 'find "$1" -mindepth 1 -maxdepth 1 \\( -name "pasted-*" -o -name "sent-*" \\) -mmin +1440 -exec rm -rf {} + 2>/dev/null; true', "x", DIR]);
 }
 
 // Images shown in the chat (thumbnails, the viewer): `image()` loads from the app's folder, so
@@ -94,15 +99,15 @@ export function cover(w, h, size) {
   return { w: dw, h: dh, left: Math.round((size - dw) / 2), top: Math.round((size - dh) / 2) };
 }
 
-// A big paste kept as a text file (sent by path like other files): data/chat-attach, named
-// after its first line.
+// A big paste kept as a text file (sent by path like other files): DIR, named after its
+// first line.
 export async function textFile(text) {
   const first = String(text).split("\n").find((l) => l.trim())?.trim() ?? "pasted text";
   const slug = first.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "pasted-text";
   const name = `pasted-${Date.now().toString(36)}-${slug}.txt`;
-  const path = `${appHome()}/data/chat-attach/${name}`;
+  const path = `${DIR}/${name}`;
   try {
-    await exec("mkdir", ["-p", `${appHome()}/data/chat-attach`]);
+    await exec("mkdir", ["-p", DIR]);
     await fs.writeFile(path, text);
   } catch { return null; }
   return { path, name: first.length > 40 ? first.slice(0, 39) + "…" : first, image: false, text: true, temp: true };

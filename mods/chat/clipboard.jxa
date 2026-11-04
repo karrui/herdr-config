@@ -1,0 +1,26 @@
+// The macOS clipboard for the chat's paste (attach.js fromClipboard): copied files as
+// "F\t<path>" lines, else its image saved as <dir>/<stem>.png as "I\t<path>"; nothing when it
+// holds neither. TIFF (screenshots copied from Preview, some apps) is converted to PNG.
+// usage: osascript -l JavaScript clipboard.jxa <dir> <stem> [pasteboard name, for tests]
+ObjC.import("AppKit");
+
+function run(argv) {
+  const [dir, stem, name] = argv;
+  const pb = name ? $.NSPasteboard.pasteboardWithName(name) : $.NSPasteboard.generalPasteboard;
+  const urls = pb.readObjectsForClassesOptions($([$.NSURL]), $({ NSPasteboardURLReadingFileURLsOnlyKey: true }));
+  if (urls && !urls.isNil() && urls.count > 0) {
+    const out = [];
+    for (let i = 0; i < urls.count; i++) out.push("F\t" + urls.objectAtIndex(i).path.js);
+    return out.join("\n");
+  }
+  let data = pb.dataForType("public.png");
+  if (!data || data.isNil()) {
+    const raw = ["public.tiff", "public.jpeg"].map((t) => pb.dataForType(t)).find((d) => d && !d.isNil());
+    const rep = raw && $.NSBitmapImageRep.imageRepWithData(raw);
+    data = rep && !rep.isNil() ? rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $({})) : null;
+  }
+  if (!data || data.isNil()) return "";
+  $.NSFileManager.defaultManager.createDirectoryAtPathWithIntermediateDirectoriesAttributesError($(dir), true, $(), $());
+  const path = `${dir}/${stem}.png`;
+  return data.writeToFileAtomically($(path), true) ? "I\t" + path : "";
+}

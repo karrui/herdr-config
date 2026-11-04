@@ -425,7 +425,7 @@ function codexStep(name, args) {
     const diffs = patches.flatMap(patchDiffs);
     if (diffs.length) {
       const files = diffs.map((d) => short(d.file));
-      return { kind: "edit", line: [`Edited ${files.join(", ")}`, ...cmds.map((c) => `Ran ${clip(c, 80)}`)].join("\n"), doing: `Editing ${files.map(base).slice(0, 3).join(", ")}`, count: diffs.length + cmds.length, diffs };
+      return { kind: "edit", line: [`Edited ${files.join(", ")}`, ...cmds.map((c) => `Ran ${clip(c, 80)}`)].join("\n"), doing: `Editing ${files.map(base).slice(0, 3).join(", ")}`, count: diffs.length, diffs };
     }
     if (cmds.length) return { kind: "run", line: cmds.map((c) => `Ran ${clip(c, 80)}`).join("\n"), doing: `Running ${cmdWords(cmds[cmds.length - 1])}`, count: cmds.length };
     return { kind: "run", line: "Ran a script", doing: "Running a script" };
@@ -813,6 +813,16 @@ export function records(stdout) {
 
 // A tool's output from the line LOG's `results` sent back for it (possibly cut at 64 KB):
 // its first few lines.
+// Codex code mode's result: a header part ("Script completed / Wall time / Output:"), then a part
+// per call the script made, as JSON ({ output, exit_code }) or plain text: their outputs, in order.
+function codeModeOutput(parts) {
+  return parts.map((p) => String(p?.text ?? "")).filter((t) => !/^Script completed\b/.test(t)).map((t) => {
+    const j = parse(t.trim());
+    if (j && typeof j === "object") return "output" in j ? `${String(j.output ?? "").replace(/\n+$/, "")}${j.exit_code ? `\n(exit ${j.exit_code})` : ""}` : "";
+    return t.trim();
+  }).filter(Boolean).join("\n");
+}
+
 export function resultText(line, id) {
   let text = null;
   const l = parse(line);
@@ -824,7 +834,7 @@ export function resultText(line, id) {
       text = typeof v === "string" ? v : Array.isArray(v) ? v.map((x) => x?.text ?? "").join("\n") : null;
     }
     const o = l.payload?.output;
-    if (text === null && o !== undefined) text = typeof o === "string" ? o : String(o?.output ?? o?.content ?? JSON.stringify(o));
+    if (text === null && o !== undefined) text = typeof o === "string" ? o : Array.isArray(o) ? codeModeOutput(o) : String(o?.output ?? o?.content ?? JSON.stringify(o));
   } else {
     // Cut short: take the first string after its content key, up to the cut.
     const m = /"(?:content|text|output)":"((?:[^"\\]|\\.)*)/.exec(line);

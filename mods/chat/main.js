@@ -24,7 +24,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, VirtualListScrollHandle, TextView, v_virtual_list, InputState, Input } from "gpui-base";
-import { focused, props, run, theme, home, hc, exec, shared, setShared, watchFolder, window, settings, playSound, notify, appHome, readTextFile, writeTextFile, nextCommand, openOverlay, knownAgents } from "herdr";
+import { focused, props, run, theme, home, hc, exec, shared, setShared, watchFolder, window, settings, playSound, notify, appHome, readTextFile, writeTextFile, nextCommand, openOverlay, closeOverlay, knownAgents } from "herdr";
 import { agents, panes, terminals, spaces, inRender } from "./live.js";
 import * as fs from "fs/promises";
 import { FIND, LOG, Conversation, records, resultText, summary, excerpt, names } from "./log.js";
@@ -236,6 +236,10 @@ export default class Chat extends View {
     this.conv = null;
     this.path = null;
     this.reset();
+    // A helper's conversation (a Claude Code subagent's own log), opened from a helper row above
+    // the box (openHelper()): { path, kind, title }. Read-only, following the log as it grows.
+    this.transcript = P?.transcript ?? null;
+    if (this.transcript) { this.path = this.transcript.path; this.kind = KINDS[this.transcript.kind] ?? "claude"; }
     this.pending = [];
     this.opened = new Set();
     this.results = new Map();
@@ -436,7 +440,7 @@ export default class Chat extends View {
     if (this.phase === "fresh") this.loadChoice(cx);
     if (this.slot) cx.spawn(async (cx) => { this.firstTask = await fs.readFile(this.firstFile, "utf8").catch(() => null); cx.notify(); });
     if (this.addr || this.role) cx.spawn(async (cx) => { await this.loadDraft(cx); attach.prune(); });
-    if (this.addr) cx.spawn(async (cx) => this.follow(cx));
+    if (this.addr || this.transcript) cx.spawn(async (cx) => this.follow(cx));
     // A Coordinator tab's chat that missed its agent (started, or Herdr restarted, before this
     // copy saw it) takes the slot's live agent as soon as one shows, instead of staying empty.
     if (this.slot && !this.thread) cx.timer.every(2000, (cx) => this.adoptSlot(cx));
@@ -860,7 +864,7 @@ export default class Chat extends View {
   }
 
   log(args) {
-    return exec("sh", ["-c", LOG, "log", ...args], { on: this.machine });
+    return exec("sh", ["-c", this.transcript ? `SIDE=1\n${LOG}` : LOG, "log", ...args], { on: this.machine });
   }
 
   // ---- start screens and lost sessions ------------------------------------------------------
@@ -967,7 +971,7 @@ export default class Chat extends View {
   // The agent's process and its log, again every few seconds: a /clear, a resume or a new
   // agent started in the same terminal writes another file.
   async locate(cx) {
-    if (this.swapping) return;
+    if (this.swapping || this.transcript) return;
     const r = await hc(["get", this.addr, "--json"]);
     let t = null;
     try { t = JSON.parse(r.stdout || "null"); } catch {}
@@ -1029,7 +1033,7 @@ export default class Chat extends View {
     if (!path && starting(t)) path = "pending";
     if (path === "pending") {
       // A Claude Code that hasn't written its first line yet has no file: an empty chat.
-      if (this.phase === "finding") { this.kind = kind; this.conv = new Conversation(kind); this.start = 0; this.set("ready", cx); }
+      if (this.phase === "finding") { this.kind = kind; this.conv = new Conversation(kind, { side: Boolean(this.transcript) }); this.start = 0; this.set("ready", cx); }
       return;
     }
     if (!path) { if (this.phase !== "ready") this.set("none", cx); return; }
@@ -1061,7 +1065,7 @@ export default class Chat extends View {
   }
 
   rebuild() {
-    this.conv = new Conversation(this.kind);
+    this.conv = new Conversation(this.kind, { side: Boolean(this.transcript) });
     this.conv.feed(this.records);
     // A log read from its start (a new agent's first message makes it) may already hold
     // messages sent from here.
@@ -1696,6 +1700,7 @@ export default class Chat extends View {
 
   // The tasks a message mentions: by their id (HAT-1, from herdr-task's `ref`) or as #4.
   mentioned(text) {
+    if (!this.tasks?.length) return [];
     const t = String(text ?? "");
     // Every message asks on every render: kept per text until the task list changes (HERD-94).
     if (this.mentionsOf !== this.tasks) { this.mentionsOf = this.tasks; this.mentions = new Map(); }
@@ -3284,7 +3289,19 @@ export default class Chat extends View {
     // Only the CLI's own subagents (Claude Code's Agent/Task runs, Codex's spawned agents), from
     // its log. Agents it started with hc are terminals Herdr already lists under it in the
     // Agents sidebar, so they aren't repeated here.
-    return (this.conv?.running?.() ?? []).map((h) => ({ label: h.desc, at: h.at }));
+    return (this.conv?.running?.() ?? []).map((h) => ({ id: h.id, label: h.desc, at: h.at }));
+  }
+
+  // A Claude Code helper's own log: <session>/subagents/agent-<id>.jsonl, the one whose
+  // .meta.json names the call that started it. Opened read-only in a dialog over the window.
+  openHelper(h) {
+    if (!this.path || this.kind !== "claude" || !h.id) return;
+    const dir = `${this.path.replace(/\.jsonl$/, "")}/subagents`;
+    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && printf %s "${f%.meta.json}.jsonl"', "x", dir, `"toolUseId":"${h.id}"`], { on: this.machine })
+      .then((r) => {
+        if (!r.stdout) { toast({ title: "No conversation for this helper", body: "Claude Code hasn't written its log yet.", level: "info" }); return; }
+        openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: r.stdout, kind: "claude", title: h.label } } });
+      }).catch(() => {});
   }
 
   // Only waiting: its current call is itself a wait (hc wait, a sleep, a monitor, wait_agent, a
@@ -3309,7 +3326,9 @@ export default class Chat extends View {
       const s = Math.max(0, Math.floor((now - at) / 1000));
       return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`;
     };
-    const row = (h, i) => h_flex().id(`helper-${i}`).w_full().h(24).px(6).gap(8).items_center().text_size(12)
+    // A click opens its conversation (openHelper()).
+    const row = (h, i) => h_flex().id(`helper-${i}`).w_full().h(24).px(6).gap(8).items_center().text_size(12).rounded(6).cursor_pointer()
+      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.openHelper(h); })
       .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(h.label))
       .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(ago(h.at)));
@@ -3639,6 +3658,10 @@ export default class Chat extends View {
   }
 
   composer(t, st, cx = null) {
+    if (this.transcript) return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(8)
+      .child(h_flex().w_full().h(36).px(12).gap(8).items_center().rounded(10).border_1().border_color(t.border).text_size(12.5).text_color(t.dim)
+        .child(div().flex_1().min_w(0).truncate().child(`${this.transcript.title} · a helper's conversation, read-only`))
+        .child(this.button("chat-close", "Close", null, "secondary", t, () => closeOverlay(props().overlay))));
     if (this.call) return this.callComposer(t);
     // A thread whose worker ended: read-only now.
     if (this.thread && this.ended) return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(8)
@@ -3936,7 +3959,7 @@ export default class Chat extends View {
     if (this.phase === "fresh") {
       return root.child(this.fresh(t)).child(this.composer(t, null, cx)).child(div().flex_none().h(12));
     }
-    if (!this.addr && !starting) return root.child(this.notice(t, "No agent to show", "This chat pane isn't tied to an agent.", [
+    if (!this.addr && !starting && !this.transcript) return root.child(this.notice(t, "No agent to show", "This chat pane isn't tied to an agent.", [
       this.button("chat-close", "Close", null, "secondary", t, () => this.closeSelf())]));
     // A thread whose worker ended before its conversation was read: the same quiet words.
     if (this.phase === "ended" && this.thread) return root.child(this.notice(t, "This task's agent has ended", null, [

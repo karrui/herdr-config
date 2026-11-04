@@ -41,13 +41,13 @@ mode="$1"; f="$2"
 [ -f "$f" ] || { echo "missing"; exit 0; }
 s=$(wc -c < "$f" | tr -d ' ')
 X='
-BEGIN { pos = base; first = base; msgs = 0 }
+BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true" : "\"isSidechain\":false" }
 {
   off = pos; pos += length($0) + 1
   if (NR == 1 && skip) { first = pos; next }
   line = $0
   head = substr(line, 1, 400)
-  claude = index(head, "\"isSidechain\":false") && index(line, "\"type\":\"user\",\"message\"")
+  claude = index(head, mine) && index(line, "\"type\":\"user\",\"message\"")
   codex = index(head, "\"type\":\"response_item\"")
   if ((claude && index(line, "\"tool_result\"")) || (codex && (index(head, "\"function_call_output\"") || index(head, "\"custom_tool_call_output\"")))) {
     if (count) next
@@ -61,7 +61,7 @@ BEGIN { pos = base; first = base; msgs = 0 }
     next
   }
   keep = 0
-  if (index(head, "\"isSidechain\":false")) {
+  if (index(head, mine)) {
     if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\""))) keep = 1
   } else if (index(head, "\"type\":\"response_item\"")) {
     if (index(head, "\"type\":\"message\"") || index(head, "_call\"")) keep = 1
@@ -88,7 +88,8 @@ BEGIN { pos = base; first = base; msgs = 0 }
   print off "\tJ\t" line
 }
 END { if (first > pos) first = pos; print "#\t" first "\t" msgs }'
-range() { tail -c +$(($1 + 1)) "$f" | head -c $(($2 - $1)) | LC_ALL=C awk -v base="$1" -v skip="$3" -v count="$4" "$X"; }
+# SIDE=1: a helper's own log (main.js transcript), where every line is the sidechain.
+range() { tail -c +$(($1 + 1)) "$f" | head -c $(($2 - $1)) | LC_ALL=C awk -v base="$1" -v skip="$3" -v count="$4" -v side="$SIDE" "$X"; }
 case "$mode" in
 tail)
   o="$3"; [ "$s" -lt "$o" ] && o=0
@@ -449,8 +450,9 @@ export function pictures(text) {
 // (used: tokens in its context window now; window: that window's size when the log says it;
 // at: when the model was last named).
 export class Conversation {
-  constructor(kind) {
+  constructor(kind, { side = false } = {}) {
     this.kind = kind;
+    this.side = side;
     this.items = [];
     this.replies = new Map();
     this.calls = new Map();
@@ -534,7 +536,7 @@ export class Conversation {
   // session ended without telling).
   running() {
     const old = Date.now() - 3 * 3600000;
-    return [...this.helpers.values()].filter((h) => !h.done && (!h.at || h.at > old));
+    return [...this.helpers.entries()].filter(([, h]) => !h.done && (!h.at || h.at > old)).map(([id, h]) => ({ id, ...h }));
   }
 
   // What the person wrote to answer the agent, as their own message right after its question:
@@ -618,7 +620,8 @@ export class Conversation {
   }
 
   claude(l, off) {
-    if (l.isSidechain) return;
+    // A helper's lines, in its parent's log; a helper's own log (side) is all of them.
+    if (Boolean(l.isSidechain) !== Boolean(this.side)) return;
     if (l.type === "user" && l.origin?.kind === "task-notification") {
       // A helper or a background job finished (Claude Code tells the agent so): it's done.
       const c = l.message?.content;

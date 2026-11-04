@@ -104,7 +104,7 @@ If the name is taken, here or on the remote, it gets `-2`, `-3` and so on, and a
 
 A sandboxed agent can read and write its starting folder and the paths in `~/.config/herdr-app/sandbox/allow.txt`.
 Paths in `deny.txt` beside it are always blocked, even inside the project.
-It can also read Herdr's mods, but not their `data/` folder, where keys like Linear's live.
+It can also read Herdr's mods, but not Herdr's `data/` folder, where keys like Linear's live.
 The first install starts both lists from `sandbox/allow.default.txt` and `deny.default.txt`; after that they're yours, and updating never replaces them.
 The starter list covers the agents' own state, common caches and your shell and git dotfiles, so expect to allow a few paths your own tools need.
 SSH agent sockets and `AWS_*` variables are kept from it.

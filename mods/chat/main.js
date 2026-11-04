@@ -1226,7 +1226,7 @@ export default class Chat extends View {
     // Also while the agent asks in its terminal: the words answer it there (deliver()).
     if (!text && !this.files.length && !this.notes.length) return;
     const msg = { id: `m${Date.now()}`, text, files: this.files, quote: this.quote,
-      notes: this.notes.map((n) => ({ text: n.text, paths: n.paths, comment: n.comment.value().trim() })) };
+      notes: this.notes.map((n) => ({ text: n.quote.value().trim(), paths: n.paths, comment: n.comment.value().trim() })) };
     this.notes = [];
     this.box.set_value("");
     // If the textarea still adds Enter's new line after this, take it out again.
@@ -1944,7 +1944,11 @@ export default class Chat extends View {
     if (this.notes.some((n) => n.of === row.of)) return;
     const comment = InputState.new({ placeholder: "Add an optional comment…" });
     comment.on("submit", (_e, cx) => { this.box.focus(); cx.notify(); });
-    this.notes.push({ of: row.of, text: String(row.text ?? "").trim(), paths: row.paths ?? [], comment });
+    // Its quote, editable once opened (click the annotation): cut it to the part you mean.
+    const text = String(row.text ?? "").trim();
+    const quote = TextareaState.new({ value: text });
+    quote.set_auto_grow(2, 10);
+    this.notes.push({ of: row.of, text, paths: row.paths ?? [], comment, quote, open: false });
     comment.focus();
     cx.notify();
   }
@@ -2838,7 +2842,8 @@ export default class Chat extends View {
       case "code": return 16 + (x.clip ?? String(x.code).split("\n").length * 19);
       case "fold": return 26;
       case "day": return 18;
-      case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0) + (x.notes ? 20 : 0);
+      case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0) + (x.notes ? 20 : 0)
+        + (this.opened.has(`n:${x.id}`) ? (x.noteItems ?? []).reduce((h, n) => h + 10 + lines(n.quote, w * 0.8) * 17 + (n.comment ? 20 : 0), 0) : 0);
       case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
       case "thought": return 14 + lines(x.text, w) * 21;
       case "worked": return 41;
@@ -2920,7 +2925,13 @@ export default class Chat extends View {
           : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(text) || " ").selectable(true)));
     const fileLine = (label, icon = "paperclip") => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
       .child(svg(`mods/chat/${icon}.svg`).size(12).flex_none()).child(div().truncate().child(label));
-    const noteLine = (n) => fileLine(n === 1 ? "1 annotation" : `${n} annotations`, "annotate");
+    const noteLine = (n, open = null) => fileLine(n === 1 ? "1 annotation" : `${n} annotations`, "annotate")
+      .when(open !== null, (el) => el.cursor_pointer().hover((s) => s.text_color(t.muted))
+        .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none()));
+    // What a sent message's annotations quoted, each with its comment (opened from its count).
+    const noteList = (items) => v_flex().max_w(most).gap(8).pt(2).children(items.map((n) => v_flex().w_full().gap(3)
+      .child(div().w_full().pl(8).border_l(2).border_color(t.border).text_size(12).text_color(t.muted).whitespace_normal().child(n.quote))
+      .when(Boolean(n.comment), (el) => el.child(div().w_full().text_size(12).text_color(t.foreground).whitespace_normal().child(n.comment)))));
     switch (x.kind) {
       case "end":
         return div().w_full().h(10);
@@ -2937,7 +2948,8 @@ export default class Chat extends View {
           .when(Boolean(x.from), (el) => el.child(div().text_size(12).text_color(t.dim).child(`From ${this.sender(x.from, x.text)}`)))
           .when(Boolean(x.text), (el) => el.child(bubble(x.text, false)))
           .when(x.images > (x.paths?.length ?? 0), (el) => el.child(fileLine(x.images === 1 ? "1 image" : `${x.images} images`)))
-          .when(x.notes > 0, (el) => el.child(noteLine(x.notes))));
+          .when(x.notes > 0, (el) => el.child(noteLine(x.notes, x.noteItems?.length ? this.opened.has(`n:${x.id}`) : null)))
+          .when(this.opened.has(`n:${x.id}`) && x.noteItems?.length > 0, (el) => el.child(noteList(x.noteItems))));
       case "pending":
         return pad(v_flex().w_full().items_end().gap(3)
           .when(Boolean(x.text), (el) => el.child(bubble(x.text, !x.delivered || Boolean(x.failed))))
@@ -3131,6 +3143,8 @@ export default class Chat extends View {
       if (this.opened.has(key)) this.opened.delete(key);
       else { this.opened.add(key); this.loadResults(row, cx); }
     } else if (row.kind === "codehead") this.copy(row.code, row.id, cx);
+    // A message of yours with annotations: what they quoted, opened and shut.
+    else if (row.kind === "user" && row.noteItems?.length) { const k = `n:${row.id}`; if (this.opened.has(k)) this.opened.delete(k); else this.opened.add(k); }
     else if (row.kind === "pending" && row.failed) { const p = this.pending.find((x) => x.id === row.id); if (p?.msg) this.retry(p, cx); }
     else if (row.kind === "artifact" && row.art) this.openArtifact(row);
     else if (row.kind === "tasknews") {
@@ -3346,17 +3360,24 @@ export default class Chat extends View {
   // Files waiting to go: small tiles above the box, each removable.
   tiles(t) {
     if (!this.files.length && !this.quote && !this.notes.length) return null;
-    const noteLabel = (n) => (n.paths?.length ? `Picture${n.paths.length > 1 ? "s" : ""}${n.text ? ` · ${norm(n.text)}` : ""}` : norm(n.text));
+    // One line of its quote, without Markdown's marks (the quote itself keeps them).
+    const noteLabel = (n) => { const q = norm(n.quote.value().replace(/[*_`#>]+/g, "").replace(/^\s*[-+] /gm, "")); return n.paths?.length ? `Picture${n.paths.length > 1 ? "s" : ""}${q ? ` · ${q}` : ""}` : q; };
     return v_flex().w_full().px(10).pt(8).gap(6)
-      // Annotations: what each points at, its comment, and × to drop it.
-      .children(this.notes.map((n, i) => h_flex().id(`note-${i}`).w_full().h(30).pl(8).pr(2).gap(8).items_center().rounded(8).bg(t.raised)
+      // Annotations: what each points at (a click opens its quote to read and cut down), its
+      // comment, and × to drop it.
+      .children(this.notes.map((n, i) => v_flex().w_full().rounded(8).bg(t.raised).child(h_flex().id(`note-${i}`).w_full().h(30).pl(8).pr(2).gap(8).items_center()
         .child(svg("mods/chat/annotate.svg").size(13).flex_none().text_color(t.muted))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(noteLabel(n)))
+        .child(h_flex().id(`note-open-${i}`).flex_1().min_w(0).gap(4).items_center().cursor_pointer().text_size(12).text_color(t.muted).hover((s) => s.text_color(t.foreground))
+          .on_click((_e, cx) => { cx.stop_propagation(); n.open = !n.open; if (n.open) n.quote.focus(); cx.notify(); })
+          .child(div().flex_1().min_w(0).truncate().child(noteLabel(n)))
+          .child(svg(`mods/workspace-chrome/chevron-${n.open ? "down" : "right"}.svg`).size(12).flex_none()))
         .child(div().w(220).flex_none().child(Input.new(n.comment).w_full().text_size(12).text_color(t.foreground)))
         .child(div().id(`note-x-${i}`).size(22).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer().text_color(t.dim)
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
           .on_click((_e, cx) => { cx.stop_propagation(); this.notes = this.notes.filter((x) => x !== n); cx.notify(); })
-          .child(svg("mods/chat/x.svg").size(12)))))
+          .child(svg("mods/chat/x.svg").size(12))))
+        .when(n.open, (el) => el.child(div().w_full().px(8).pb(8)
+          .child(Textarea.new(n.quote).w_full().text_size(12).text_color(t.foreground))))))
       .when(Boolean(this.quote), (el) => el.child(h_flex().w_full().h(24).pl(4).gap(6).items_center()
         .child(svg("mods/chat/reply.svg").size(12).flex_none().text_color(t.dim))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(norm(this.quote.text)))

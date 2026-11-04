@@ -946,7 +946,7 @@ export default class Spaces extends View {
   }
 
   // What a space's row says, from its terminals (read once per render into this.now):
-  // its most urgent agent and its working sub-agents.
+  // its most urgent agent, its working sub-agents, and whether one runs in the sandbox.
   facts(w) {
     const id = localId(w);
     const mine = this.now.terminals.filter((x) => x.labels?.["herdr.space"] === id);
@@ -954,7 +954,8 @@ export default class Spaces extends View {
     const agents = this.now.agents.filter((a) => a.space === w.id);
     const lead = agents.reduce((m, a) => (!m || (RANK[a.status] ?? 0) > (RANK[m.status] ?? 0) ? a : m), null);
     const subs = this.now.terminals.filter((x) => addresses.has(x.parent) && x.status === "working").length;
-    return { lead, subs };
+    const sandboxed = mine.some((x) => x.labels?.["herdr.sandbox"]);
+    return { lead, subs, sandboxed };
   }
 
   // Three lines, the way an agent list reads: the repo; the
@@ -964,7 +965,7 @@ export default class Spaces extends View {
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
     const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
-    const { lead, subs } = this.facts(w);
+    const { lead, subs, sandboxed } = this.facts(w);
     // Not a repo: where it is now (not where it was made) names it.
     const here = place(w, panes());
     const repo = g?.name ?? (here && here !== home() ? base(here) : "~");
@@ -1041,6 +1042,8 @@ export default class Spaces extends View {
         .child(div().relative().flex_1().min_w(0).truncate().font_medium().text_color(tearing ? t.dim : t.foreground).child(title)
           .when(Boolean(tearing), (el) => el.child(div().absolute().left(0).right(0).top(0).bottom(0).flex().items_center()
             .child(div().w_full().h(1).bg(t.dim)))))
+        .when(sandboxed, (el) => el.child(div().id(`sbx-${w.id}`).flex_none().text_color(t.ansi2).tooltip("Sandboxed")
+          .child(svg("mods/agent-bar/shield.svg").size(12))))
         .when(prs.length > 0, (el) => el.child(this.prChip(w.id, prs, t)))
         .when(Boolean(state), (el) => el.child(state))
         .when(Boolean(icon) && !inline, (el) => el.child(icon)))

@@ -4,12 +4,14 @@
 // herdr's exec takes an argv list and never goes through a shell.
 import { exec as execFile, agents, terminals, appHome, readTextFile } from "herdr";
 import * as fs from "fs/promises";
+import { chatAgents } from "./parked.js";
 
 export const DIR = `${appHome()}/usage`;
 export const CLAUDE = `${DIR}/claude`;
 
+// Agents parked behind a chat pane aren't in agents(): chatAgents() adds them back.
 export function agentAt(address) {
-  return agents().find(a => a.address === address && (a.app === "claude-code" || a.app === "codex")) ?? null;
+  return [...agents(), ...chatAgents()].find(a => a.address === address && (a.app === "claude-code" || a.app === "codex")) ?? null;
 }
 
 // Plan limits are account-wide: take them from whichever Claude session reported last,

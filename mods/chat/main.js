@@ -1273,7 +1273,7 @@ export default class Chat extends View {
       try {
         const paths = await attach.deliver(msg.files, this.addr, this.machine);
         p.sent = [body, ...paths].filter(Boolean).join("\n\n");
-        r = await hc(["send", this.addr, p.sent]);
+        r = await this.typed(() => hc(["send", this.addr, p.sent]));
         // Its own dialog is open in its terminal (a question or a permission with no card
         // here): the words answer it the "Reply instead…" way.
         if (r.code !== 0 && refusal(r).kind === "blocked" && (this.kind === "claude" || this.kind === "codex")) r = await this.replyInstead(p.sent, cx);
@@ -2216,22 +2216,42 @@ export default class Chat extends View {
     const born = this.t?.created_ms;
     if (born && meta.at && meta.at < born) meta = { used: meta.used, window: meta.window };
     const c = agent.current(this.kind, this.argv, meta, this.dflt);
-    // An effort set in place (setEffort()) shows at once; the log says so from its next turn.
-    if (c && this.liveEffort && !(meta.at > this.liveEffort.at)) c.effort = this.liveEffort.effort;
+    // An effort picked (applyPick()) shows at once, until the log agrees: a reply already on its
+    // way when it changed still says the old one. A log that disagrees long after (changed in the
+    // terminal) wins.
+    const live = this.liveEffort;
+    if (c && live && !(meta.at > live.at && (meta.effort === live.effort || meta.at - live.at > 30000))) c.effort = live.effort;
     return c;
   }
 
-  // Claude Code changes effort in place: /effort opens its slider, which starts at the current
-  // level; all the way left is low, then right to the level, and s keeps it for this session only.
-  // (Enter would save it to ~/.claude/settings.json, for every later agent, and a sandboxed
-  // agent can't write that file.) No restart: the conversation and its cache stay.
-  async setEffort(effort, cx) {
+  // Claude Code changes effort in place, even mid-turn (the turn going on takes it at once):
+  // /effort opens its slider at the current level; all the way left is low, then right to the
+  // level, and s keeps it for this session only. (Enter would save it to ~/.claude/settings.json,
+  // for every later agent, and a sandboxed agent can't write that file.) No restart: the
+  // conversation and its cache stay. About half a second.
+  setEffort(effort, cx) {
     const i = agent.CLAUDE_EFFORTS.indexOf(effort);
-    if (i < 0) throw new Error(`Claude Code has no effort "${effort}".`);
-    await hc(["send", this.addr, "/effort"]);
-    await cx.sleep(700);
-    await hc(["keys", this.addr, ...Array(agent.CLAUDE_EFFORTS.length).fill("left"), ...Array(i).fill("right"), "s"]);
-    this.liveEffort = { effort, at: Date.now() };
+    if (i < 0) return Promise.reject(new Error(`Claude Code has no effort "${effort}".`));
+    return this.typed(async () => {
+      const r = await hc(["send", this.addr, "/effort"]);
+      if (r.code !== 0) throw new Error(refusal(r).message);
+      // The slider is up once its hint shows; keys sent before then would land in the prompt.
+      let up = false;
+      for (let n = 0; n < 40 && !up; n++) {
+        if (n) await cx.sleep(50);
+        up = /←\/→ to adjust/.test((await hc(["read", this.addr, "--lines", "20"]).catch(() => null))?.stdout ?? "");
+      }
+      if (!up) throw new Error("Claude Code didn't open its effort slider.");
+      await hc(["keys", this.addr, ...Array(agent.CLAUDE_EFFORTS.length).fill("left"), ...Array(i).fill("right"), "s"]);
+    });
+  }
+
+  // One thing typed into the agent's terminal at a time (a message, the effort slider's keys),
+  // so a message sent just after an effort pick doesn't land in the slider.
+  typed(fn) {
+    const run = (this.typing ?? Promise.resolve()).then(fn);
+    this.typing = run.catch(() => {});
+    return run;
   }
 
   // The model picker (mods/chat-models), as a popover just above the model button: the chat
@@ -2309,19 +2329,21 @@ export default class Chat extends View {
     const cur = this.current();
     if (this.kind === "claude" && pick.agent === "claude" && cur && pick.effort && pick.effort !== cur.effort
       && (pick.model ?? agent.rowFor("claude", cur)) === agent.rowFor("claude", cur) && Boolean(pick.fast) === Boolean(cur.fast) && (pick.perm ?? cur.perm) === cur.perm) {
-      // Claude Code takes /effort only between turns: while it works (or asks), the change waits
-      // for the turn to end. A later pick replaces a waiting one.
+      // The pick shows at once (as T3 Code's does) and Claude Code takes it at once, mid-turn
+      // too. Only a dialog of its own (a question, a permission, its start screen) holds it, as
+      // the slider's keys would answer the dialog. A later pick replaces a waiting one.
+      this.liveEffort = { effort: pick.effort, at: Date.now() };
       this.pendingEffort = pick.effort;
-      const busy = () => ["working", "blocked"].includes(this.status());
-      if (busy()) {
-        this.note = { id: `note-${Date.now()}`, text: `Effort changes to ${agent.levelName(pick.effort)} when this turn ends.` };
-        cx.timer.after(6000, (cx) => { this.note = null; cx.notify(); });
-      }
       cx.spawn(async (cx) => {
-        while (busy()) await cx.sleep(1000);
+        while (this.status() === "blocked" || this.asks.length || openCard(this.addr)) await cx.sleep(500);
         if (this.pendingEffort !== pick.effort) return;
         this.pendingEffort = null;
-        try { await this.setEffort(pick.effort, cx); } catch (e) { toast({ title: "Effort didn't change", body: plainError(e), level: "error" }); }
+        try {
+          await this.setEffort(pick.effort, cx);
+        } catch (e) {
+          this.liveEffort = null;
+          toast({ title: "Effort didn't change", body: plainError(e), level: "error" });
+        }
         cx.notify();
       });
       return;

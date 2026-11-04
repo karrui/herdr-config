@@ -196,6 +196,22 @@ Several show as `Run (3)`; hover it for the list.
 Commands with a placeholder to fill in, like `<path>`, are left out.
 It needs the status line set up above.
 
+### Chat and artifacts
+
+Claude Code and Codex panes have a Chat | Terminal switch in their header.
+Chat shows the agent as a conversation, read from its own session log, with a box to write to it; the agent keeps running in its terminal behind it.
+Agents you start from the + menu open in Chat.
+The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliasstravik/shepherdr) (3.0.0), changed to fit this config's sandbox:
+- Pictures an agent shows with show-your-work, or links as Markdown images, show inline; a recording shows its first frame and opens in your player.
+- Questions (AskUserQuestion) and permission prompts come as cards to answer, for sandboxed agents too: `agent/launch` adds the hook for agents Herdr starts, and a sandboxed agent's hook talks to the chat through its own broker folder, so it can't answer another agent's prompt.
+- The model picker restarts the agent through `agent/launch`, in the sandbox when it was. A change of effort alone needs no restart: Claude Code switches it in place for that session only.
+- Artifacts are small Herdr panels agents publish with `herdr-artifact`, shown in the Artifacts panel (the tab bar's grid button) and as cards in the chat.
+  Herdr runs them outside the sandbox, so one a sandboxed agent made only runs once you've read its code and approved it; a new version asks again.
+- Reactions work, and a chat agent shows in the Agents list, the tab bar and the footer like any other.
+
+cmd-w on a tab in Chat parks its agent, as for a terminal; the tab's × ends it.
+Shepherdr's tasks, assistants, voice and other machines aren't included.
+
 ## Updating
 
 Pull, then run `./install.sh` again.
@@ -213,7 +229,7 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | Path | What it does |
 |---|---|
 | `layouts/main-sandbox.json` | The layout that puts the mods together. |
-| `keys.json` | Key bindings. `cmd-b` is unbound, so the sidebar always shows. Also [Shepherdr](https://github.com/eliasstravik/shepherdr)'s, kept to its own layout, so installing this doesn't remove them. |
+| `keys.json` | Key bindings. `cmd-b` is unbound, so the sidebar always shows. |
 | `programs.json` | Points the + menu's agents at `agent/launch`. |
 | `agent/launch` | Starts `claude` or `codex` with `agent/instructions.md` added, sandboxed or not. |
 | `agent/worktree` | Worktree setup, teardown, removal and close, driven by your `worktrees/<repo>.yaml` files. |
@@ -229,7 +245,9 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `mods/worktree-hooks`, `worktree-setup`, `resources` | The worktree dialogs, the setup editor and a worktree's containers. |
 | `mods/menu-hooks` | Right-click menus, including Restart agent. |
 | `mods/resume`, `agent/sessions` | Resume a session: parked agents and past sessions in a space's folders. |
-| `mods/pane-sandbox` | Herdr's pane header, with Run for the `!` commands Claude Code asks you to run. |
+| `mods/pane-sandbox` | Herdr's pane header, with Run for the `!` commands Claude Code asks you to run, and Chat \| Terminal. |
+| `mods/chat`, `chat-image`, `chat-models`, `chat-react` | The chat view (from Shepherdr): its image viewer, model picker and reactions. |
+| `mods/artifacts` | The Artifacts panel, the approval dialog and `herdr-artifact` (from Shepherdr). |
 | `mods/brand-sandbox` | The sidebar's top bar: only search. |
 | `mods/agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists` | Herdr's agents list, + menu, status bar and a sandbox lists editor, adapted to the sandbox. |
 

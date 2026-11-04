@@ -26,7 +26,21 @@ case "$program" in
   claude)
     export CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1
     export SSH_CONNECTION="${SSH_CONNECTION:-127.0.0.1 0 127.0.0.1 0}"
-    exec ${wrap[@]+"${wrap[@]}"} claude --append-system-prompt-file "$dir/instructions.md" "$@" ;;
+    # The chat's hook (mods/chat/ask-hook.sh): permissions and questions as cards in the chat
+    # when it shows this agent; else Claude asks in the terminal as usual. Only for agents
+    # started here, so your own settings.json stays as it is. Claude takes one --settings, and
+    # the chat passes its own (fast mode), so ours is merged into that.
+    hook="$(jq -nc --arg c "sh '$dir/../mods/chat/ask-hook.sh'" '{hooks: {PermissionRequest: [{hooks: [{type: "command", command: $c, timeout: 1800}]}]}}')"
+    args=() merged=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = --settings ] && [ $# -gt 1 ]; then
+        v="$2"; [ -f "$v" ] && v="$(cat "$v")"
+        args+=(--settings "$(jq -nc --argjson a "$v" --argjson b "$hook" '$a * $b')"); merged=1; shift 2; continue
+      fi
+      args+=("$1"); shift
+    done
+    [ -n "$merged" ] || args=(--settings "$hook" ${args[@]+"${args[@]}"})
+    exec ${wrap[@]+"${wrap[@]}"} claude --append-system-prompt-file "$dir/instructions.md" ${args[@]+"${args[@]}"} ;;
   # Codex takes the text itself, as a TOML string (a JSON string is one).
   codex) exec ${wrap[@]+"${wrap[@]}"} codex -c "developer_instructions=$(jq -Rs . < "$dir/instructions.md")" "$@" ;;
   *) exec ${wrap[@]+"${wrap[@]}"} "$program" "$@" ;;

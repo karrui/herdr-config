@@ -19,6 +19,18 @@ Attach it with `git config branch.<branch>.linear DEVX-684` as soon as either ha
 Do it without asking, and again when the branch changes.
 Skip it when the ticket's id is already in the branch name.
 
+## Chat
+
+The user may follow you in Herdr's chat view instead of your terminal.
+There, things you show come through as more than text:
+- Pictures and recordings show inline: use show-your-work's `show_image` or `show_video`, or put a Markdown image with an absolute path in your reply (`![Login page](/tmp/login.png)`).
+- Questions you ask with AskUserQuestion, and permission prompts, show as cards to answer.
+- For something richer, such as a report, a chart, a board or a form, make an artifact: run `herdr-artifact guide` first, then `herdr-artifact publish`.
+  It shows in Herdr's Artifacts panel and in your chat.
+  From the sandbox, the user approves its code before it first runs, so tell them it's waiting for that.
+- A reaction to your message arrives as `<hc from="person" reaction="👍" to="first words of your message"/>`.
+  It needs no reply: if that's all you got, answer only `<hc no-reply/>`.
+
 ## Shared browser
 
 Use the shared Chrome for browsing, web testing and screenshots, so the user can watch and take over.

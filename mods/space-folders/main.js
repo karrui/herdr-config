@@ -14,6 +14,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, HoverCard } from "gpui-base";
 import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, knownAgents, appHome, readTextFile, agents, terminals, notify } from "herdr";
+import { chatAgents } from "./parked.js";
 import { freshWorktree } from "./fresh-worktree.js";
 
 // A machine's folders live in a file in its home, so every screen showing its
@@ -1152,7 +1153,7 @@ export default class Spaces extends View {
     const leaving = Boolean(dragged && folderOf(dragged, folders(dragged.machine ?? null), panes()));
     const button = (id, icon, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6)
       .hover(s => s.bg(t.hover).text_color(t.foreground)).on_click(action).child(svg(`mods/workspace-chrome/${icon}.svg`).size(14));
-    this.now = { terminals: terminals(), agents: agents() };
+    this.now = { terminals: terminals(), agents: [...agents(), ...chatAgents()] };
     const seen = [], rows = this.grouped(t, collapsed, seen);
     this.seen = seen;
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)

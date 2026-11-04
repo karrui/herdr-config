@@ -1,7 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { exec as execFile, theme, focused, window, watchFolder, openOverlay, closeOverlay, props, settings } from "herdr";
+import { exec as execFile, theme, focused, terminals, window, watchFolder, openOverlay, closeOverlay, props, settings } from "herdr";
 import * as fs from "fs/promises";
 import { DIR as SANDBOX_DIR, BLOCKED, runOf, loadBlocked, loadRules, allowed, denied, needsWrite, splitPath, allowUpTo, openSandboxLists } from "./sandbox.js";
 import { CLAUDE, agentAt, loadUsage, usageKey, tokens, resetAt, level } from "./usage.js";
@@ -38,7 +38,12 @@ export default class AgentBar extends View {
     });
   }
 
-  address() { return this.view === "footer" ? focused()?.terminal ?? null : props().address; }
+  // The footer's agent: the focused terminal's, or the one a focused chat pane shows (pane-sandbox).
+  address() {
+    if (this.view !== "footer") return props().address;
+    const f = focused();
+    return f?.terminal ?? (f?.pane && terminals().find((k) => k.labels?.["herdr.chat"] === f.pane && k.state === "live")?.address) ?? null;
+  }
   run() { return this.view === "blocked" ? props().run : runOf(this.address()); }
   // Changes when you switch tabs or come back to the window, which reloads the numbers.
   key() { return `${usageKey(agentAt(this.address()))}|${this.run()}|${window()?.active}`; }

@@ -1,7 +1,16 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, exec as execFile, notify, appHome } from "herdr";
+import { theme, spaces, panes, knownAgents, run, hc, openOverlay, closeOverlay, props, window, keys, shared, setShared, exec as execFile, notify, appHome } from "herdr";
+
+// Claude Code and Codex start as a chat: their tab's pane header (pane-sandbox) swaps the new
+// terminal for the chat once it shows, from this label. Terminal there shows the CLI again.
+function start(a, space) {
+  if (!/^(claude|codex)(-|$)/.test(a.key ?? "")) return run("tab.new", { name: a.name, space: space?.id, argv: a.run });
+  execFile("herdr-app", ["do", "tab.new", "--name", a.name, ...(space ? ["--space", space.id] : []), "--argv", JSON.stringify(a.run)])
+    .then((r) => { const t = JSON.parse(r.stdout || "{}").terminal; if (t) hc(["label", t, "chat.start=1"]); })
+    .catch((e) => notify({ title: `${a.name} didn't start`, body: String(e?.message ?? e), level: "error" }));
+}
 
 // The last agents each machine reported, shown at once while knownAgents() checks again.
 const KNOWN = "new-menu.agents";
@@ -58,7 +67,7 @@ export default class NewMenu extends View {
         const agent = /^[1-9]$/.test(e.key) ? installed[Number(e.key) - 1] : null;
         if (!agent) return;
         closeOverlay(props().overlay);
-        run("tab.new", { name: agent.name, space: space?.id, argv: agent.run });
+        start(agent, space);
       })
       .child(this.row("terminal", svg("icons/shell.svg").size(14), "Terminal", () => run("tab.new", { space: space?.id }), shortcut("tab.new")))
       // The shared Chrome agents drive over CDP (browser/open starts it or brings it forward).
@@ -68,7 +77,7 @@ export default class NewMenu extends View {
       .child(div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child("Start an agent"))
       .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
         .children(choices.map((a, i) => this.row(a.key, a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14), a.name,
-          () => run("tab.new", { name: a.name, space: space?.id, argv: a.run }), a.installed ? (i < 9 ? String(i + 1) : "") : "not installed", a.installed)))
+          () => start(a, space), a.installed ? (i < 9 ? String(i + 1) : "") : "not installed", a.installed)))
         .when(this.agents.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim).child(this.failed ? "Could not load agents" : "Checking installed agents…"))))
       // Agents cmd-w parked here, and sessions that ran in this space's folders (mods/resume).
       .child(this.row("resume", svg("mods/workspace-chrome/clock.svg").size(14), "Resume a session\u2026", () => openOverlay({ mod: "resume", kind: "dialog", width: 520, height: 480, props: { space: space?.id } }), "", Boolean(space)))

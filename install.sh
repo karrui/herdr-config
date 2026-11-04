@@ -15,6 +15,8 @@ rsync -rlptb --exclude '*.default.txt' agent sandbox usage browser layouts mods 
 for list in allow deny; do
   [ -e "$app/sandbox/$list.txt" ] || cp "sandbox/$list.default.txt" "$app/sandbox/$list.txt"
 done
+# herdr-artifact on the PATH, for agents (agent/instructions.md): the artifacts mod's.
+mkdir -p "$HOME/.local/bin" && ln -sfn "$app/mods/artifacts/bin/herdr-artifact" "$HOME/.local/bin/herdr-artifact"
 [ -f "$app/programs.json" ] && cp "$app/programs.json" "$app/programs.json~"
 sed "s|__HOME__|$HOME|g" programs.json > "$app/programs.json"
 

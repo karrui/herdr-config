@@ -4,6 +4,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from "herdr";
+import { chatAgents, sweep } from "./parked.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -71,6 +72,9 @@ function icon(p, size, color) {
 export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
+    // An agent in Chat mode is parked behind its chat pane: when that pane goes another way than
+    // cmd-w or a tab's × (a space closed, the pane closed), the agent ends with it (parked.js).
+    cx.timer.every(3000, () => sweep());
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
@@ -219,7 +223,8 @@ export default class Agents extends View {
     if (props()?.sortMenu) return this.sortMenu(t);
     const collapsed = narrow();
     const sort = sortOf();
-    let list = agents();
+    // Agents in Chat mode aren't in agents() (they have no pane of their own): added as their chat's.
+    let list = [...agents(), ...chatAgents()];
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
     this.migratePins(all);

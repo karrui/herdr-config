@@ -3,6 +3,7 @@ import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
 import { spaces, panes, focused, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome, home, hc, nextCommand, notify } from "herdr";
 import { KEY_CHANGED, LINKS, readKey, findTicket } from "./linear-resolve.js";
+import { chatAgents, tabStatus } from "./parked.js";
 
 // The branch to compare against: origin's default branch, else the usual names.
 // ponytail: same lookup as changes-sandbox's Branch mode; mods can't import each other.
@@ -54,14 +55,18 @@ export default class Tabs extends View {
     if (!tab) return;
     const mine = panes().filter((p) => p.tab === tab.id && p.terminal);
     const agents = mine.filter((p) => p.program?.agent);
-    if (!agents.length) return this.closeTab(tab, space);
+    // Agents in Chat mode are parked behind their chat pane already: they only change labels.
+    const chats = chatAgents().filter((a) => a.tab === tab.id);
+    if (!agents.length && !chats.length) return this.closeTab(tab, space);
     if (space.tabs.length === 1) run("tab.new", { space: space.id });
     for (const p of agents) {
       hc(["label", p.terminal, `parked.space=${space.id}`]);
       run("terminal.park", { terminal: p.terminal });
     }
-    for (const p of mine) if (!p.program?.agent) run("pane.close", { pane: p.pane });
-    notify({ title: `Parked ${agents.length === 1 ? agents[0].program.name : `${agents.length} agents`}`,
+    for (const a of chats) hc(["label", a.address, `parked.space=${space.id}`, "herdr.chat="]);
+    for (const p of panes().filter((p) => p.tab === tab.id && !p.program?.agent)) run("pane.close", { pane: p.pane });
+    const names = [...agents.map((p) => p.program.name), ...chats.map((a) => a.program?.name ?? "agent")];
+    notify({ title: `Parked ${names.length === 1 ? names[0] : `${names.length} agents`}`,
       body: "Still running. + \u2192 Resume a session gives it a tab again.", level: "info" });
   }
 
@@ -186,8 +191,10 @@ export default class Tabs extends View {
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
+    const chats = chatAgents();
     const item = (c, i) => {
-      const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
+      const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? chats.find(a => a.tab === c.id)?.program ?? panes().find(p => p.tab === c.id)?.program;
+      const status = tabStatus(c, chats);
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         .border(1).border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
@@ -201,8 +208,8 @@ export default class Tabs extends View {
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu-hooks", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
         .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
-        .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
-        .when(c.status === "blocked" || c.status === "done", el => el.child(div().size(6).rounded(3).bg(t[c.status])))
+        .when(status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
+        .when(status === "blocked" || status === "done", el => el.child(div().size(6).rounded(3).bg(t[status])))
         .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.closeTab(c, space); }).child(svg("mods/pane/close.svg").size(12))));
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();
@@ -211,8 +218,8 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    // Linear isn't one of Herdr's panels, so the welcome's choice never lists it.
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "linear"];
+    // Linear and Artifacts aren't Herdr's panels, so the welcome's choice never lists them.
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "linear", "artifacts"];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon, tip, menu) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -255,6 +262,8 @@ export default class Tabs extends View {
           issue: issue && { identifier: issue.identifier, url: issue.url } } });
         return panelButton("linear", issue?.identifier ?? null, "mods/linear/ticket.svg", issue ? `${issue.identifier}: ${issue.title}` : "Linear ticket", menu);
       })())
+      // What agents made to show you (herdr-artifact): reports, boards, forms.
+      .child(panelButton("artifacts", null, "mods/artifacts/artifacts.svg", "Artifacts"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-sandbox/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-sandbox/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-sandbox/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

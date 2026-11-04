@@ -2,13 +2,70 @@
 // latest reply asks you to run with `!` (`! gh auth login`, inline or in a code block).
 // Run types `! <command>` into the agent, so it runs in its session and its output
 // lands in the conversation; for a sandboxed agent, where the command would hit the
-// sandbox too, it runs in a shell outside it, split below. Several are listed on hover. Props from the app:
-// { pane, terminal }. Click: focus the pane.
+// sandbox too, it runs in a shell outside it, split below. Several are listed on hover.
+// Claude Code and Codex panes also get Chat | Terminal (as Shepherdr's pane-chat has it): Chat
+// puts the `chat` mod in the agent pane's spot and parks the agent's terminal behind it (it
+// keeps running, labelled herdr.chat=<chat pane>); Terminal does the reverse. A chat pane's
+// header shows its agent. Props from the app: { pane, terminal }. Click: focus the pane.
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { panes, terminals, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, exec as execFile } from "herdr";
+import { panes, terminals, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, notify, exec as execFile } from "herdr";
+
+const CHAT = "chat", LABEL = "herdr.chat";
+// The chat reads Claude Code's and Codex's own session logs; other programs have no chat.
+const chatty = (p) => Boolean(p?.terminal) && ["claude-code", "codex"].includes(p.app);
+// The agent a chat pane shows, and the chat pane showing an agent.
+const agentOf = (chat) => terminals().find((x) => x.labels?.[LABEL] === chat && x.state === "live") ?? null;
+const chatOf = (terminal) => {
+  const c = terminals().find((x) => x.address === terminal)?.labels?.[LABEL];
+  return c && panes().some((p) => p.pane === c && p.mod === CHAT) ? c : null;
+};
+
+// One app command, waited for: a swap's steps go in order.
+async function app(name, args) {
+  const r = await execFile("herdr-app", ["do", name, ...Object.entries(args).flatMap(([k, v]) => [`--${k}`, typeof v === "string" ? v : JSON.stringify(v)])]);
+  let out = {};
+  try { out = JSON.parse(r.stdout || "{}"); } catch {}
+  if (r.code !== 0 || out.error) throw new Error(out.error || r.stderr.trim() || `${name} failed`);
+  return out;
+}
+
+// Terminal → Chat: the chat splits beside the agent's pane, then the terminal is parked, so the
+// chat takes its spot. The park removes the pane this header is on: it goes last.
+export async function toChat(p) {
+  const open = chatOf(p.terminal);
+  if (open) return run("pane.focus", { pane: open });
+  try {
+    const out = await app("pane.split", { direction: "right", pane: p.pane, mod: CHAT, props: { terminal: p.terminal } });
+    if (!out.pane) throw new Error("Herdr didn't open the chat.");
+    await hc(["label", p.terminal, `${LABEL}=${out.pane}`]);
+    run("pane.focus", { pane: out.pane });
+    await app("terminal.park", { terminal: p.terminal });
+  } catch (e) {
+    notify({ title: "Chat didn't open", body: String(e?.message ?? e), level: "error" });
+  }
+}
+
+// Chat → Terminal: the terminal gets a pane beside the chat again, then the chat closes.
+async function toTerminal(chat) {
+  const k = agentOf(chat);
+  if (!k || panes().some((x) => x.terminal === k.address)) {
+    run("pane.close", { pane: chat });
+    if (k) hc(["label", k.address, `${LABEL}=`]);
+    return;
+  }
+  try {
+    await app("pane.focus", { pane: chat });
+    const out = await app("terminal.keep", { terminal: k.address, place: "right" });
+    await hc(["label", k.address, `${LABEL}=`]);
+    if (out.pane) run("pane.focus", { pane: out.pane });
+    await app("pane.close", { pane: chat });
+  } catch (e) {
+    notify({ title: "Terminal didn't come back", body: String(e?.message ?? e), level: "error" });
+  }
+}
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -54,10 +111,35 @@ async function suggestions(file) {
 }
 
 export default class Pane extends View {
-  init() { this.hovered = false; this.cmds = []; this.seen = null; this.watched = null; }
+  init() { this.hovered = false; this.cmds = []; this.seen = null; this.watched = null; this.busy = false; }
 
+  // This pane; a chat pane as its agent (terminal, program, status, folder), with chat set.
   me() {
-    return panes().find((p) => p.pane === props()?.pane);
+    const p = panes().find((p) => p.pane === props()?.pane);
+    if (p?.mod !== CHAT) return p;
+    const k = agentOf(p.pane);
+    if (!k) return { ...p, chat: true };
+    const status = ["working", "blocked", "done", "idle"].includes(k.status) ? k.status : null;
+    return { ...p, chat: true, terminal: k.address, program: k.program, app: k.status?.app ?? k.app, status, cwd: k.foreground?.cwd ?? k.cwd, title: k.title };
+  }
+
+  swap(fn) {
+    if (this.busy) return;
+    this.busy = true;
+    fn().finally(() => { this.busy = false; });
+  }
+
+  // Chat | Terminal.
+  switcher(t, p) {
+    const seg = (id, label, on, action) => h_flex().id(id).h(18).px(8).items_center().rounded(4).text_size(11.5).font_medium()
+      .when(on, (el) => el.bg(t.background).text_color(t.foreground).shadow_sm())
+      .when(!on, (el) => el.text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); action(); }))
+      .child(label);
+    return h_flex().flex_none().p(2).gap(2).rounded(6).bg(t.raised)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(seg(`ph-chat-${p.pane}`, "Chat", Boolean(p.chat), () => this.swap(() => toChat(p))))
+      .child(seg(`ph-term-${p.pane}`, "Terminal", !p.chat, () => this.swap(() => toTerminal(p.pane))));
   }
 
   // Looked at again when the agent's status changes: a reply ends, or you write.
@@ -144,6 +226,12 @@ export default class Pane extends View {
     const t = theme();
     const p = this.me();
     if (!p) return div();
+    // Started from the + menu (new-menu-sandbox): shown as a chat from the start.
+    // Once Herdr knows it's Claude Code or Codex: the chat reads that to find its log.
+    if (chatty(p) && !p.chat && !this.busy && terminals().find((x) => x.address === p.terminal)?.labels?.["chat.start"]) {
+      hc(["label", p.terminal, "chat.start="]);
+      this.swap(() => toChat(p));
+    }
     this.look(p, cx);
     const name = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
     const pic = icon(p.program, 14, t.dim);
@@ -172,6 +260,8 @@ export default class Pane extends View {
         .child(this.button(t, `ph-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
         .child(this.button(t, `ph-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))
         .child(this.button(t, `ph-z-${pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
-        .child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane })));
+        // A chat pane's agent is parked behind it: Terminal brings it back, so no close here.
+        .when(!p.chat, (el) => el.child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane }))))
+      .when(chatty(p) || (p.chat && Boolean(p.terminal)), (el) => el.child(this.switcher(t, p)));
   }
 }

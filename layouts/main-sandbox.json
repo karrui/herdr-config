@@ -144,6 +144,53 @@
                       "content": {
                         "mod": "linear"
                       }
+                    },
+                    {
+                      "id": "artifacts",
+                      "type": "stack",
+                      "children": [
+                        {
+                          "id": "artifacts-list",
+                          "type": "block",
+                          "content": {
+                            "mod": "artifacts"
+                          }
+                        },
+                        {
+                          "id": "artifacts-view",
+                          "type": "column",
+                          "children": [
+                            {
+                              "id": "artifacts-view-head",
+                              "type": "block",
+                              "content": {
+                                "mod": "artifacts",
+                                "props": {
+                                  "head": true
+                                }
+                              },
+                              "size": {
+                                "px": 42
+                              }
+                            },
+                            {
+                              "id": "artifacts-view-body",
+                              "type": "block",
+                              "content": {
+                                "mod": "artifacts"
+                              }
+                            }
+                          ],
+                          "background": "background",
+                          "border": {
+                            "width": 1,
+                            "color": "border"
+                          },
+                          "radius": 10,
+                          "resizable": false
+                        }
+                      ],
+                      "active": "artifacts-list"
                     }
                   ],
                   "active": "files"

@@ -15,6 +15,9 @@ rw ~/.local/state/claude
 # Logins stored in the macOS Keychain (Claude's, gh's, ...)
 rw ~/Library/Keychains
 
+# Artifacts agents publish (herdr-artifact); they run only once you approve them
+rw ~/.herdr/artifacts
+
 # Tools and caches
 ro ~/.local/share
 ro ~/.local/bin

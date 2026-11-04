@@ -2,7 +2,8 @@
 // Herdr's other menus (new-menu-tasks). Model (every installed agent's, with its icon; picking
 // another agent's model switches agent), Reasoning (that model's levels), Fast (where the model
 // has it), Permissions (a small sub-menu), and, only when a choice differs from what runs now,
-// one Restart button. The chat does the restart.
+// one Restart button. The chat does the restart. Only a level changing on an agent that can
+// change it in place (props.liveEffort: Claude Code) applies at once, without the button.
 // Props (plain data from the chat; this mod reads nothing else about the agent):
 //   { pane, current: { agent, model, effort, fast, perm }, select?: { agent, model } (comes chosen), menus: { claude?, codex? }
 //     (agent.js menuFor), icons: { <agent>: { icon, tint } }, permDefault, remote, overlay }
@@ -80,6 +81,13 @@ export default class ModelMenu extends View {
     return out;
   }
 
+  // Only the level differs from what runs, and the agent changes it without a restart.
+  inPlace() {
+    const s = this.sel, w = this.was;
+    return Boolean(this.p.liveEffort) && !this.settingsMode && s.agent === w.agent && s.model === w.model
+      && s.fast === w.fast && s.perm === w.perm && this.level(s) !== this.level(w);
+  }
+
   restart() {
     const s = this.sel;
     setShared("chat.restartreq", { pane: this.p.pane, at: Date.now(), pick: { agent: s.agent, model: s.model, effort: this.level(s), fast: s.fast, perm: s.perm } });
@@ -118,7 +126,7 @@ export default class ModelMenu extends View {
         .text_size(11.5)
         .when(on === e, (el) => el.bg(t.background).text_color(t.foreground).font_medium())
         .when(on !== e, (el) => el.text_color(t.muted).when(!off, (el) => el.cursor_pointer().hover((s) => s.text_color(t.foreground))
-          .on_click((_e, cx) => { cx.stop_propagation(); this.sel = { ...this.sel, effort: e }; cx.notify(); })))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.sel = { ...this.sel, effort: e }; if (this.inPlace()) this.restart(); cx.notify(); })))
         .child(div().truncate().child(LEVEL[e] ?? e)))));
   }
 

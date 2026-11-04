@@ -21,17 +21,17 @@ function find(node, id) {
 // Whether the shown layout has the drill-in view.
 export const hasSidebarView = () => Boolean(find(layout(), BODY));
 
-// The body block gets the artifact's mod: an edit of that one block in the layout's file (not
+// The body block gets content (the artifact's mod): an edit of that one block in the layout's file (not
 // layout.set: a mod's run() refuses arguments nested over 16 levels, which this block is, and
 // layout.set would write the person's clicked sizes into the file). Only if the file is unchanged
 // since it was read; else read again.
-async function setBody(mod) {
+async function setBody(content) {
   const path = `${appHome()}/layouts/${shared("layout")}.json`;
   for (let i = 0; ; i++) {
     const text = await readTextFile(path);
     const tree = JSON.parse(text ?? "null"), body = find(tree, BODY);
     if (!body) throw new Error("This layout has no artifact view.");
-    body.content = { mod };
+    body.content = content;
     try { await writeTextFile(path, JSON.stringify(tree, null, 2), text); return; }
     catch (e) { if (i >= 2) throw e; }
   }
@@ -50,11 +50,21 @@ export function showInSidebar(view) {
     run("layout.show", { id: "panel" });
   };
   if (body.content?.mod === view.mod && !body.content?.props) { show(); return Promise.resolve(true); }
-  return setBody(view.mod)
+  return setBody({ mod: view.mod })
     .then(() => { show(); return true; })
     .catch((e) => { toast({ title: "Artifact didn't open", body: plainError(e), level: "error" }); return false; });
 }
 
 export const backToList = () => run("layout.select", { stack: STACK, child: LIST });
+
+// Before an artifact is deleted: the body block back to the placeholder when it holds the
+// artifact's mod (base: art-<id>; or a version's, art-<id>--v<n>), so Herdr isn't left showing a
+// mod whose folder is gone.
+export function forget(base) {
+  const mod = find(layout(), BODY)?.content?.mod;
+  if (mod !== base && !mod?.startsWith(`${base}--v`)) return Promise.resolve();
+  backToList();
+  return setBody({ mod: "artifacts", props: { blank: true } });
+}
 
 

@@ -2265,7 +2265,7 @@ export default class Chat extends View {
         const W = 300, H = 2 + 10 + 26 + 31 * rows + 9 + 26 + 34 + 31 + 31 + 33;
         openOverlay({ mod: "chat-models", kind: "popup", frame: "none", width: W, height: H,
           at: at ? { x: Math.max(8, at.x - W + 90), y: Math.max(8, at.y - H - 10) } : "pointer",
-          props: { pane: this.pickKey(), remote, height: H, select: name ? findModel(menus, name) : null,
+          props: { pane: this.pickKey(), remote, height: H, select: name ? findModel(menus, name) : null, liveEffort: c.agent === "claude" && !this.thread,
             current: { agent: c.agent, model: currentRow, effort: c.effort ?? null, fast: c.fast, perm: c.perm ?? null },
             menus, icons, permDefault: { claude: dflts.claude?.mode ?? "manual", codex: "auto" } } });
       } finally {
@@ -2309,12 +2309,18 @@ export default class Chat extends View {
     const cur = this.current();
     if (this.kind === "claude" && pick.agent === "claude" && cur && pick.effort && pick.effort !== cur.effort
       && (pick.model ?? agent.rowFor("claude", cur)) === agent.rowFor("claude", cur) && Boolean(pick.fast) === Boolean(cur.fast) && (pick.perm ?? cur.perm) === cur.perm) {
-      if (this.status() === "working") {
-        this.note = { id: `note-${Date.now()}`, text: "Effort changes once it's done: it can't while it works." };
+      // Claude Code takes /effort only between turns: while it works (or asks), the change waits
+      // for the turn to end. A later pick replaces a waiting one.
+      this.pendingEffort = pick.effort;
+      const busy = () => ["working", "blocked"].includes(this.status());
+      if (busy()) {
+        this.note = { id: `note-${Date.now()}`, text: `Effort changes to ${agent.levelName(pick.effort)} when this turn ends.` };
         cx.timer.after(6000, (cx) => { this.note = null; cx.notify(); });
-        return;
       }
       cx.spawn(async (cx) => {
+        while (busy()) await cx.sleep(1000);
+        if (this.pendingEffort !== pick.effort) return;
+        this.pendingEffort = null;
         try { await this.setEffort(pick.effort, cx); } catch (e) { toast({ title: "Effort didn't change", body: plainError(e), level: "error" }); }
         cx.notify();
       });

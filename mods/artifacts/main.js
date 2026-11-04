@@ -1,9 +1,9 @@
 // Artifacts: tiny Herdr panels agents make to show the person something (a report, a board, a
 // form). Each folder's list is ~/.herdr/artifacts/<slug>.json on the machine the folder is on,
 // changed only through the herdr-artifact CLI (bin/herdr-artifact), which agents use. This panel
-// only shows them: a click opens one inside this sidebar (drill in, ‹ Artifacts back; see
-// sidebar.js); a layout without that view opens it full window (artview.js), as chat cards and
-// Ctrl+K do. Those are the only two ways. An artifact on another machine is pulled into this app
+// shows them: a click opens one inside this sidebar (drill in, ‹ Artifacts back; see sidebar.js);
+// a layout without that view opens it full window (artview.js), as chat cards and Ctrl+K do.
+// A right-click opens it full window, shows its files in Finder, or deletes it. An artifact on another machine is pulled into this app
 // (art-<machine>-<id>) as it opens. With All, every folder's show, each with its folder.
 //
 // The same mod is also the header over an artifact in the sidebar (props.head), that view's
@@ -12,21 +12,25 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, agents, readTextFile, watchFolder, home, theme, closeOverlay, props, shared, setShared } from "herdr";
-import { showInSidebar, backToList } from "./sidebar.js";
-import { artifactCli as cli, showViewer, needsApproval, openReview } from "./artview.js";
+import { spaces, panes, terminals, agents, readTextFile, watchFolder, home, theme, openOverlay, closeOverlay, exec, props, shared, setShared } from "herdr";
+import { showInSidebar, backToList, forget } from "./sidebar.js";
+import { artifactCli as cli, showViewer, openViewer, needsApproval, openReview } from "./artview.js";
 import { Review } from "./review.js";
-import { toast, plainError, TEXT, RADIUS } from "./ui.js";
+import { toast, plainError, menuRow, TEXT, RADIUS } from "./ui.js";
 
 const ICON = "mods/artifacts/artifacts.svg";
 const modOf = (machine, id) => (machine ? `art-${machine.replace(/[^A-Za-z0-9_-]+/g, "-")}-${id}` : `art-${id}`);
 
 // The shown space and where it works now: its focused pane's folder, else its first terminal's.
+// A chat pane's folder is its agent's (the terminal labelled herdr.chat=<pane>, parked behind it).
 function where() {
   const space = spaces().find((s) => s.active);
   if (!space) return null;
   const tabs = new Set(space.tabs.map((t) => t.id));
-  const mine = panes().filter((p) => tabs.has(p.tab) && p.terminal && p.cwd);
+  const behind = new Map(terminals().filter((t) => t.labels?.["herdr.chat"]).map((t) => [t.labels["herdr.chat"], t.foreground?.cwd ?? t.cwd]));
+  const mine = panes().filter((p) => tabs.has(p.tab))
+    .map((p) => ({ focused: p.focused, cwd: p.terminal ? p.cwd : p.mod === "chat" ? behind.get(p.pane) : null }))
+    .filter((p) => p.cwd);
   const pane = mine.find((p) => p.focused) ?? mine[0];
   return { space: space.id, machine: space.machine ?? null, cwd: pane?.cwd || space.folder || "" };
 }
@@ -34,6 +38,7 @@ function where() {
 export default class Artifacts extends View {
   init(_props, cx) {
     if (props()?.review) { this.review = new Review(this, cx); return; }
+    if (props()?.menu) { this.menu = props().menu; return; }
     if (props()?.bar || props()?.head || props()?.blank) return;
     this.ctx = null;      // { space, machine, cwd }
     this.store = null;    // { folder, name, store, machine }
@@ -157,6 +162,7 @@ export default class Artifacts extends View {
 
   render(cx) {
     if (this.review) return this.review.render(cx);
+    if (this.menu) return this.menuView();
     const bar = props()?.bar;
     if (bar) return this.titleBar(bar);
     if (props()?.head) return this.viewHead(cx);
@@ -256,6 +262,12 @@ export default class Artifacts extends View {
       .when(shown, (el) => el.bg(t.selected))
       .hover((s) => s.bg(shown ? t.selected : t.hover))
       .on_click((_e, cx) => this.open(a, (m) => this.inPlace(m, a), cx))
+      .on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        const machine = this.store?.machine ?? null;
+        openOverlay({ mod: "artifacts", kind: "popup", width: 210, height: machine ? 76 : 108,
+          props: { menu: { id: a.id, title: a.title, version: a.version, latest: a.version, machine } } });
+      })
       .child(h_flex().h(18).flex_none().items_center()
         .child(svg(ICON).size(14).flex_none().text_color(shown || open ? t.accent : t.dim)))
       .child(v_flex().flex_1().min_w(0).gap(2)
@@ -264,6 +276,32 @@ export default class Artifacts extends View {
           .child(div().flex_1().min_w(0).truncate().child(busy ? "Opening…" : open ? `Open · ${this.detail(a)}` : this.detail(a)))
           // With All: its folder, dimmed, at the right (as task rows show where they ran).
           .when(this.all && Boolean(a.folder), (el) => el.child(div().flex_none().max_w(140).truncate().child(folderName(a.folder))))));
+  }
+
+  // A row's right-click menu (props.menu, an artifact as openViewer takes it): open it full window,
+  // its files in Finder (this computer's only), delete it (a second click confirms).
+  menuView() {
+    const a = this.menu, t = theme();
+    const close = () => closeOverlay(props().overlay);
+    const files = `${home()}/.herdr/artifacts/files/${a.id}/v${a.version}`;
+    return v_flex().id("art-menu").size_full().p(5).gap(1).bg(t.popover)
+      .child(menuRow("art-menu-open", "Open full window", { icon: "mods/chat-image/external-link.svg", onClick: () => openViewer(a).finally(close) }))
+      .when(!a.machine, (el) => el.child(menuRow("art-menu-files", "Show files in Finder", { icon: "mods/chat-image/folder-open.svg", onClick: () => { close(); exec("open", [files]); } })))
+      .child(menuRow("art-menu-rm", this.confirming ? "Click again to delete" : "Delete", { icon: "mods/artifacts/trash.svg", danger: true,
+        onClick: (_e, cx) => (this.confirming ? this.remove(close, cx) : (this.confirming = true)) }));
+  }
+
+  remove(close, cx) {
+    const a = this.menu;
+    cx.spawn(async () => {
+      try {
+        await forget(modOf(a.machine, a.id));
+        await cli(a.machine, ["rm", a.id]);
+      } catch (e) {
+        toast({ title: "Artifact wasn't deleted", body: plainError(e), level: "error" });
+      }
+      close();
+    });
   }
 
   // Over an artifact in the sidebar: ‹ Artifacts back to the list, its title, which version with

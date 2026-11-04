@@ -30,7 +30,12 @@ case "$program" in
     # when it shows this agent; else Claude asks in the terminal as usual. Only for agents
     # started here, so your own settings.json stays as it is. Claude takes one --settings, and
     # the chat passes its own (fast mode), so ours is merged into that.
-    hook="$(jq -nc --arg c "sh '$dir/../mods/chat/ask-hook.sh'" '{hooks: {PermissionRequest: [{hooks: [{type: "command", command: $c, timeout: 1800}]}]}}')"
+    # And mods/chat/event-hook.sh: what the log can't say yet (compacting, the reply as it
+    # streams, API errors) as live events for the chat. Async, so Claude never waits on it.
+    hook="$(jq -nc --arg c "sh '$dir/../mods/chat/ask-hook.sh'" --arg e "sh '$dir/../mods/chat/event-hook.sh'" '{hooks: (
+      {PermissionRequest: [{hooks: [{type: "command", command: $c, timeout: 1800}]}]}
+      + ([("PreCompact", "PostCompact", "MessageDisplay", "StopFailure", "PostToolUseFailure", "PermissionDenied", "Stop", "UserPromptSubmit")
+          | {(.): [{hooks: [{type: "command", command: $e, async: true}]}]}] | add))}')"
     args=() merged=""
     while [ $# -gt 0 ]; do
       if [ "$1" = --settings ] && [ $# -gt 1 ]; then
@@ -41,17 +46,26 @@ case "$program" in
     done
     [ -n "$merged" ] || args=(--settings "$hook" ${args[@]+"${args[@]}"})
     exec ${wrap[@]+"${wrap[@]}"} claude --append-system-prompt-file "$dir/instructions.md" ${args[@]+"${args[@]}"} ;;
-  # Codex takes the text itself, as a TOML string (a JSON string is one).
+  # Codex takes the text itself, as a TOML string (a JSON string is one). It runs through
+  # codex-live: the same Codex, with its TUI on a private app-server for the chat's live
+  # events and approval cards (Codex as before when that can't work).
   # In the sandbox, Codex can't save its folder-trust answer (config.toml stays read-only: its
   # hooks and notify run outside the sandbox), so the folder it starts in (-C/--cd, else here)
-  # comes trusted for this run instead of asking. Herdr's sandbox is what confines it.
+  # comes trusted for this run instead of asking. Herdr's sandbox is what confines it, as Codex
+  # can't start its own inside it: that is off unless the arguments ask for one (a fork or
+  # resume from the chat or the Resume menu wouldn't load otherwise).
   codex)
     trust=()
     if [ ${#wrap[@]} -gt 0 ]; then
-      cwd="$PWD" prev=""
-      for a in "$@"; do case "$prev" in -C|--cd) cwd="$a" ;; esac; prev="$a"; done
+      cwd="$PWD" prev="" own=""
+      for a in "$@"; do
+        case "$prev" in -C|--cd) cwd="$a" ;; -c|--config) case "$a" in sandbox_mode=*) own=1 ;; esac ;; esac
+        case "$a" in -s|--sandbox|--sandbox=*|--dangerously-bypass-approvals-and-sandbox|--yolo) own=1 ;; esac
+        prev="$a"
+      done
       trust=(-c "projects={$(jq -n --arg d "$(cd "$cwd" 2>/dev/null && pwd -P || printf %s "$cwd")" '$d')={trust_level=\"trusted\"}}")
+      [ -n "$own" ] || set -- "$@" --sandbox danger-full-access
     fi
-    exec ${wrap[@]+"${wrap[@]}"} codex -c "developer_instructions=$(jq -Rs . < "$dir/instructions.md")" ${trust[@]+"${trust[@]}"} "$@" ;;
+    exec ${wrap[@]+"${wrap[@]}"} "$dir/codex-live" codex -c "developer_instructions=$(jq -Rs . < "$dir/instructions.md")" ${trust[@]+"${trust[@]}"} "$@" ;;
   *) exec ${wrap[@]+"${wrap[@]}"} "$program" "$@" ;;
 esac

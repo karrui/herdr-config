@@ -1,0 +1,106 @@
+#!/bin/bash
+# Runs Codex with its TUI on a private app-server, so a second client (mods/chat/codex-tap.py)
+# can give the chat live events and Codex's approvals as cards. The TUI stays the agent in the
+# terminal: hc send, read and wait, and Herdr's status, work as before. agent/launch runs this
+# inside the sandbox when the agent is sandboxed, so the server and its tools are confined too.
+# Whatever it can't run the same way (a Codex without --remote, a flag it doesn't know, a
+# server that doesn't come up) starts Codex exactly as before instead.
+# usage: codex-live codex [args...]
+codex="$1"; shift
+orig=("$@")
+plain() { exec "$codex" ${orig[@]+"${orig[@]}"}; }
+t="${HC_TERMINAL_ID:-}"
+case "$t" in ""|*/*|*..*) plain ;; esac
+"$codex" --help 2>/dev/null | grep -q -- '--remote <' || plain
+here="$(cd "$(dirname "$0")" && pwd)"
+toml() { jq -n --arg v "$1" '$v'; }
+
+# Remote mode splits the settings. Only the server reads instructions and folder trust. A new
+# thread takes the TUI's model, sandbox and approvals. A resumed or forked one keeps the
+# permissions it was saved with, whatever the server is told, and the TUI refuses permission
+# flags then, so those mean Codex as before. Except Herdr's own sandbox flag: in the sandbox a
+# thread runs only with Codex's sandbox off, so one saved otherwise fails to start, and the
+# retry at the end starts it as before.
+resumed=""
+for ((i = 0; i < ${#orig[@]}; i++)); do
+  case "${orig[$i]}" in
+    -c|--config|--enable|--disable|-m|--model|-s|--sandbox|-a|--ask-for-approval|-C|--cd|-i|--image) i=$((i + 1)) ;;
+    -*) ;;
+    resume|fork) resumed=1; break ;;
+    *) break ;;
+  esac
+done
+perm() {
+  [ -z "$resumed" ] && { tui+=("$@"); return; }
+  [ -n "${HERDR_SANDBOX:-}" ] && [[ "$1" =~ ^(-s|--sandbox)$ ]] && [ "${2-}" = danger-full-access ] && return
+  plain
+}
+server=() tui=() cwd="$PWD" first=1
+while [ $# -gt 0 ]; do
+  a="$1"; shift
+  case "$a" in --*=*) set -- "${a#*=}" "$@"; a="${a%%=*}" ;; esac
+  case "$a" in
+    -c|--config)
+      server+=("$a" "${1-}")
+      k="${1%%=*}"
+      case "${k// /}" in
+        approval_policy|approvals_reviewer|sandbox_mode|sandbox_workspace_write*|default_permissions|permissions*|network*) perm "$a" "${1-}" ;;
+        *) tui+=("$a" "${1-}") ;;
+      esac
+      shift ;;
+    --enable|--disable) server+=("$a" "${1-}"); tui+=("$a" "${1-}"); shift ;;
+    -m|--model) server+=(-c "model=$(toml "${1-}")"); tui+=("$a" "${1-}"); shift ;;
+    -s|--sandbox) server+=(-c "sandbox_mode=$(toml "${1-}")"); perm "$a" "${1-}"; shift ;;
+    -a|--ask-for-approval) server+=(-c "approval_policy=$(toml "${1-}")"); perm "$a" "${1-}"; shift ;;
+    --dangerously-bypass-approvals-and-sandbox|--yolo)
+      server+=(-c 'approval_policy="never"' -c 'sandbox_mode="danger-full-access"'); perm "$a" ;;
+    --strict-config) server+=("$a"); tui+=("$a") ;;
+    -C|--cd) cwd="${1-}"; shift ;;
+    # The chat adds it to keep Codex off the shared daemon; this server is its own already.
+    --no-daemon) ;;
+    -i|--image) tui+=("$a" "${1-}"); shift ;;
+    --search|--no-alt-screen|--last|--all|--include-non-interactive) tui+=("$a") ;;
+    -*) plain ;;
+    *)
+      # A first word that could be a subcommand other than resume or fork: as before.
+      [ "$first" = 1 ] && [ "$a" != resume ] && [ "$a" != fork ] && [[ "$a" =~ ^[a-z][a-z-]*$ ]] && plain
+      first=0; tui+=("$a") ;;
+  esac
+done
+# The real path, as launch names the folder it trusts.
+cwd="$(cd "$cwd" 2>/dev/null && pwd -P)" || plain
+
+# Next to the chat's other files: the sandbox's spool, else Herdr's data folder.
+d="${HERDR_HC_SPOOL:-${HERDR_APP_HOME:-$HOME/.config/herdr-app}/data}"
+sock="$d/chat-events/$t.sock"
+mkdir -p "$d/chat-events" && rm -f "$sock" || plain
+(cd "$cwd" && exec "$codex" ${server[@]+"${server[@]}"} app-server --listen "unix://$sock") </dev/null >/dev/null 2>&1 &
+srv=$!
+for _ in $(seq 50); do
+  [ -S "$sock" ] && break
+  kill -0 "$srv" 2>/dev/null || break
+  sleep 0.1
+done
+[ -S "$sock" ] || { kill "$srv" 2>/dev/null; plain; }
+# The server keeps the socket in a short path and links ours to it; clients take the real one.
+real="$(readlink "$sock")" || real="$sock"
+
+tap=""
+if command -v python3 >/dev/null; then
+  python3 "$here/../mods/chat/codex-tap.py" "$real" "$d" "$t" "$srv" </dev/null >/dev/null 2>&1 &
+  tap=$!
+fi
+# Stopped from outside (Ctrl+C, agent-restart, the terminal closing): the TUI gets the signal
+# too; once it is gone, the server and tap go, with a moment for the server to save.
+stopped=""
+trap 'stopped=1' INT TERM HUP
+began=$SECONDS
+"$codex" --remote "unix://$real" --cd "$cwd" ${tui[@]+"${tui[@]}"}
+status=$?
+kill $tap "$srv" 2>/dev/null
+for _ in $(seq 20); do kill -0 "$srv" 2>/dev/null || break; sleep 0.1; done
+kill -KILL "$srv" 2>/dev/null
+rm -f "$sock"
+# Failed as it started, and not stopped: whatever remote mode tripped on, Codex as before.
+[ -z "$stopped" ] && [ "$status" -ge 1 ] && [ "$status" -le 127 ] && [ $((SECONDS - began)) -lt 15 ] && plain
+exit $status

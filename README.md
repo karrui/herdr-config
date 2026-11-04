@@ -204,6 +204,11 @@ Agents you start from the + menu open in Chat.
 The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliasstravik/shepherdr) (3.0.0), changed to fit this config's sandbox:
 - Pictures an agent shows with show-your-work, or links as Markdown images, show inline; a recording shows its first frame and opens in your player.
 - Questions (AskUserQuestion) and permission prompts come as cards to answer, for sandboxed agents too: `agent/launch` adds the hook for agents Herdr starts, and a sandboxed agent's hook talks to the chat through its own broker folder, so it can't answer another agent's prompt.
+  Codex's approvals and questions come as the same cards, answered in the chat or its terminal, whichever is first.
+- Live events fill in what the session log can't say yet, such as compacting or a reply as it streams.
+  For Claude Code, `agent/launch` adds an async hook (`mods/chat/event-hook.sh`).
+  Codex runs through `agent/codex-live`, which keeps its TUI in the terminal on a private app-server that `mods/chat/codex-tap.py` also joins.
+  Both write to `chat-events/<terminal>.jsonl` next to the cards' files, and `event-hook.sh` describes the events.
 - The model picker restarts the agent through `agent/launch`, in the sandbox when it was. A change of effort alone needs no restart: Claude Code switches it in place for that session only.
 - Artifacts are small Herdr panels agents publish with `herdr-artifact`, shown in the Artifacts panel (the tab bar's grid button) and as cards in the chat.
   Herdr runs them outside the sandbox, so one a sandboxed agent made only runs once you've read its code and approved it; a new version asks again.
@@ -245,6 +250,7 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `keys.json` | Key bindings. `cmd-b` is unbound, so the sidebar always shows. |
 | `programs.json` | Points the + menu's agents at `agent/launch`. |
 | `agent/launch` | Starts `claude` or `codex` with `agent/instructions.md` added, sandboxed or not. |
+| `agent/codex-live` | Runs Codex's TUI on a private app-server for the chat's live events and cards, or Codex as before when it can't. |
 | `agent/worktree` | Worktree setup, teardown, removal and close, driven by your `worktrees/<repo>.yaml` files. |
 | `sandbox/` | The sandbox (`agent-sandbox`), its `hc` go-between (`hc-broker`, `bin/hc`), starter allow and deny lists, the blocked-access logger and `agent-restart`. |
 | `usage/` | The context and usage feeds for Claude Code and Codex, for the footer and the Usage popup. |

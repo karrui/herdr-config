@@ -62,6 +62,15 @@ export function words(req) {
     case "Glob": case "Grep": return { kind: "permission", title: `Search for ${clip(v.pattern, 80)}`, ...lines(v.path) };
     case "WebFetch": return { kind: "permission", title: `Fetch ${clip(host(v.url), 100)}`, ...lines(v.url, v.prompt) };
     case "WebSearch": return { kind: "permission", title: `Search the web: ${clip(v.query, 100)}`, detail: "", cut: false };
+    // Codex's, from mods/chat/codex-tap.py (its commands come as Bash, its questions as
+    // AskUserQuestion): file changes as one patch, and a request for more access.
+    case "apply_patch": {
+      const files = Array.isArray(v.files) ? v.files : [];
+      const verb = { add: "Create", delete: "Delete" }[files[0]?.kind] ?? "Edit";
+      const title = files.length === 1 ? `${verb} ${rel(files[0]?.path, cwd)}` : files.length ? `Edit ${files.length} files` : "Change files";
+      return { kind: "permission", title, ...lines(v.reason, ...files.flatMap((f) => [f?.path, f?.diff])) };
+    }
+    case "request_permissions": return { kind: "permission", title: "Allow more access", ...lines(v.reason, JSON.stringify(v.permissions ?? {}, null, 1)) };
   }
   const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
   const json = Object.keys(v).length ? JSON.stringify(v, null, 1) : "";

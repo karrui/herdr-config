@@ -27,8 +27,9 @@ fg_pid=$(jq -r '.foreground.pid // empty' <<<"$info")
 # Herdr's instructions (the launcher adds those back, read fresh).
 args=()
 while IFS= read -r -d '' a; do args+=("$a"); done < <(jq -j '.foreground.argv[] + "\u0000"' <<<"$info")
+# They start after the program itself, which may run behind agent-sandbox or agent/codex-live.
 start=1
-[[ "${args[1]:-}" == */agent-sandbox ]] && start=3
+for ((i = 0; i < ${#args[@]}; i++)); do [ "${args[$i]##*/}" = "$program" ] && { start=$((i + 1)); break; }; done
 flags=()
 rest=("${args[@]:$start}")
 for ((i = 0; i < ${#rest[@]}; i++)); do

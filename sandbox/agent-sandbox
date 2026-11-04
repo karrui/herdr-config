@@ -75,6 +75,8 @@ mkdir -p "$spool"
     # A worktree keeps its git data in the main checkout's .git, outside this folder.
     common="$(git -C "$here" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
     [ -n "$common" ] && rule allow "file-read-data file-write*" "$common"
+    # Turborepo shares its local cache across worktrees, in the main checkout's .turbo.
+    [ "${common##*/}" = .git ] && rule allow "file-read-data file-write*" "${common%/.git}/.turbo"
     ;;
   esac
   if [ -f "$allow" ]; then

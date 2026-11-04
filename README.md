@@ -210,6 +210,8 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
 - Reactions work, and a chat agent shows in the Agents list, the tab bar and the footer like any other.
 - Like Codex's: the agent's words span the column, your messages are bubbles, and its narration and steps stream in as it works.
   A finished turn folds them behind "Worked for 4m 5s"; edits show as diffs.
+  A step that failed stays outside the fold with a red mark, and a turn you stopped doesn't fold and ends with "You stopped after 12s".
+  While Claude Code retries a failed request, one row counts the tries and goes away once the agent continues.
 - Ask about this, under a message or a picture, adds it to your next message as an annotation with an optional comment.
 - `/btw` opens Claude Code's answer in a panel over the chat; `/` lists commands and skills, `$` Codex's skills.
 

@@ -54,7 +54,19 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
   if ((claude && index(line, "\"tool_result\"")) || (codex && (index(head, "\"function_call_output\"") || index(head, "\"custom_tool_call_output\"")))) {
     if (count) next
     ids = ""; t = line
-    while (match(t, /"(tool_use_id|call_id)":"[^"]*"/)) { m = substr(t, RSTART, RLENGTH); sub(/^"[a-z_]*":"/, "", m); sub(/"$/, "", m); ids = ids " " m; t = substr(t, RSTART + RLENGTH) }
+    # A call that failed comes back as its id and "!". Claude Code marks the result is_error (a
+    # command that exited non-zero, a denied or cancelled call). Codex says so in the header
+    # before the output: "Exit code: 1", "Process exited with code 1", a script that failed.
+    err = claude && index(line, "\"is_error\":true")
+    if (codex) {
+      h = substr(line, index(line, "\"output\":"), 400); k = index(h, "Output:"); if (k) h = substr(h, 1, k)
+      if (index(h, "Script failed") || (match(h, /(Exit code: |Process exited with code )-?[0-9]+/) && substr(h, RSTART, RLENGTH) !~ / 0$/)) err = 1
+    }
+    # Claude Code writes is_error before its result id (ponytail: a line of several results in
+    # the other order, id first, would mark the wrong one; none failed so in the logs seen).
+    while (match(t, /"(tool_use_id|call_id)":"[^"]*"/)) { m = substr(t, RSTART, RLENGTH); sub(/^"[a-z_]*":"/, "", m); sub(/"$/, "", m); if (err && (codex || index(substr(t, 1, RSTART - 1), "\"is_error\":true"))) m = m "!"; ids = ids " " m; t = substr(t, RSTART + RLENGTH) }
+    # One result alone: its is_error can come after its id.
+    if (err && !index(ids, "!") && split(ids, qq, " ") == 1) ids = ids "!"
     # A helper (or job) launched to run on its own: its result came at once, it is not done yet.
     if (index(line, "Async agent launched") || index(line, "running in background")) ids = ids " ASYNC"
     print off "\tR\t" ids
@@ -78,7 +90,7 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
   }
   keep = 0
   if (index(head, mine)) {
-    if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\"")) || index(head, "\"subtype\":\"turn_duration\"") || index(head, "\"subtype\":\"compact_boundary\"")) keep = 1
+    if (index(line, "\"type\":\"user\",\"message\"") || index(line, "\"type\":\"assistant\",\"uuid\"") || (index(line, "\"type\":\"attachment\",\"uuid\"") && index(line, "\"queued_command\"")) || index(head, "\"subtype\":\"turn_duration\"") || index(head, "\"subtype\":\"compact_boundary\"") || index(head, "\"subtype\":\"api_error\"")) keep = 1
   } else if (index(head, "\"type\":\"response_item\"")) {
     if (index(head, "\"type\":\"message\"") || index(head, "_call\"")) keep = 1
   } else if (index(head, "\"type\":\"event_msg\"")) {
@@ -148,6 +160,8 @@ true`;
 
 const parse = (line) => { try { return JSON.parse(line); } catch { return null; } };
 const time = (s) => Date.parse(s ?? "") || 0;
+// A message's words: its text, or its blocks' texts.
+const textOf = (c) => (typeof c === "string" ? c : Array.isArray(c) ? c.map((b) => b?.text ?? "").join("\n") : "");
 
 // Text Claude Code puts in a user line that the person didn't type.
 const INJECTED = /^\s*(<(local-command-|system-reminder|bash-|task-notification|user-memory-input|user-prompt-submit-hook|command-message)|Caveat: The messages below|\[Request interrupted)/;
@@ -460,10 +474,12 @@ export function pictures(text) {
 //   (images: how many were sent; paths: where the ones Claude Code read from files came from;
 //   replyTo: the start of the message it answers)
 //   { kind: "mark", id }  (a message of only reactions: ends the turn, shows nothing)
-//   { kind: "tools", id, steps: [{ id, kind, line, out? }] }  (calls in a row, between texts;
-//                                             out: where the call's result line is)
+//   { kind: "tools", id, steps: [{ id, kind, line, out?, failed? }] }  (calls in a row, between
+//                                             texts; out: where the call's result line is)
 //   { kind: "ask", id, text, closed? }  (the agent's own question tool; closed once its dialog
-//                                          is gone: "answered" | "dismissed")   { kind: "error", id, text }
+//                                          is gone: "answered" | "dismissed")
+//   { kind: "error", id, text, retry? }  (retry: the API call is being tried again)
+//   { kind: "turnend", id, at?, stopped? }  (stopped: the person stopped the turn)
 // `doing` is what it does right now (the last call not answered yet), for the status line.
 // `meta` is what the agent runs on, from its newest lines: { model, effort, speed, used, window }
 // (used: tokens in its context window now; window: that window's size when the log says it;
@@ -495,6 +511,27 @@ export class Conversation {
     this.queued = [];
     // A /compact running (it ends at the log's compact_boundary).
     this.compacting = false;
+    // The error row of a request being retried, while it is: updated in place, gone once the
+    // agent goes on (resume()), the error itself if it gives up (failed()).
+    this.retry = null;
+  }
+
+  retrying(off, text) {
+    if (!this.retry) this.push(this.retry = { kind: "error", id: `e${off}`, retry: true });
+    this.retry.text = text;
+  }
+
+  resume() {
+    if (!this.retry) return;
+    const i = this.items.indexOf(this.retry);
+    if (i >= 0) this.items.splice(i, 1);
+    this.retry = null;
+  }
+
+  failed(off, text) {
+    if (this.retry) Object.assign(this.retry, { text, retry: false });
+    else this.push({ kind: "error", id: `e${off}`, text });
+    this.retry = null;
   }
 
   push(item) {
@@ -504,6 +541,7 @@ export class Conversation {
   // Tool calls in a row join the last item when it is a tools row.
   step(id, off, st, helper = null) {
     if (!st) return;
+    this.resume();
     // A Codex code-mode script's calls, in the order it made them (codexStep()): its commands
     // and its edits' diff cards interleave as Codex shows them. The call's result goes with its
     // last part, which is the one the working line follows.
@@ -541,11 +579,11 @@ export class Conversation {
     if (this.questions.size > 20) this.questions.delete(this.questions.keys().next().value);
   }
 
-  done(id, off) {
+  done(id, off, failed = false) {
     const q = this.questions.get(id);
     if (q) q.closed ??= "dismissed";
     const s = this.calls.get(id);
-    if (s) { s.out = off; this.calls.delete(id); }
+    if (s) { s.out = off; s.failed = failed; this.calls.delete(id); }
     this.waits.delete(id);
     if (!this.open.delete(id)) return;
     this.doing = this.open.size ? [...this.open.values()].pop() : null;
@@ -656,12 +694,14 @@ export class Conversation {
       if (r.kind === "R") {
         const ids = r.data.split(" ").filter(Boolean);
         const async = ids.includes("ASYNC");
-        for (const id of ids) {
-          if (id === "ASYNC") continue;
+        for (const raw of ids) {
+          if (raw === "ASYNC") continue;
+          // (A failed call's id ends in "!": LOG.)
+          const id = raw.replace(/!$/, "");
           // A helper that answered (not one launched to run on its own) is done.
           const h = this.helpers.get(id);
           if (h && !async) h.done = true;
-          this.done(id, r.off);
+          this.done(id, r.off, raw.endsWith("!"));
         }
         continue;
       }
@@ -693,17 +733,30 @@ export class Conversation {
   claude(l, off) {
     // A helper's lines, in its parent's log; a helper's own log (side) is all of them.
     if (Boolean(l.isSidechain) !== Boolean(this.side)) return;
+    // A request that failed, tried again: "Retrying 2/10 · Connection dropped (ECONNRESET)".
+    if (l.type === "system" && l.subtype === "api_error") {
+      const e = l.error ?? {};
+      this.retrying(off, [`Retrying${l.retryAttempt ? ` ${l.retryAttempt}/${l.maxRetries ?? "?"}` : ""}`, e.formatted ?? e.message].filter(Boolean).join(" · "));
+      return;
+    }
+    if (l.type === "queue-operation") { this.queueOp(l, off); return; }
+    // It gave up: why, in place of the retry's row.
+    if (l.type === "assistant" && l.isApiErrorMessage) {
+      const err = (l.message?.content ?? []).filter((b) => b?.type === "text").map((b) => b.text).join("\n");
+      if (err) this.failed(off, err);
+      return;
+    }
+    // Anything else: it went on.
+    this.resume();
     // A turn ended (written once per turn, also for one no message of yours started, as a
     // helper's report does): the chat folds each turn by these (main.js foldTurns()).
     if (l.type === "system" && l.subtype === "turn_duration") { this.queued = []; this.push({ kind: "turnend", id: `te${off}` }); return; }
     if (l.type === "system" && l.subtype === "compact_boundary") { this.queued = []; this.compacting = false; this.compactedAt = time(l.timestamp); this.doing = null; return; }
-    if (l.type === "queue-operation") { this.queueOp(l, off); return; }
-    if (l.type === "user" && l.origin?.kind === "task-notification") {
-      // A helper or a background job finished (Claude Code tells the agent so): it's done.
-      const c = l.message?.content;
-      this.finished(typeof c === "string" ? c : Array.isArray(c) ? c.map((b) => b?.text ?? "").join("\n") : "");
-      return;
-    }
+    const said = l.type === "user" ? textOf(l.message?.content) : "";
+    // A helper or a background job finished (Claude Code tells the agent so): it's done.
+    if (l.type === "user" && l.origin?.kind === "task-notification") { this.finished(said); return; }
+    // You stopped the turn (Esc, or a denied call that ends it): it ends here, stopped.
+    if (l.type === "user" && /^\s*\[Request interrupted by user/.test(said)) { this.queued = []; this.push({ kind: "turnend", id: `te${off}`, at: time(l.timestamp), stopped: true }); return; }
     if (l.type === "user") {
       // After a message with images, Claude Code notes where each came from: the chat shows them.
       if (l.isMeta) {
@@ -730,11 +783,6 @@ export class Conversation {
       const u = claudeUser(a.prompt);
       if (u) this.user(`u${off}`, { ...u, at: time(a.timestamp ?? l.timestamp) });
     } else if (l.type === "assistant") {
-      if (l.isApiErrorMessage) {
-        const err = (l.message?.content ?? []).filter((b) => b?.type === "text").map((b) => b.text).join("\n");
-        if (err) this.push({ kind: "error", id: `e${off}`, text: err });
-        return;
-      }
       const m = l.message ?? {};
       const id = String(m.id ?? l.uuid);
       if (m.model && m.model !== "<synthetic>") {
@@ -841,8 +889,13 @@ export class Conversation {
       this.waits.clear();
       this.waiting = false;
       this.doing = null;
-      // The turn ended: the chat folds by these, as by Claude Code's turn_duration.
-      this.push({ kind: "turnend", id: `te${off}` });
+      // A turn that failed (out of credits, the model at capacity) says why. Its retries before
+      // that aren't in the log: Codex keeps its stream errors out of rollouts.
+      if (p.error?.message) this.failed(off, String(p.error.message));
+      // The turn ended: the chat folds by these, as by Claude Code's turn_duration. One you
+      // stopped is "interrupted" (a forked helper's copy of its parent's turn ends in one too,
+      // but with no completed_at: not a stop).
+      this.push({ kind: "turnend", id: `te${off}`, at: time(l.timestamp), stopped: p.type === "turn_aborted" && p.reason === "interrupted" && p.completed_at != null });
     }
   }
 }

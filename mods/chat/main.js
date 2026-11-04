@@ -1613,26 +1613,34 @@ export default class Chat extends View {
   // Codex's way with a finished turn: the person's message, "Worked for 4m 5s", the last reply.
   // What came between (replies on the way, thoughts, tool steps, diffs) folds into that row and
   // opens on a click; the turn under way shows all of it as it comes. Questions, pictures and
-  // artifacts stay where they were. A turn ends at a message of yours or where Claude Code
-  // says one ended (turnend: a helper's report starts a turn of its own, with no message).
+  // artifacts stay where they were, as do steps that failed. A turn ends at a message of yours
+  // or where Claude Code says one ended (turnend: a helper's report starts a turn of its own,
+  // with no message). One you stopped doesn't fold: all of it, then "You stopped after 12s".
   foldTurns(items, working) {
     const FOLDS = new Set(["agent", "thought", "tools", "diff"]);
+    const folds = (x) => FOLDS.has(x.kind) && !x.steps?.some((s) => s.failed);
     const out = [];
     let span = [], lead = null;
-    const close = (last) => {
+    const close = (last, stop = null) => {
+      if (stop) {
+        const start = lead?.at ?? span.find((x) => x.at)?.at;
+        if (lead || span.length) out.push(...span, { kind: "worked", id: `stop:${stop.id}`, stopped: true, secs: start && stop.at >= start ? Math.round((stop.at - start) / 1000) : null });
+        span = [];
+        return;
+      }
       let fin = -1;
       for (let k = span.length - 1; k >= 0; k--) if (span[k].kind === "agent") { fin = k; break; }
-      if ((working && last) || !span.slice(0, Math.max(0, fin)).some((x) => FOLDS.has(x.kind))) { out.push(...span); span = []; return; }
+      if ((working && last) || !span.slice(0, Math.max(0, fin)).some(folds)) { out.push(...span); span = []; return; }
       const id = `w:${(lead ?? span[0]).id}`, start = lead?.at ?? span.find((x) => x.at)?.at, end = span[fin].at ?? 0;
       out.push({ kind: "worked", id, secs: start && end > start ? Math.round((end - start) / 1000) : null });
       // Opened, what it folds is drawn faded (rowBare(), dim), so the last reply stands out.
       const open = this.opened.has(id);
-      span.forEach((x, k) => { if (k >= fin || !FOLDS.has(x.kind)) out.push(x); else if (open) out.push({ ...x, dim: true }); });
+      span.forEach((x, k) => { if (k >= fin || !folds(x)) out.push(x); else if (open) out.push({ ...x, dim: true }); });
       span = [];
     };
     for (const x of items) {
       if (x.kind === "user") { close(false); out.push(x); lead = x; }
-      else if (x.kind === "turnend") { close(false); lead = null; }
+      else if (x.kind === "turnend") { close(false, x.stopped ? x : null); lead = null; }
       else span.push(x);
     }
     close(true);
@@ -1919,7 +1927,7 @@ export default class Chat extends View {
         + (this.opened.has(`n:${x.id}`) ? (x.noteItems ?? []).reduce((h, n) => h + 10 + lines(n.quote, w * 0.8) * 17 + (n.comment ? 20 : 0), 0) : 0);
       case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
       case "thought": return 14 + lines(x.text, w) * 21;
-      case "worked": return 41;
+      case "worked": return x.stopped ? 32 : 41;
       case "gallery": return GALLERY_H + 8;
       case "diff": return 32 + (this.opened.has(x.id) ? 0 : 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0));
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.reduce((n, s) => n + (s.cmd || s.kind === "run" ? 36 : 19), 0) : 20;
@@ -2095,6 +2103,9 @@ export default class Chat extends View {
             .when(left > 0, (el) => el.child(div().h(18).px(10).text_color(t.dim).child(`${left} more line${left === 1 ? "" : "s"}`))))), 18, 4);
       }
       case "worked": {
+        // A turn you stopped: how long it ran, under all of it (foldTurns()).
+        if (x.stopped) return col(h_flex().h(20).items_center().text_size(12.5).text_color(t.dim)
+          .child(x.secs != null ? `You stopped after ${duration(x.secs)}` : "You stopped"), 18, 6);
         // A finished turn's work, folded (foldTurns()): opens on a click (clickRow()).
         const open = this.opened.has(x.id);
         return col(v_flex().w_full().gap(8)
@@ -2162,22 +2173,29 @@ export default class Chat extends View {
             .child(x.closed === "answered" ? "Asked you · Answered" : x.closed ? "Asked you · Closed without an answer" : "Asked you"))
           .child(div().text_color(x.closed ? t.muted : t.foreground).child(TextView.markdown(`${pre}chat-md-${x.id}`, x.text).selectable(true))));
       case "error":
-        return pad(div().w_full().text_size(12.5).text_color(t.blocked).child(x.text));
+        // While it's being tried again, calm: it may yet go through (log.js retrying()).
+        return pad(div().w_full().text_size(12.5).text_color(x.retry ? t.muted : t.blocked).child(x.text));
       case "tools": {
         const open = this.opened.has(x.id);
+        const failed = x.steps.filter((s) => s.failed).length;
         return col(v_flex().w_full().px(6).py(QUIET_PY).rounded(7).cursor_pointer()
           .hover((s) => s.bg(t.hover))
           .child(h_flex().gap(6).items_center().text_size(12).text_color(t.dim)
             .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none())
-            .child(div().flex_1().min_w(0).truncate().child(summary(x.steps))))
+            .child(div().min_w(0).truncate().child(summary(x.steps)))
+            .when(failed > 0, (el) => el.child(div().flex_none().child("·")).child(div().flex_none().text_color(t.blocked).child(`${failed} failed`))))
           .when(open, (el) => el.child(v_flex().pl(18).pt(4).pb(2).gap(3).text_size(12).text_color(t.muted)
             .children(x.steps.flatMap((s) => {
               // Commands and what they printed in the terminal's font, as code is.
               const out = this.results.get(s.id), mono = settings().font_family ?? "JetBrains Mono";
               // A command: its description, then the command itself ("Ran" when it has none).
               const part = (line) => (s.cmd && !line.includes("\n") ? [s.label ?? "Ran", s.cmd] : s.kind === "run" && line.startsWith("Ran ") ? ["Ran", line.slice(4)] : [line, null]);
-              // On two lines, for reading: what it's for, then the command.
-              return [...s.line.split("\n").map((line) => { const [label, code] = part(line); return v_flex().min_w(0).gap(1)
+              // On two lines, for reading: what it's for, then the command. One that failed is
+              // marked in the chevron's column, on its last line (where the call ended).
+              const lines = s.line.split("\n");
+              return [...lines.map((line, n) => { const [label, code] = part(line); return v_flex().min_w(0).gap(1)
+                .when(Boolean(s.failed) && n === lines.length - 1, (el) => el.relative()
+                  .child(svg("mods/chat/x.svg").absolute().left(-17).top(3).size(11).text_color(t.blocked)))
                 .child(div().truncate().child(label))
                 .when(Boolean(code), (el) => el.child(div().truncate().font_family(mono).text_size(11.5).text_color(t.dim).child(code))); }),
                 ...(out ? [v_flex().ml(2).mb(3).pl(8).border_l(1).border_color(t.border).font_family(mono).text_size(11).text_color(t.dim)
@@ -2221,7 +2239,7 @@ export default class Chat extends View {
       if (c?.kind === "input") (c.state ?? null)?.focus();
       else c?.fn?.(cx);
     }
-    else if (row.kind === "brief" || row.kind === "worked" || row.kind === "diff") { if (this.opened.has(key)) this.opened.delete(key); else this.opened.add(key); }
+    else if (row.kind === "brief" || (row.kind === "worked" && !row.stopped) || row.kind === "diff") { if (this.opened.has(key)) this.opened.delete(key); else this.opened.add(key); }
     else if (row.kind === "fold") {
       // Only on its words (as rowBare() draws them: the column's edge, the bubble's padding in).
       const off = (this.press?.x ?? -1) - this.edges().left;

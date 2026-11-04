@@ -29,15 +29,10 @@ write ~/.config/git
 write ~/.local/bin
 write ~/.local/share
 write ~/.npmrc
-# The agents' settings, hooks, plugins' code and sources, skills and instructions.
-# Plugins' data and stores stay writable.
+# The agents' settings, hooks, skills and instructions. Plugins stay writable: their
+# scripts install their own dependencies there.
 write ~/.claude/settings
 write ~/.claude/hooks
-write ~/.claude/plugins/cache
-write ~/.claude/plugins/marketplaces
-write ~/.claude/plugins/synced
-write ~/.claude/plugins/installed_plugins.json
-write ~/.claude/plugins/known_marketplaces
 write ~/.claude/skills
 write ~/.claude/agents
 write ~/.claude/commands

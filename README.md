@@ -111,8 +111,8 @@ Sockets in your home folder are blocked as well: Herdr's own (`hc`, `herdr-app`)
 A `socket <path>` line in `allow.txt` opens one, such as Docker's for tests, at the cost of that escape.
 Sandboxed agents still use `hc`, through a go-between (`sandbox/hc-broker`) that runs beside each one: `hc run` starts the new program sandboxed, in a folder the agent can already write, messages reach any agent, prefixed so they can't start a `!` shell command there, and reads, keys and kills only reach sandboxed terminals and the agent's own children.
 A worktree's agent can also use the main checkout's git data and its `.turbo` folder, where Turborepo keeps the cache all worktrees share.
-`deny.txt` also lists paths that are readable but never writable (`write <path>` lines): shell and git startup files, tools on your `PATH`, and the agents' settings, hooks, plugin code and skills.
-Plugins' data and stores stay writable.
+`deny.txt` also lists paths that are readable but never writable (`write <path>` lines): shell and git startup files, tools on your `PATH`, and the agents' settings, hooks and skills.
+Plugins stay writable, since their scripts install their own dependencies there.
 Code planted there would run later outside the sandbox.
 `gh`, `git` and the network still work.
 

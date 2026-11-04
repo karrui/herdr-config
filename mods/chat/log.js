@@ -417,8 +417,16 @@ function codexStep(name, args) {
     return { kind: "run", line: `Ran ${clip(plain, 80)}`, doing: wait ?? `Running ${cmdWords(plain)}`, waiting: Boolean(wait) };
   }
   if (name === "exec") {
-    // Code mode: a script that runs commands (tools.exec_command({cmd: "..."})).
-    const cmds = [...String(a.input ?? args ?? "").matchAll(/exec_command\(\{\s*cmd:\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1].replace(/\\"/g, '"'));
+    // Code mode: a script that runs commands (tools.exec_command({cmd: "..."})) and edits files
+    // (tools.apply_patch("..."), its patch a JS string literal).
+    const src = String(a.input ?? args ?? "");
+    const cmds = [...src.matchAll(/exec_command\(\{\s*cmd:\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1].replace(/\\"/g, '"'));
+    const patches = [...src.matchAll(/apply_patch\(\s*("(?:[^"\\]|\\.)*")\s*\)/g)].map((m) => { try { return JSON.parse(m[1]); } catch { return null; } }).filter(Boolean);
+    const diffs = patches.flatMap(patchDiffs);
+    if (diffs.length) {
+      const files = diffs.map((d) => short(d.file));
+      return { kind: "edit", line: [`Edited ${files.join(", ")}`, ...cmds.map((c) => `Ran ${clip(c, 80)}`)].join("\n"), doing: `Editing ${files.map(base).slice(0, 3).join(", ")}`, count: diffs.length + cmds.length, diffs };
+    }
     if (cmds.length) return { kind: "run", line: cmds.map((c) => `Ran ${clip(c, 80)}`).join("\n"), doing: `Running ${cmdWords(cmds[cmds.length - 1])}`, count: cmds.length };
     return { kind: "run", line: "Ran a script", doing: "Running a script" };
   }

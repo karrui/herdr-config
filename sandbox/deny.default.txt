@@ -46,6 +46,7 @@ write ~/.codex/hooks
 write ~/.codex/.hook-trust
 write ~/.codex/rules
 write ~/.codex/skills
-write ~/.codex/plugins
+# Plugin code stays read-only; plugins keep their own state in plugins/data.
+write ~/.codex/plugins/cache
 write ~/.codex/AGENTS.md
 write ~/.agents

@@ -5,6 +5,9 @@
     "version": "0.1.12"
   },
   "type": "row",
+  "colors": {
+    "selection": "#3b82f64d"
+  },
   "children": [
     {
       "id": "sidebar",

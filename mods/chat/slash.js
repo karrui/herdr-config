@@ -5,7 +5,7 @@
 import { exec } from "herdr";
 
 const CLAUDE = [
-  ["add-dir", "Add a working folder"], ["agents", "Manage subagents"], ["clear", "Start a new conversation"],
+  ["add-dir", "Add a working folder"], ["agents", "Manage subagents"], ["btw", "Ask a side question (its answer opens over the chat)"], ["clear", "Start a new conversation"],
   ["compact", "Summarize the conversation to free context"], ["config", "Open settings"], ["context", "Show context use"],
   ["cost", "Show this session's cost"], ["doctor", "Check the installation"], ["effort", "Set the effort level"],
   ["export", "Export the conversation"], ["fast", "Turn fast mode on or off"], ["help", "Show help"], ["hooks", "Manage hooks"],

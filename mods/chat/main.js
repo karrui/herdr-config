@@ -1293,6 +1293,16 @@ export default class Chat extends View {
       // sent from here.
       p.delivered = true;
       cx.notify();
+      // /btw: Claude Code answers a side question in an overlay of its terminal, never in the
+      // conversation, mid-turn too: that terminal opens in a peek over the chat to read it.
+      if (this.kind === "claude" && /^\/btw\s+\S/.test(msg.text ?? "")) {
+        this.pending = this.pending.filter((x) => x !== p);
+        this.note = { id: `note-${msg.id}`, text: `Side question: ${excerpt(msg.text.replace(/^\/btw\s+/, ""), 60)}. Its answer is in the panel over the chat.` };
+        cx.timer.after(8000, (cx) => { this.note = null; cx.notify(); });
+        await cx.sleep(300);
+        run("terminal.peek", { terminal: this.addr });
+        return;
+      }
       // Mid-turn, Claude Code holds a typed message until its turn ends ("ctrl+enter to send
       // now"): send it now, so the agent takes it at once (it steers).
       if (this.kind === "claude") await this.steerNow(cx);

@@ -1841,7 +1841,7 @@ export default class Chat extends View {
 
   // ---- leaving, closing ---------------------------------------------------------------------
 
-  // Back to the terminal: the header's switch (pane-chat) puts the agent's terminal back in
+  // Back to the terminal: the header's switch (pane-sandbox) puts the agent's terminal back in
   // this pane's spot. It acts on the focused pane, so focus this one first.
   toTerminal() {
     // A thread's worker has no pane: the Tasks panel's header switches to its terminal there.
@@ -1849,7 +1849,7 @@ export default class Chat extends View {
     const mine = this.myPane();
     if (!mine) return;
     run("pane.focus", { pane: mine });
-    run("pane-chat.toggle");
+    run("pane-sandbox.toggle");
   }
 
   // The agent ended: its pane would have closed, so this one does.

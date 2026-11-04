@@ -11,9 +11,11 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { panes, terminals, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, notify, exec as execFile } from "herdr";
+import { panes, terminals, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, notify, nextCommand, exec as execFile } from "herdr";
 
 const CHAT = "chat", LABEL = "herdr.chat";
+// When a toggle last swapped a pane (every copy of this build shares it).
+let lastSwap = 0;
 // The chat reads Claude Code's and Codex's own session logs; other programs have no chat.
 const chatty = (p) => Boolean(p?.terminal) && ["claude-code", "codex"].includes(p.app);
 // The agent a chat pane shows, and the chat pane showing an agent.
@@ -111,7 +113,29 @@ async function suggestions(file) {
 }
 
 export default class Pane extends View {
-  init() { this.hovered = false; this.cmds = []; this.seen = null; this.watched = null; this.busy = false; }
+  init(_props, cx) {
+    this.hovered = false; this.cmds = []; this.seen = null; this.watched = null; this.busy = false;
+    // "pane-sandbox.toggle" (the chat's Open terminal, a key, `herdr-app do`): the focused pane
+    // switches, as Shepherdr's pane-chat.toggle. Every copy hears it; the focused pane's acts. A
+    // copy just started (the swap's new pane) may still be handed the toggle that made it, so
+    // toggles go to copies at least 2 s old, one swap per 3 s. At most 5 s per wait, so a
+    // reload's old build ends at its next cx use.
+    this.born = Date.now();
+    cx.spawn(async (cx) => {
+      let cmd = null;
+      for (;;) {
+        cmd ??= nextCommand();
+        const c = await Promise.race([cmd, cx.sleep(5000)]);
+        if (c === undefined) continue;
+        cmd = null;
+        const p = this.me();
+        if (c !== "toggle" || !p?.focused || Date.now() - this.born < 2000 || Date.now() - lastSwap < 3000) continue;
+        lastSwap = Date.now();
+        if (p.chat) this.swap(() => toTerminal(p.pane));
+        else if (chatty(p)) this.swap(() => toChat(p));
+      }
+    });
+  }
 
   // This pane; a chat pane as its agent (terminal, program, status, folder), with chat set.
   me() {

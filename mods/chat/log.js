@@ -418,17 +418,20 @@ function codexStep(name, args) {
   }
   if (name === "exec") {
     // Code mode: a script that runs commands (tools.exec_command({cmd: "..."})) and edits files
-    // (tools.apply_patch("..."), its patch a JS string literal).
+    // (tools.apply_patch("..."), its patch a JS string literal). Its calls, in order, as parts.
     const src = String(a.input ?? args ?? "");
-    const cmds = [...src.matchAll(/exec_command\(\{\s*cmd:\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1].replace(/\\"/g, '"'));
-    const patches = [...src.matchAll(/apply_patch\(\s*("(?:[^"\\]|\\.)*")\s*\)/g)].map((m) => { try { return JSON.parse(m[1]); } catch { return null; } }).filter(Boolean);
-    const diffs = patches.flatMap(patchDiffs);
-    if (diffs.length) {
-      const files = diffs.map((d) => short(d.file));
-      return { kind: "edit", line: [`Edited ${files.join(", ")}`, ...cmds.map((c) => `Ran ${clip(c, 80)}`)].join("\n"), doing: `Editing ${files.map(base).slice(0, 3).join(", ")}`, count: diffs.length, diffs };
+    const parts = [];
+    for (const m of src.matchAll(/exec_command\(\{\s*cmd:\s*"((?:[^"\\]|\\.)*)"|apply_patch\(\s*("(?:[^"\\]|\\.)*")\s*\)/g)) {
+      if (m[1] !== undefined) { const c = m[1].replace(/\\"/g, '"'); parts.push({ kind: "run", line: `Ran ${clip(c, 80)}`, count: 1, cmd: c }); continue; }
+      let patch = null;
+      try { patch = JSON.parse(m[2]); } catch {}
+      const diffs = patch ? patchDiffs(patch) : [];
+      if (diffs.length) parts.push({ kind: "edit", line: `Edited ${diffs.map((d) => short(d.file)).join(", ")}`, count: diffs.length, diffs });
     }
-    if (cmds.length) return { kind: "run", line: cmds.map((c) => `Ran ${clip(c, 80)}`).join("\n"), doing: `Running ${cmdWords(cmds[cmds.length - 1])}`, count: cmds.length };
-    return { kind: "run", line: "Ran a script", doing: "Running a script" };
+    if (!parts.length) return { kind: "run", line: "Ran a script", doing: "Running a script" };
+    const last = parts[parts.length - 1];
+    const doing = last.kind === "edit" ? `Editing ${last.diffs.map((d) => base(d.file)).slice(0, 3).join(", ")}` : `Running ${cmdWords(last.cmd)}`;
+    return { ...parts[0], line: parts.map((p) => p.line).join("\n"), doing, count: parts.reduce((n, p) => n + p.count, 0), parts: parts.length > 1 ? parts : null };
   }
   if (name === "apply_patch") {
     const files = [...String(a.input ?? args ?? "").matchAll(/\*\*\* (?:Update|Add|Delete) File: (.+)/g)].map((m) => short(m[1]));
@@ -495,6 +498,20 @@ export class Conversation {
   // Tool calls in a row join the last item when it is a tools row.
   step(id, off, st, helper = null) {
     if (!st) return;
+    // A Codex code-mode script's calls, in the order it made them (codexStep()): its commands
+    // and its edits' diff cards interleave as Codex shows them. The call's result goes with its
+    // last part, which is the one the working line follows.
+    if (st.parts) {
+      st.parts.forEach((p, k) => {
+        if (k === st.parts.length - 1) { this.step(id, off, { ...st, ...p, diffs: p.diffs ?? null, parts: null }, helper); return; }
+        const last = this.items[this.items.length - 1];
+        const s = { id: `${id}:${k}`, kind: p.kind, line: p.line, label: p.label, cmd: p.cmd, count: p.count ?? 1, helper };
+        if (last?.kind === "tools") last.steps.push(s);
+        else this.push({ kind: "tools", id: `t${off}:${k}`, steps: [s] });
+        (p.diffs ?? []).forEach((d, j) => { if (d.add || d.del) this.push({ kind: "diff", id: `d${off}:${id}:${k}:${j}`, ...d }); });
+      });
+      return;
+    }
     const last = this.items[this.items.length - 1];
     const s = { id, kind: st.kind, line: st.line, label: st.label, cmd: st.cmd, count: st.count ?? 1, helper };
     if (last?.kind === "tools") last.steps.push(s);

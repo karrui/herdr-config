@@ -215,6 +215,10 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
   Codex's reasoning summaries show as Claude Code's thinking does, and their headings are what the working line says.
   The agent's todo list (Claude Code's TodoWrite, Codex's update_plan) is one checklist per turn, updated in place, and stays outside the fold while steps are left.
   A compaction, manual or automatic, is a line across the chat, such as "Context compacted · 839k → 30k tokens".
+  A row of steps names its two main kinds, commands and edits first, and counts the rest: "Ran 3 commands, edited 2 files and 4 other actions".
+  A message you send while the agent works is marked Steer and splits the turn. The work before it folds on its own, and the rest folds under "Continued for 1m 2s".
+  A turn that edited files ends in a card of them, each with its lines added and removed; it folds with the turn once a newer one starts.
+  Beside the model button, "62% to compact" says how near the agent is to compacting its context (Claude Code at the window less 33k, Codex at 90% of it), in amber from 85%.
 - Ask about this, under a message or a picture, adds it to your next message as an annotation with an optional comment.
 - `/btw` opens Claude Code's answer in a panel over the chat; `/` lists commands and skills, `$` Codex's skills.
 

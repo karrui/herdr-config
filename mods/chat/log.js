@@ -376,7 +376,8 @@ function claudeDiffs(name, input) {
   if (!f) return [];
   if (name === "Edit") return [diffOf(f, lineDiff(input.old_string, input.new_string))];
   if (name === "MultiEdit") return [diffOf(f, (input.edits ?? []).flatMap((e, k) => [...(k ? [{ t: "@", s: "" }] : []), ...lineDiff(e.old_string, e.new_string)]))];
-  if (name === "Write") return [diffOf(f, String(input.content ?? "").split("\n").map((s) => ({ t: "+", s })))];
+  // (A Write too big to send comes without its content: no diff, rather than a "+1".)
+  if (name === "Write") return input.content === undefined ? [] : [diffOf(f, String(input.content).split("\n").map((s) => ({ t: "+", s })))];
   return [];
 }
 // Codex's apply_patch: a diff per file it touches.
@@ -491,12 +492,12 @@ export function pictures(text) {
 
 // The conversation in one log, built from LOG's records ({ off, kind, data }) in file order.
 // Items (ids come from byte offsets, so they stay the same when earlier pages are added):
-//   { kind: "user", id, text, from?, at, images, paths? }   { kind: "agent", id, text, at }
+//   { kind: "user", id, text, from?, at, images, paths?, steer }   { kind: "agent", id, text, at }
 //   (images: how many were sent; paths: where the ones Claude Code read from files came from;
-//   replyTo: the start of the message it answers)
+//   replyTo: the start of the message it answers; steer: it came while the turn was under way)
 //   { kind: "mark", id }  (a message of only reactions: ends the turn, shows nothing)
-//   { kind: "tools", id, steps: [{ id, kind, line, out?, failed? }] }  (calls in a row, between
-//                                             texts; out: where the call's result line is)
+//   { kind: "tools", id, steps: [{ id, kind, line, out?, failed?, files }] }  (calls in a row,
+//                                             between texts; out: where the call's result line is)
 //   { kind: "ask", id, text, closed? }  (the agent's own question tool; closed once its dialog
 //                                          is gone: "answered" | "dismissed")
 //   { kind: "error", id, text, retry? }  (retry: the API call is being tried again)
@@ -542,6 +543,9 @@ export class Conversation {
     // compacted (token_count), for its divider.
     this.plan = null;
     this.recount = null;
+    // The turn is under way: the agent has acted and not finished (its last call is out, or
+    // Codex's turn has had steps). A message of yours now steers it.
+    this.mid = false;
   }
 
   retrying(off, text) {
@@ -563,8 +567,8 @@ export class Conversation {
   }
 
   push(item) {
-    // A new turn gets a checklist of its own.
-    if (item.kind === "user" || item.kind === "turnend") this.plan = null;
+    // A new turn gets a checklist of its own (a steer goes on with the same one).
+    if ((item.kind === "user" && !item.steer) || item.kind === "turnend") this.plan = null;
     this.items.push(item);
   }
 
@@ -589,7 +593,7 @@ export class Conversation {
       st.parts.forEach((p, k) => {
         if (k === st.parts.length - 1) { this.step(id, off, { ...st, ...p, diffs: p.diffs ?? null, parts: null }, helper); return; }
         const last = this.items[this.items.length - 1];
-        const s = { id: `${id}:${k}`, kind: p.kind, line: p.line, label: p.label, cmd: p.cmd, count: p.count ?? 1, helper };
+        const s = { id: `${id}:${k}`, kind: p.kind, line: p.line, label: p.label, cmd: p.cmd, count: p.count ?? 1, helper, files: (p.diffs ?? []).map((d) => d.file) };
         if (last?.kind === "tools") last.steps.push(s);
         else this.push({ kind: "tools", id: `t${off}:${k}`, steps: [s] });
         (p.diffs ?? []).forEach((d, j) => { if (d.add || d.del) this.push({ kind: "diff", id: `d${off}:${id}:${k}:${j}`, ...d }); });
@@ -597,7 +601,8 @@ export class Conversation {
       return;
     }
     const last = this.items[this.items.length - 1];
-    const s = { id, kind: st.kind, line: st.line, label: st.label, cmd: st.cmd, count: st.count ?? 1, helper };
+    // (files: what an edit touched, for the summary's count.)
+    const s = { id, kind: st.kind, line: st.line, label: st.label, cmd: st.cmd, count: st.count ?? 1, helper, files: (st.diffs ?? []).map((d) => d.file) };
     if (last?.kind === "tools") last.steps.push(s);
     else this.push({ kind: "tools", id: `t${off}`, steps: [s] });
     this.calls.set(id, s);
@@ -652,7 +657,7 @@ export class Conversation {
     // Claude Code writes the /compact line again once it's done, dated from before: once is enough.
     const compact = /^\/compact\b/.test(text ?? "");
     if (compact && u.at && this.compactedAt >= u.at) return;
-    this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0, noteItems: u.noteItems, bang: u.bang });
+    this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0, noteItems: u.noteItems, bang: u.bang, steer: this.mid });
     this.doing = null;
     const said = String(text ?? "").replace(/\s+/g, " ").trim();
     if (said) this.queued = this.queued.filter((q) => !said.includes(q.text.replace(/\s+/g, " ").trim()));
@@ -751,7 +756,7 @@ export class Conversation {
         // A call too big to send whole: its name and small fields ("file_path=…").
         const [name, ...fields] = r.data.split("\x1f");
         const input = Object.fromEntries(fields.map((f) => { const i = f.indexOf("="); let v = f.slice(i + 1); try { v = JSON.parse(`"${v.replace(/\\$/, "")}"`); } catch {} return [f.slice(0, i), v]; }));
-        if (name) this.step(`big${r.off}`, r.off, claudeStep(name, input) ?? { kind: "tool", line: `Used ${name}`, doing: "Working" });
+        if (name) { this.mid = true; this.step(`big${r.off}`, r.off, claudeStep(name, input) ?? { kind: "tool", line: `Used ${name}`, doing: "Working" }); }
         continue;
       }
       const l = parse(r.data);
@@ -786,16 +791,19 @@ export class Conversation {
     if (l.type === "assistant" && l.isApiErrorMessage) {
       const err = (l.message?.content ?? []).filter((b) => b?.type === "text").map((b) => b.text).join("\n");
       if (err) this.failed(off, err);
+      this.mid = false;
       return;
     }
     // Anything else: it went on.
     this.resume();
     // A turn ended (written once per turn, also for one no message of yours started, as a
     // helper's report does): the chat folds each turn by these (main.js foldTurns()).
-    if (l.type === "system" && l.subtype === "turn_duration") { this.queued = []; this.push({ kind: "turnend", id: `te${off}` }); return; }
+    if (l.type === "system" && l.subtype === "turn_duration") { this.queued = []; this.mid = false; this.push({ kind: "turnend", id: `te${off}` }); return; }
     if (l.type === "system" && l.subtype === "compact_boundary") {
       this.queued = []; this.compacting = false; this.compactedAt = time(l.timestamp); this.doing = null;
       const m = l.compactMetadata ?? {};
+      // The context is its compacted size now, until the next reply counts it.
+      if (m.postTokens > 0) this.meta = { ...this.meta, used: m.postTokens };
       this.push({ kind: "compacted", id: `cb${off}`, text: compactWords(m.trigger === "auto", m.preTokens, m.postTokens), at: this.compactedAt });
       return;
     }
@@ -803,7 +811,7 @@ export class Conversation {
     // A helper or a background job finished (Claude Code tells the agent so): it's done.
     if (l.type === "user" && l.origin?.kind === "task-notification") { this.finished(said); return; }
     // You stopped the turn (Esc, or a denied call that ends it): it ends here, stopped.
-    if (l.type === "user" && /^\s*\[Request interrupted by user/.test(said)) { this.queued = []; this.push({ kind: "turnend", id: `te${off}`, at: time(l.timestamp), stopped: true }); return; }
+    if (l.type === "user" && /^\s*\[Request interrupted by user/.test(said)) { this.queued = []; this.mid = false; this.push({ kind: "turnend", id: `te${off}`, at: time(l.timestamp), stopped: true }); return; }
     if (l.type === "user") {
       // After a message with images, Claude Code notes where each came from: the chat shows them.
       if (l.isMeta) {
@@ -837,6 +845,9 @@ export class Conversation {
         const used = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.output_tokens ?? 0);
         this.meta = { ...this.meta, model: m.model, effort: l.perTurnEffort ?? this.meta.effort, speed: u.speed ?? this.meta.speed, used: used || this.meta.used, at: time(l.timestamp) };
       }
+      // A call out (each part of a reply is a line of its own, a call its last): it goes on
+      // once the result is in. A reply with no call ends the turn.
+      if (Array.isArray(m.content) && m.content.length) this.mid = m.content.some((b) => b?.type === "tool_use");
       for (const b of Array.isArray(m.content) ? m.content : []) {
         if (b?.type === "thinking" && !this.open.size) this.doing = "Thinking";
         // Its thinking, when it's written out (not redacted): Claude Code's narration between steps.
@@ -887,6 +898,8 @@ export class Conversation {
     const p = l.payload;
     if (!p || typeof p !== "object") return;
     if (l.type === "response_item") {
+      // Its words, reasoning and calls: the turn is under way (its own instructions aren't).
+      if (p.type !== "message" || p.role === "assistant") this.mid = true;
       if (p.type === "message" && p.role === "user") {
         const items = Array.isArray(p.content) ? p.content : [];
         const kinds = p.internal_chat_message_metadata_passthrough?.content_item_kinds;
@@ -940,6 +953,7 @@ export class Conversation {
       if (used !== undefined) this.recount = !last.input_tokens && !last.output_tokens && used > 0 ? { pre: this.meta.used, post: used } : null;
       this.meta = { ...this.meta, used: used ?? this.meta.used, window: i.model_context_window ?? this.meta.window };
     } else if (p.type === "task_started") {
+      this.mid = false;
       // A turn no one's words started: Codex logs a /compact so, and nothing else (its other
       // turns name who started them; older Codex named no one, so it counts only after one did).
       if (p.turn_attribution) this.attributed = true;
@@ -955,6 +969,7 @@ export class Conversation {
       this.recount = null;
     } else if (p.type === "task_complete" || p.type === "turn_aborted") {
       this.compacting = false;
+      this.mid = false;
       for (const h of this.helpers.values()) if (h.untilTurn) h.done = true;
       this.open.clear();
       this.waits.clear();
@@ -1022,22 +1037,28 @@ export function resultText(line, id) {
   return whole(shown.join("\n").trim()) || "(no output)";
 }
 
-// The open row's summary: "Read 3 files, ran 2 commands".
+// The tools row's summary: its two main kinds of step, then how many others: "Ran 3 commands,
+// edited 2 files and 4 other actions". Commands and edits come first, then reading, searching
+// and helpers, then the rest; the two named keep the order they came in. Edits count files.
+const SAY = { run: ["ran a command", "ran # commands"], edit: ["edited a file", "edited # files"], read: ["read a file", "read # files"],
+  search: ["searched", "searched # times"], web: ["looked on the web", "looked on the web # times"], agent: ["asked a helper", "asked # helpers"],
+  plan: ["updated its plan", "updated its plan"], tool: ["used a tool", "used # tools"] };
 export function summary(steps) {
-  const n = {};
-  for (const s of steps) n[s.kind] = (n[s.kind] ?? 0) + (s.count ?? 1);
-  const say = (k, one, many) => n[k] ? (n[k] === 1 ? one : many.replace("#", n[k])) : null;
-  const parts = [
-    say("read", "read a file", "read # files"),
-    say("edit", "edited a file", "edited # files"),
-    say("run", "ran a command", "ran # commands"),
-    say("search", "searched", "searched # times"),
-    say("web", "looked on the web", "looked on the web # times"),
-    say("agent", "asked a helper", "asked # helpers"),
-    say("plan", "updated its plan", "updated its plan"),
-    say("tool", "used a tool", "used # tools"),
-  ].filter(Boolean);
-  const s = parts.join(", ");
+  const n = {}, first = {}, files = new Set();
+  let blind = 0;
+  steps.forEach((s, i) => {
+    const k = SAY[s.kind] ? s.kind : "tool";
+    n[k] = (n[k] ?? 0) + (s.count ?? 1);
+    first[k] ??= i;
+    // (An edit that names no file, a notebook's, counts as one.)
+    if (k === "edit") { if (s.files?.length) s.files.forEach((f) => files.add(f)); else blind += s.count ?? 1; }
+  });
+  const rank = (k) => (k === "run" || k === "edit" ? 0 : k === "plan" || k === "tool" ? 2 : 1);
+  const named = Object.keys(n).sort((a, b) => rank(a) - rank(b) || first[a] - first[b]).slice(0, 2).sort((a, b) => first[a] - first[b]);
+  const words = named.map((k) => { const c = k === "edit" ? files.size + blind : n[k]; return c === 1 ? SAY[k][0] : SAY[k][1].replace("#", c); });
+  const rest = Object.keys(n).filter((k) => !named.includes(k)).reduce((a, k) => a + n[k], 0);
+  if (rest) words.push(`${rest} other action${rest === 1 ? "" : "s"}`);
+  const s = words.length > 1 ? `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}` : words[0] ?? "";
   return s ? s[0].toUpperCase() + s.slice(1) : "Worked";
 }
 

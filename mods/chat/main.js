@@ -25,7 +25,7 @@ import { FIND, LOG, Conversation, records, resultText, summary, excerpt, names }
 import { words } from "./asks.js";
 import { AskCards } from "./cards.js";
 import * as strips from "./strips.js";
-import { red, green, toast, toastWho, plainError } from "./ui.js";
+import { red, green, amber, toast, toastWho, plainError } from "./ui.js";
 import { openViewer } from "./artview.js";
 import * as attach from "./attach.js";
 import * as slash from "./slash.js";
@@ -108,6 +108,8 @@ function clock(at) {
 }
 // An edit's card (log.js diffOf()): at most this many of its lines show.
 const DIFF_SHOWN = 40;
+// A turn's files card (foldTurns()): at most this many files, then how many more.
+const FILES_SHOWN = 10;
 // A code block's header buttons, fixed widths so a press finds them (clickRow()): Copy at the
 // right end, Run (a block of ! commands) before it.
 const COPY_W = 70, RUN_W = 56;
@@ -1617,30 +1619,63 @@ export default class Chat extends View {
   // compactions. A turn ends at a message of yours or where Claude Code says one ended (turnend:
   // a helper's report starts a turn of its own, with no message). One you stopped doesn't fold:
   // all of it, then "You stopped after 12s".
+  // A message sent while the turn was under way (a steer) splits it: the work before it folds
+  // even with no reply yet, and the rest folds under "Continued for 1m 2s". A finished turn that
+  // edited files ends in a card of them (each +added −removed): in view for the latest turn,
+  // folded with the work for the others.
   foldTurns(items, working) {
-    const FOLDS = new Set(["agent", "thought", "tools", "diff", "plan"]);
+    const FOLDS = new Set(["agent", "thought", "tools", "diff", "plan", "files"]);
     const folds = (x) => FOLDS.has(x.kind) && !x.steps?.some((s) => s.failed || (x.kind === "plan" && s.status !== "completed"));
+    // Steers in a turn you stopped don't split it (it doesn't fold).
+    const held = new Set();
+    let steers = [];
+    for (const x of items) {
+      if (x.kind === "user" && x.steer) steers.push(x.id);
+      else if (x.kind === "user" || x.kind === "turnend") { if (x.stopped) steers.forEach((id) => held.add(id)); steers = []; }
+    }
+    // The latest turn's last work, unless a message of yours came after it.
+    let latest = null;
+    for (let k = items.length - 1; k >= 0 && !latest; k--) {
+      const x = items[k];
+      if (x.kind === "user" && !x.steer) break;
+      if (x.kind !== "user" && x.kind !== "turnend" && x.kind !== "mark") latest = x;
+    }
     const out = [];
-    let span = [], lead = null;
-    const close = (last, stop = null) => {
+    let span = [], lead = null, edits = new Map();
+    const close = (last, stop = null, steer = null) => {
+      // The turn's files, from its diffs (since its start, steers and all), once it's over.
+      let card = null;
+      if (!steer && edits.size && !(working && last)) {
+        const files = [...edits.values()];
+        card = { kind: "files", id: `f:${(lead ?? span[0] ?? stop)?.id}`, files, text: files.map((f) => f.file).join("\n") };
+      }
+      if (!steer) edits = new Map();
       if (stop) {
         const start = lead?.at ?? span.find((x) => x.at)?.at;
-        if (lead || span.length) out.push(...span, { kind: "worked", id: `stop:${stop.id}`, stopped: true, secs: start && stop.at >= start ? Math.round((stop.at - start) / 1000) : null });
+        if (lead || span.length) out.push(...span, ...(card ? [card] : []), { kind: "worked", id: `stop:${stop.id}`, stopped: true, secs: start && stop.at >= start ? Math.round((stop.at - start) / 1000) : null });
         span = [];
         return;
       }
-      let fin = -1;
-      for (let k = span.length - 1; k >= 0; k--) if (span[k].kind === "agent") { fin = k; break; }
-      if ((working && last) || !span.slice(0, Math.max(0, fin)).some(folds)) { out.push(...span); span = []; return; }
-      const id = `w:${(lead ?? span[0]).id}`, start = lead?.at ?? span.find((x) => x.at)?.at, end = span[fin].at ?? 0;
-      out.push({ kind: "worked", id, secs: start && end > start ? Math.round((end - start) / 1000) : null });
+      // Cut by a steer, all of it folds; else what came before its last reply.
+      let fin = steer ? span.length : -1;
+      if (!steer) for (let k = span.length - 1; k >= 0; k--) if (span[k].kind === "agent") { fin = k; break; }
+      const fold = !(working && last) && span.slice(0, Math.max(0, fin)).some(folds);
+      if (card) { if (fold && !span.includes(latest)) span.splice(fin++, 0, card); else span.push(card); }
+      if (!fold) { out.push(...span); span = []; return; }
+      const id = `w:${(lead ?? span[0]).id}`, start = lead?.at ?? span.find((x) => x.at)?.at, end = (steer ?? span[fin])?.at ?? 0;
+      out.push({ kind: "worked", id, more: Boolean(lead?.steer), secs: start && end > start ? Math.round((end - start) / 1000) : null });
       // Opened, what it folds is drawn faded (rowBare(), dim), so the last reply stands out.
       const open = this.opened.has(id);
       span.forEach((x, k) => { if (k >= fin || !folds(x)) out.push(x); else if (open) out.push({ ...x, dim: true }); });
       span = [];
     };
     for (const x of items) {
-      if (x.kind === "user") { close(false); out.push(x); lead = x; }
+      if (x.kind === "diff") {
+        const e = edits.get(x.file) ?? { file: x.file, add: 0, del: 0 };
+        edits.set(x.file, { ...e, add: e.add + x.add, del: e.del + x.del });
+      }
+      if (x.kind === "user" && x.steer && !held.has(x.id)) { close(false, null, x); out.push(x); lead = x; }
+      else if (x.kind === "user" && !x.steer) { close(false); out.push(x); lead = x; }
       else if (x.kind === "turnend") { close(false, x.stopped ? x : null); lead = null; }
       else span.push(x);
     }
@@ -1903,7 +1938,7 @@ export default class Chat extends View {
     const found = q && String(x.text ?? x.code ?? "").toLowerCase().includes(q.toLowerCase()) ? `|f:${q}` : "";
     const open = (x.kind === "tools" || x.kind === "brief") && this.opened.has(x.id);
     const shown = open && x.steps ? x.steps.filter((s) => this.results.get(s.id) != null).length : 0;
-    return `${x.id}|${x.kind}${x.closed ? `.${x.closed}` : ""}|${open ? `o${x.steps?.length ?? 1}.${shown}` : ""}|${x.text?.length ?? x.code?.length ?? 0}|${x.from ? 1 : 0}${x.failed ? 1 : 0}${x.late ? 1 : 0}${x.images ? 1 : 0}${x.files?.length ?? 0}|${x.paths?.length ?? 0}${x.paths?.every((p) => this.views[p]) ? "v" : ""}|${(x.pills ?? []).map((p) => p.emoji + (p.you ? 1 : 0) + (p.agent ? 1 : 0)).join("")}|${x.bar ? "b" : ""}${x.kind === "artifact" ? `|a${x.version ?? ""}${x.line ? "l" : ""}${x.pending ? "p" : ""}` : ""}${x.kind === "cardstrip" ? `|cs${x.sig}${x.first ? "F" : ""}${x.last ? "L" : ""}` : ""}|${x.clip ? `c${x.clip}` : ""}${x.open ? "o" : ""}${x.kind === "day" ? x.text : ""}|${x.top0 ? "T" : ""}${x.bot0 ? "B" : ""}${x.h ?? ""}${found}`;
+    return `${x.id}|${x.kind}${x.closed ? `.${x.closed}` : ""}|${open ? `o${x.steps?.length ?? 1}.${shown}` : ""}|${x.text?.length ?? x.code?.length ?? 0}|${x.from ? 1 : 0}${x.steer ? 1 : 0}${x.failed ? 1 : 0}${x.late ? 1 : 0}${x.images ? 1 : 0}${x.files?.length ?? 0}|${x.paths?.length ?? 0}${x.paths?.every((p) => this.views[p]) ? "v" : ""}|${(x.pills ?? []).map((p) => p.emoji + (p.you ? 1 : 0) + (p.agent ? 1 : 0)).join("")}|${x.bar ? "b" : ""}${x.kind === "artifact" ? `|a${x.version ?? ""}${x.line ? "l" : ""}${x.pending ? "p" : ""}` : ""}${x.kind === "cardstrip" ? `|cs${x.sig}${x.first ? "F" : ""}${x.last ? "L" : ""}` : ""}|${x.clip ? `c${x.clip}` : ""}${x.open ? "o" : ""}${x.kind === "day" ? x.text : ""}|${x.top0 ? "T" : ""}${x.bot0 ? "B" : ""}${x.h ?? ""}${found}`;
   }
 
   // A row's height before it is measured: bands and gaps are as tall as spaced() made them.
@@ -1924,13 +1959,14 @@ export default class Chat extends View {
       case "code": return 16 + (x.clip ?? String(x.code).split("\n").length * 19);
       case "fold": return 26;
       case "day": return 18;
-      case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0) + (x.notes ? 20 : 0)
+      case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + (x.steer ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0) + (x.notes ? 20 : 0)
         + (this.opened.has(`n:${x.id}`) ? (x.noteItems ?? []).reduce((h, n) => h + 10 + lines(n.quote, w * 0.8) * 17 + (n.comment ? 20 : 0), 0) : 0);
       case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
       case "thought": return 14 + lines(x.text, w) * 21;
       case "worked": return x.stopped ? 32 : 41;
       case "compacted": return 20;
       case "plan": return 54 + x.steps.reduce((n, s) => n + lines(s.text, w - 46) * 20, 0);
+      case "files": return 50 + (Math.min(x.files.length, FILES_SHOWN) + (x.files.length > FILES_SHOWN ? 1 : 0)) * 24;
       case "gallery": return GALLERY_H + 8;
       case "diff": return 32 + (this.opened.has(x.id) ? 0 : 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0));
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.reduce((n, s) => n + (s.cmd || s.kind === "run" ? 36 : 19), 0) : 20;
@@ -2031,6 +2067,8 @@ export default class Chat extends View {
       case "user":
         return pad(v_flex().w_full().items_end().gap(3)
           .when(Boolean(x.from), (el) => el.child(div().text_size(12).text_color(t.dim).child(`From ${this.sender(x.from, x.text)}`)))
+          // Sent while the agent was at work: it steered that turn (log.js mid).
+          .when(Boolean(x.steer), (el) => el.child(div().text_size(12).text_color(t.dim).child("Steer")))
           .when(Boolean(x.text), (el) => el.child(bubble(x.text, false)))
           .when(x.images > (x.paths?.length ?? 0), (el) => el.child(fileLine(x.images === 1 ? "1 image" : `${x.images} images`)))
           .when(x.notes > 0, (el) => el.child(noteLine(x.notes, x.noteItems?.length ? this.opened.has(`n:${x.id}`) : null)))
@@ -2109,11 +2147,12 @@ export default class Chat extends View {
         // A turn you stopped: how long it ran, under all of it (foldTurns()).
         if (x.stopped) return col(h_flex().h(20).items_center().text_size(12.5).text_color(t.dim)
           .child(x.secs != null ? `You stopped after ${duration(x.secs)}` : "You stopped"), 18, 6);
-        // A finished turn's work, folded (foldTurns()): opens on a click (clickRow()).
-        const open = this.opened.has(x.id);
+        // A finished turn's work, folded (foldTurns()): opens on a click (clickRow()). After a
+        // steer, the turn "continued".
+        const open = this.opened.has(x.id), did = x.more ? "Continued" : "Worked";
         return col(v_flex().w_full().gap(8)
           .child(h_flex().h(20).gap(4).items_center().cursor_pointer().text_size(12.5).text_color(t.dim).hover((s) => s.text_color(t.muted))
-            .child(x.secs != null ? `Worked for ${duration(x.secs)}` : "Worked")
+            .child(x.secs != null ? `${did} for ${duration(x.secs)}` : did)
             .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none()))
           .child(div().w_full().h(1).bg(t.border)), 18, 6);
       }
@@ -2138,6 +2177,22 @@ export default class Chat extends View {
               .text_color(s.status === "completed" ? t.dim : s.status === "in_progress" ? t.foreground : t.muted)
               .when(s.status === "completed", (el) => el.line_through())
               .child(s.text || " ")))));
+      }
+      case "files": {
+        // The files a finished turn edited (foldTurns()), in the order it first edited them, each
+        // with its lines added and removed over all its edits, as a diff's header says them.
+        const shown = x.files.slice(0, FILES_SHOWN), left = x.files.length - shown.length;
+        const counts = (el, add, del) => el.when(add > 0, (el) => el.child(div().flex_none().text_color(green()).child(`+${add}`)))
+          .when(del > 0, (el) => el.child(div().flex_none().text_color(red()).child(`−${del}`)));
+        return pad(v_flex().w_full().gap(4).px(12).py(10).rounded(10).border_1().border_color(t.border)
+          .child(counts(h_flex().gap(6).items_center().text_size(12).font_medium().text_color(t.dim)
+            .child(div().flex_none().child(x.files.length === 1 ? "Edited 1 file" : `Edited ${x.files.length} files`)),
+          x.files.reduce((n, f) => n + f.add, 0), x.files.reduce((n, f) => n + f.del, 0)))
+          .children(shown.map((f) => counts(h_flex().w_full().h(20).gap(6).items_center().text_size(12.5)
+            .child(div().min_w(0).truncate().text_color(t.foreground).child(fileName(f.file)))
+            // Its folder's last two parts: enough to tell two files of one name apart.
+            .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(String(f.file).split("/").filter(Boolean).slice(-3, -1).join("/"))), f.add, f.del)))
+          .when(left > 0, (el) => el.child(div().h(20).text_size(12.5).text_color(t.dim).child(`${left} more file${left === 1 ? "" : "s"}`))));
       }
       case "codehead": {
         const done = this.copied === x.id;
@@ -2699,6 +2754,10 @@ export default class Chat extends View {
     const recallable = !list.length && (!this.box.value() || this.recall >= 0);
     const take = (fn) => (_e, cx) => { fn(cx); cx.stop_propagation(); cx.notify(); };
     const sel = Math.min(this.slashSel, Math.max(0, list.length - 1));
+    // How near the agent is to compacting its context, beside what it runs on: quiet until it's
+    // close. A narrow chat keeps the room for the model's name until then.
+    const pct = this.addr ? agent.toCompact(this.current()) : null;
+    const meter = pct !== null && (pct >= 85 || (this.width ?? 600) >= 420);
     // Flush under the helpers' card when it shows (background()).
     return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(this.helpers().length ? 0 : 8).child(v_flex().id("chat-composer").w_full().rounded(10).border_1()
       // Esc stops a working agent while the box is empty and nothing is open over it.
@@ -2759,6 +2818,7 @@ export default class Chat extends View {
         // Attach on the left, as ChatGPT and Claude have it: the desktop's file picker.
         .child(this.round("chat-attach", "mods/chat/paperclip.svg", t, "ghost", (cx) => this.pickFiles(cx)).tooltip("Attach files"))
         .child(div().flex_1().min_w(0))
+        .when(meter, (el) => el.child(div().flex_none().whitespace_nowrap().text_size(12).text_color(pct >= 85 ? amber() : t.dim).child(`${pct}% to compact`)))
         .when(Boolean(this.addr), (el) => el.child(this.pickButton(t)))
         .child(this.round("chat-send", "mods/chat/send.svg", t, can ? "solid" : "off", can ? (cx) => this.send(cx) : null))));
   }

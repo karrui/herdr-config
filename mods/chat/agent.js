@@ -112,7 +112,10 @@ export function current(kind, argv, meta, dflt) {
     const s = flag(argv, "--settings");
     if (s && /"fastMode"\s*:\s*(true|false)/.test(s)) fast = /"fastMode"\s*:\s*true/.test(s);
     if (meta.speed) fast = meta.speed === "fast";
-    const big = /\[1m\]/.test(alias ?? "") || (meta.used ?? 0) > 200000;
+    // Claude's models before Opus 4.7 have a 200k window unless run with [1m]; the later ones and
+    // the 5s have 1M (Claude Code 2.1.311's own model list).
+    const old = /^claude-(\d|(sonnet|haiku)-4|opus-4-[0-6])/.test(meta.model ?? alias ?? "");
+    const big = !old || /\[1m\]/.test(alias ?? "") || (meta.used ?? 0) > 200000;
     // Claude keeps an effort per model (modelSettings), known once the log names the model.
     const per = meta.model ? dflt.per?.[meta.model] ?? dflt.per?.[meta.model.replace(/-\d+$/, "")] : null;
     const perm = argv.includes("--dangerously-skip-permissions") ? "bypassPermissions" : flag(argv, "--permission-mode") ?? dflt.mode ?? "manual";
@@ -142,10 +145,14 @@ export function line(c) {
   return [NAMES[c.agent], c.label ?? modelName(c.model), levelName(c.effort), c.fast ? "Fast" : null].filter(Boolean).join(" · ");
 }
 
-// How full the context window is: "38% context", or null.
-export function contextWords(c) {
+// How near the context is to being compacted, in percent (100: the next request compacts it),
+// or null. Claude Code compacts 33k short of the window (20k kept for a reply and 13k to spare,
+// in 2.1.311). Codex compacts at 90% of the model's window, which its token counts report at 95%
+// (model_context_window): 450k of gpt-6.1-sol's 500k.
+export function toCompact(c) {
   if (!c?.used || !c.window) return null;
-  return `${Math.min(100, Math.round((c.used / c.window) * 100))}% context`;
+  const at = c.agent === "codex" ? (c.window * 0.9) / 0.95 : c.window - 33000;
+  return Math.min(100, Math.floor((c.used / at) * 100));
 }
 
 // What the model picker (mods/chat-models) shows for one agent, as plain data:

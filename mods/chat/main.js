@@ -2254,8 +2254,8 @@ export default class Chat extends View {
   // One thing typed into the agent's terminal at a time (a message, the effort slider's keys),
   // so a message sent just after an effort pick doesn't land in the slider.
   typed(fn) {
-    const run = (this.typing ?? Promise.resolve()).then(fn);
-    this.typing = run.catch(() => {});
+    const run = (this.typeQueue ?? Promise.resolve()).then(fn);
+    this.typeQueue = run.catch(() => {});
     return run;
   }
 
@@ -2617,7 +2617,7 @@ export default class Chat extends View {
   foldOf(x, ps) {
     const q = this.findQuery().toLowerCase();
     if (q && String(x.text).toLowerCase().includes(q)) return null;
-    const w = Math.max(240, Math.floor(Math.min(this.width, COLUMN) * 0.8)) - 24;
+    const w = Math.max(240, Math.min(this.width - 36, COLUMN));
     const est = ps.map((p) => (p.type === "md" ? wrapLines(p.text, w) * LINE_H : 34 + 16 + p.code.split("\n").length * 19));
     const drawn = ps.length === 1 ? this.natural.get(x.id) : null;
     if ((drawn ?? est.reduce((a, b) => a + b, 0)) <= FOLD_TALL * LINE_H) return null;
@@ -2754,7 +2754,7 @@ export default class Chat extends View {
       case "fold": return 26;
       case "day": return 18;
       case "user": case "pending": return 30 + lines(x.text, w * 0.8 - 24) * 20 + (x.from ? 17 : 0) + ((x.images || x.files?.length) ? 20 : 0);
-      case "agent": return 30 + (x.clip ?? lines(x.text, w * 0.8 - 24) * 21);
+      case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.length * 19 : 20;
       case "artifact": return x.pending || x.line ? 20 : 62;
       case "tasknews": return x.accept ? 26 : 20;
@@ -2815,17 +2815,16 @@ export default class Chat extends View {
     const col = (el, px = 18, py = 6) => h_flex().w_full().justify_center()
       .child(div().w_full().max_w(COLUMN + 2 * px).px(px).pt(x.top0 ? 0 : py).pb(x.bot0 ? 0 : py).child(el));
     const pad = (el) => col(el, 18, 7);
-    // The person's words on the right in an accent tint; the agent's on the left, quieter.
+    // As Codex shows them: the person's words in a quiet bubble on the right; the agent's as
+    // plain text across the column, no bubble.
     const most = Math.max(240, Math.floor(Math.min(this.width, COLUMN) * 0.8));
     const bubble = (text, faded) => h_flex().w_full().justify_end().child(
-      // An accent tint under the normal text color: readable in light and dark themes (the
-      // accent's own text color on the full accent was too faint on light accents).
-      div().max_w(most).px(12).py(8).rounded(12).bg(t.accent + "33").border_1().border_color(t.accent + "4d")
+      div().max_w(most).px(14).py(9).rounded(16).bg(t.raised)
         .text_color(t.foreground).when(faded, (el) => el.opacity(0.55))
         .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(typed(text)) || " ").selectable(true)));
     const theirs = (text) => h_flex().w_full().justify_start().child(
-      div().max_w(most).px(12).py(8).rounded(12).bg(t.raised).text_color(t.foreground)
-        .child(x.clip ? this.clipped(t.raised, x.clip, div().id(`${pre}fold-in-${x.id}`).flex_none()
+      div().w_full().text_color(t.foreground)
+        .child(x.clip ? this.clipped(t.background, x.clip, div().id(`${pre}fold-in-${x.id}`).flex_none()
           // Its words' drawn height: a reply shorter than it looked isn't folded (foldOf()).
           .on_size_change((size, cx) => { const was = this.natural.get(x.id); if (!was || Math.abs(was - size.height) > 1) { this.natural.set(x.id, size.height); cx.notify(); } })
           .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(text) || " ").selectable(true)))
@@ -2900,8 +2899,8 @@ export default class Chat extends View {
           .child(x.clip ? this.clipped(t.surface, x.clip, lines) : lines), 18, 0).pb(x.bot0 ? 0 : 6);
       }
       case "fold":
-        // Show more / Show less, under the reply's bubble, in line with its words (clickRow()).
-        return col(h_flex().w_full().h(22).pl(12).child(h_flex().h(22).gap(4).items_center().cursor_pointer()
+        // Show more / Show less, under the reply, in line with its words (clickRow()).
+        return col(h_flex().w_full().h(22).child(h_flex().h(22).gap(4).items_center().cursor_pointer()
           .text_size(12.5).font_medium().text_color(t.muted).hover((s) => s.text_color(t.foreground))
           .child(x.open ? "Show less" : "Show more")
           .child(svg(`mods/chat/chevron-${x.open ? "up" : "down"}.svg`).size(14).flex_none())), 18, 2);

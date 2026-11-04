@@ -4,6 +4,8 @@
 // file is whatever rollout-*.jsonl its process (or a child) holds. Both are exact: no
 // guessing by folder or time, so two agents in one folder never get mixed up.
 
+import { home } from "herdr";
+
 // Prints the log's path on the agent's machine, or nothing. Args: kind, pid.
 export const FIND = `
 kind="$1"; pid="$2"
@@ -56,6 +58,20 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
     # A helper (or job) launched to run on its own: its result came at once, it is not done yet.
     if (index(line, "Async agent launched") || index(line, "running in background")) ids = ids " ASYNC"
     print off "\tR\t" ids
+    # Pictures a tool returned (screens from an MCP server): Claude Code saves each in the session
+    # folder (tool-results) and names the file in the line. The chat shows them in a strip (I).
+    # (No apostrophes in here: this awk program sits in single quotes.)
+    # Found by plain index, not a regex over the line: these lines can be megabytes of base64.
+    if (claude && index(line, "/tool-results/")) {
+      pics = ""; t = line
+      while ((pk = index(t, "/tool-results/")) > 0) {
+        ps = pk; while (ps > 1 && pk - ps < 400 && index(" \"[]", substr(t, ps - 1, 1)) == 0) ps--
+        pr = substr(t, pk, 300)
+        if (match(pr, /^\/tool-results\/[A-Za-z0-9._-]+\.(jpg|jpeg|png|webp|gif)/)) { p = substr(t, ps, pk - ps) substr(pr, 1, RLENGTH); if (!index(pics, p)) pics = pics "\037" p }
+        t = substr(t, pk + 14)
+      }
+      if (pics != "") print off "\tI\t" substr(pics, 2)
+    }
     # An answer to a question, or words that declined a request: read whole (answers()).
     if (claude && length(line) <= 262144 && ((index(line, "\"answers\":{") && index(line, "\"questions\":[")) || index(line, "wrote in the chat instead: "))) print off "\tJ\t" line
     next
@@ -587,6 +603,9 @@ export class Conversation {
 
   feed(records) {
     for (const r of records) {
+      // Pictures a tool returned: a strip under its step (main.js "gallery").
+      // (A path can come as $HOME/… or ~/…, as the tool's output put it.)
+      if (r.kind === "I") { this.push({ kind: "gallery", id: `g${r.off}`, paths: r.data.split("\x1f").filter(Boolean).map((p) => p.replace(/^(\$HOME|~)(?=\/)/, home())) }); continue; }
       if (r.kind === "R") {
         const ids = r.data.split(" ").filter(Boolean);
         const async = ids.includes("ASYNC");

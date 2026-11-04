@@ -108,6 +108,8 @@ function clock(at) {
 }
 // An edit's card (log.js diffOf()): at most this many of its lines show.
 const DIFF_SHOWN = 40;
+// Pictures a tool returned (log.js I records): a strip this tall, each as wide as its shape.
+const GALLERY_H = 160;
 const fileName = (p) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
 const ICONS = { copy: "copy", reply: "reply", annotate: "annotate", rewind: "rewind", fork: "git-fork", react: "smile-plus" };
 // Annotations as the agent reads them, ahead of the message's words: what the person points at
@@ -1898,6 +1900,7 @@ export default class Chat extends View {
       case "agent": return 14 + (x.clip ?? lines(x.text, w) * 21);
       case "thought": return 14 + lines(x.text, w) * 21;
       case "worked": return 41;
+      case "gallery": return GALLERY_H + 8;
       case "diff": return 32 + (this.opened.has(x.id) ? 0 : 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0));
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.reduce((n, s) => n + (s.cmd || s.kind === "run" ? 36 : 19), 0) : 20;
       case "artifact": return x.pending || x.line ? 20 : 62;
@@ -2036,6 +2039,15 @@ export default class Chat extends View {
         // Its thinking, written out: Claude Code's narration between steps, which its terminal
         // shows as messages (and the log keeps only as thinking). Never a turn's last reply.
         return pad(div().w_full().child(TextView.markdown(`${pre}chat-th-${x.id}`, this.findMark(x.text) || " ").selectable(true)));
+      case "gallery": {
+        // Pictures a tool returned (screens from Mobbin, say): as many as fit across, the last
+        // marked "+N" when there are more; a click opens one large, the rest to step through
+        // (clickRow(): rows take no handlers or scroll areas of their own, or the list draws blank).
+        const { boxes, more } = this.galleryBoxes(x);
+        return col(h_flex().w_full().h(GALLERY_H).gap(THUMB_GAP).children(boxes.map((b, i) => this.shot(t, b)
+          .when(more > 0 && i === boxes.length - 1, (el) => el.child(h_flex().absolute().inset_0().rounded(8).items_center().justify_center()
+            .bg("#000000a0").text_size(15).font_semibold().text_color("#ffffff").child(`+${more}`))))), 18, 4);
+      }
       case "diff": {
         // An edit (log.js diffOf()): "Edited <file> +N −M" over its lines, red and green, open
         // until its header is clicked shut (clickRow(); opened here means shut).
@@ -2188,6 +2200,13 @@ export default class Chat extends View {
       // The light goes out natively: its target flips once, the transition does the rest.
       cx.timer.after(80, (cx) => { if (this.flash) { this.flash.on = false; cx.notify(); } });
       cx.timer.after(1400, (cx) => { this.flash = null; cx.notify(); });
+    }
+    else if (row.kind === "gallery") {
+      // Which picture the press was on: the strip starts at the column's edge.
+      const { boxes, paths } = this.galleryBoxes(row);
+      const off = (this.press?.x ?? -1) - this.edges().left;
+      for (let i = 0, edge = 0; i < boxes.length && off >= 0; edge += boxes[i].w + THUMB_GAP, i++)
+        if (off >= edge && off <= edge + boxes[i].w) { this.openImages(paths, i); break; }
     }
     else if (row.kind === "imgs") {
       // Which thumbnail the press was on (rows take no handlers of their own): the person's are
@@ -2447,6 +2466,23 @@ export default class Chat extends View {
     const k = Math.min(1, (right - left) / Math.max(1, total));
     if (k < 1) boxes = boxes.map((b) => ({ ...b, w: Math.floor(b.w * k), h: Math.floor(b.h * k) }));
     return { boxes, h: Math.max(24, ...boxes.map((b) => b.h)) };
+  }
+
+  // A gallery row's pictures (case "gallery"): GALLERY_H tall, as wide as their shape, as many as
+  // fit the column; more: how many didn't. A path that isn't a picture here drops out once looked at.
+  galleryBoxes(row) {
+    const { left, right } = this.edges();
+    const paths = row.paths.filter((p) => this.views[p] || !this.viewAsked.has(p));
+    const boxes = [];
+    let used = 0;
+    for (const path of paths) {
+      const v = this.views[path];
+      const w = Math.min(420, Math.round(GALLERY_H * (v ? v.w / v.h : 4 / 3)));
+      if (boxes.length && used + THUMB_GAP + w > right - left) break;
+      boxes.push({ path, w, h: GALLERY_H });
+      used += (boxes.length > 1 ? THUMB_GAP : 0) + w;
+    }
+    return { boxes, more: paths.length - boxes.length, paths };
   }
 
   // One of those: the whole image, rounded, a faint edge drawn over it.
@@ -2814,7 +2850,7 @@ export default class Chat extends View {
     const current = found.length ? this.findRow(found) : null;
     if (this.findJump && current) { this.findJump = false; this.pinned = false; this.scroll.scroll_to_item(current.index, "center"); }
     const lit = new Set(found.map((m) => m.id));
-    this.needViews([...this.files.filter((f) => f.image).map((f) => f.path), ...rows.flatMap((r) => (r.kind === "imgs" ? r.paths : []))], cx);
+    this.needViews([...this.files.filter((f) => f.image).map((f) => f.path), ...rows.flatMap((r) => (r.kind === "imgs" || r.kind === "gallery" ? r.paths : []))], cx);
     // What sits under the list (an ask card, the working line) changes its height: stay on the newest.
     const below = `${this.asks.length}|${(this.addr && openCard(this.addr)?.id) ?? ""}|${st}|${this.focused}|${this.queue.length}|${this.files.length}|${Boolean(this.quote)}|${this.notes.length}`;
     if (below !== this.below) { this.below = below; if (this.pinned) this.stick = true; }

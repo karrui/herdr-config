@@ -3098,9 +3098,14 @@ export default class Chat extends View {
             .child(div().flex_1().min_w(0).truncate().child(summary(x.steps))))
           .when(open, (el) => el.child(v_flex().pl(18).pt(4).pb(2).gap(3).text_size(12).text_color(t.muted)
             .children(x.steps.flatMap((s) => {
-              const out = this.results.get(s.id);
-              return [...s.line.split("\n").map((line) => div().truncate().child(line)),
-                ...(out ? [v_flex().ml(2).mb(3).pl(8).border_l(1).border_color(t.border).text_size(11.5).text_color(t.dim)
+              // Commands and what they printed in the terminal's font, as code is.
+              const out = this.results.get(s.id), mono = settings().font_family ?? "JetBrains Mono";
+              // A command: its description, then the command itself ("Ran" when it has none).
+              const part = (line) => (s.cmd && !line.includes("\n") ? [s.label, s.cmd] : s.kind === "run" && line.startsWith("Ran ") ? ["Ran", line.slice(4)] : [line, null]);
+              return [...s.line.split("\n").map((line) => { const [label, code] = part(line); return h_flex().min_w(0).gap(6).items_center()
+                .child(div().flex_none().max_w_96().truncate().child(label))
+                .when(Boolean(code), (el) => el.child(div().flex_1().min_w(0).truncate().font_family(mono).text_size(11.5).text_color(t.dim).child(code))); }),
+                ...(out ? [v_flex().ml(2).mb(3).pl(8).border_l(1).border_color(t.border).font_family(mono).text_size(11).text_color(t.dim)
                   .children(out.split("\n").map((l) => div().truncate().child(l || " ")))] : [])];
             })))), 12, 0);
       }

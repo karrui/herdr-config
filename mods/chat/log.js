@@ -353,11 +353,13 @@ function claudeStepOnly(name, input = {}) {
     case "Write": return { kind: "edit", line: `Wrote ${short(input.file_path)}`, doing: `Writing ${base(input.file_path)}` };
     case "Bash": {
       const line = input.description ? `${input.description}: ${clip(input.command, 80)}` : `Ran ${clip(input.command, 80)}`;
+      // The open row shows the description, then the command in the terminal's font.
+      const cmd = { label: input.description || "Ran", cmd: String(input.command ?? "").split("\n")[0] };
       // A job left running in the background: the turn goes on; the chat watches the job.
-      if (input.run_in_background) return { kind: "run", line, doing: `Started ${input.description || cmdWords(input.command)}`,
+      if (input.run_in_background) return { kind: "run", line, ...cmd, doing: `Started ${input.description || cmdWords(input.command)}`,
         bg: { label: input.description || cmdWords(input.command), cmd: String(input.command ?? "") } };
       const wait = waitWords(input.command, input.description);
-      return { kind: "run", line, doing: wait ?? (input.description || `Running ${cmdWords(input.command)}`), waiting: Boolean(wait) };
+      return { kind: "run", line, ...cmd, doing: wait ?? (input.description || `Running ${cmdWords(input.command)}`), waiting: Boolean(wait) };
     }
     case "Monitor": return { kind: "tool", line: `Watched ${clip(input.description ?? input.command, 70)}`,
       doing: `Watching ${clip(input.description ?? input.command ?? "", 50)}`.trim(), waiting: true };
@@ -462,7 +464,7 @@ export class Conversation {
   step(id, off, st, helper = null) {
     if (!st) return;
     const last = this.items[this.items.length - 1];
-    const s = { id, kind: st.kind, line: st.line, count: st.count ?? 1, helper };
+    const s = { id, kind: st.kind, line: st.line, label: st.label, cmd: st.cmd, count: st.count ?? 1, helper };
     if (last?.kind === "tools") last.steps.push(s);
     else this.push({ kind: "tools", id: `t${off}`, steps: [s] });
     this.calls.set(id, s);

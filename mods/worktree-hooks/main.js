@@ -1,8 +1,8 @@
 // Worktree dialog: { space, action: "new" | "open" | "remove" | "close" } or
 // { folder, machine } for a repo without a space; optional { branch, tab, argv }.
 
-import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
+import { View, div, svg } from "gpui-kit";
+import { v_flex, h_flex, InputState, Input, Scrollbar, Checkbox } from "gpui-base";
 import { run, props, closeOverlay, theme, spaces, panes, exec, home, hc, appHome, shared, setShared, notify } from "herdr";
 import { freshWorktree } from "./fresh-worktree.js";
 
@@ -142,6 +142,11 @@ export default class Worktree extends View {
     this.repo = undefined; // undefined: looking, null: not in git
     this.dirty = false;
     this.unpushed = [];
+    // Remove: the worktree's branch goes too, unless unchecked; `lost` counts its
+    // commits that aren't on any remote.
+    this.branch = null;
+    this.deleteBranch = true;
+    this.lost = 0;
     this.handle = cx.focus_handle();
     if (confirming) this.handle.focus();
     cx.spawn(async (cx) => {
@@ -163,6 +168,10 @@ export default class Worktree extends View {
         if (repo && confirming) {
           this.dirty = (await git(repo.top, ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain"], this.on)).out !== "";
           this.unpushed = (await submodules(repo.top, this.on)).unpushed;
+        }
+        if (repo?.linked && props()?.action === "remove") {
+          this.branch = (await git(repo.top, ["branch", "--show-current"], this.on)).out || null;
+          if (this.branch) this.lost = Number((await git(repo.top, ["rev-list", "--count", "HEAD", "--not", "--remotes"], this.on)).out) || 0;
         }
         if (repo && this.opening) this.list = await checkouts(repo, this.on);
         this.repo = repo;
@@ -245,19 +254,22 @@ export default class Worktree extends View {
     this.unpushed = [...new Set([...this.unpushed, ...unpushed])];
     if (changed) return "It changed since this opened. Enter again removes it anyway.";
     const force = this.dirty || mods.length > 0;
+    const branch = this.deleteBranch ? this.branch ?? "" : "";
     // Here, the repo's teardown runs first, in the background, while the sidebar shows
     // the space struck through with its progress; the script then closes the space and
     // removes the worktree.
     if (!this.on) {
       setShared("worktree.teardown", { ...(shared("worktree.teardown") ?? {}), [s.id]: Date.now() });
-      const r = await hc(["run", "--bg", "--cwd", this.repo.top, "--", "/bin/zsh", "-lic", 'exec "$0" remove "$1" "$2" "$3"',
-        HOOKS(), this.repo.top, s.id, force ? "--force" : ""]);
+      const r = await hc(["run", "--bg", "--cwd", this.repo.top, "--", "/bin/zsh", "-lic", 'exec "$0" remove "$1" "$2" "$3" "$4"',
+        HOOKS(), this.repo.top, s.id, force ? "--force" : "", branch]);
       return r.code === 0 ? "" : r.stderr.trim() || "Couldn't start the teardown.";
     }
     // Terminals first: a shell sitting in the folder keeps it busy on Windows.
     run("space.close", { id: s.id, confirmed: true });
     const r = await git(this.repo.main, ["worktree", "remove", ...(force ? ["--force"] : []), this.repo.top], this.on);
-    return r.ok ? "" : r.err || "git worktree remove failed.";
+    if (!r.ok) return r.err || "git worktree remove failed.";
+    const b = branch ? await git(this.repo.main, ["branch", "-D", branch], this.on) : { ok: true };
+    return b.ok ? "" : b.err || `Couldn't delete branch ${branch}.`;
   }
 
   // Close on a Herdr worktree space (the menus' Close, a last tab's ×): the space stays,
@@ -368,7 +380,7 @@ export default class Worktree extends View {
           : remove
             ? !r.linked
               ? "This is the repository's main checkout, not a worktree."
-              : `${this.on ? "" : "Runs this repo's teardown, then "}${this.on ? "Closes" : "closes"} the space and deletes ${tilde(r.top, this.userHome)}. The branch stays.`
+              : `${this.on ? "" : "Runs this repo's teardown, then "}${this.on ? "Closes" : "closes"} the space and deletes ${tilde(r.top, this.userHome)}.`
             : `A new space on a checkout in ${tilde(ROOT(this.userHome), this.userHome)}/${r.name}/. It starts on a new branch from origin's latest default branch; a taken name gets -2.`;
     const blocked = closing ? r === undefined : !r || (remove && !r.linked);
     return v_flex()
@@ -384,6 +396,9 @@ export default class Worktree extends View {
       .child(div().text_color(t.muted).child(detail))
       .when(remove && this.dirty, (el) => el.child(div().text_color(t.blocked).child("It has uncommitted changes: they will be lost.")))
       .when(closing && this.dirty && !this.sharedWith, (el) => el.child(div().text_color(t.ansi3).child(`It has uncommitted changes, so ${tilde(r.top, this.userHome)} is kept.`)))
+      .when(remove && Boolean(r?.linked && this.branch), (el) => el.child(this.checkbox(t)))
+      .when(remove && this.deleteBranch && this.lost > 0, (el) => el.child(div().text_color(t.blocked)
+        .child(`${this.branch} has ${this.lost} commit${this.lost === 1 ? " that isn't" : "s that aren't"} pushed anywhere: ${this.lost === 1 ? "it" : "they"} will be lost.`)))
       .when(remove && this.unpushed.length > 0, (el) => el.child(div().text_color(t.blocked).child(`Submodule ${this.unpushed.join(", ")} has commits that aren't pushed anywhere: they will be lost.`)))
       .when(!remove && !closing && !blocked, (el) =>
         el.child(
@@ -423,6 +438,17 @@ export default class Worktree extends View {
             ? this.button("remove", "Remove", "↵", t.blocked, "#ffffff", (_e, cx) => this.go(cx))
             : this.button("create", "Create", "↵", t.solid, t.solid_foreground, (_e, cx) => this.go(cx)))),
       );
+  }
+
+  // "Delete branch <name>", checked unless the user unchecks it. GitHub's copy stays.
+  checkbox(t) {
+    const on = this.deleteBranch;
+    return Checkbox.new("delete-branch").checked(on).on_change((v, cx) => { this.deleteBranch = v; cx.notify(); })
+      .child(h_flex().gap(8).items_center().cursor_pointer().text_color(t.foreground)
+        .child(h_flex().size(16).flex_none().rounded(4).border(1).items_center().justify_center()
+          .border_color(on ? t.solid : t.input).bg(on ? t.solid : t.background)
+          .when(on, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(12).text_color(t.solid_foreground))))
+        .child(div().min_w(0).truncate().child(`Delete branch ${this.branch}`)));
   }
 
   // A dialog button with its key beside the label; dimmed while working.

@@ -12,8 +12,10 @@
 #                                             pane beside it, waits for it, runs the command
 #   worktree setup <path>                     the Setup pane: copy files, run the setup;
 #                                             Enter runs it again
-#   worktree remove <path> <space> [--force]  run the teardown, then close the space and
-#                                             remove the worktree; output to logs/<space>.log
+#   worktree remove <path> <space> [--force] [<branch>]
+#                                             run the teardown, then close the space, remove
+#                                             the worktree and delete <branch> (local only);
+#                                             output to logs/<space>.log
 #   worktree closed <path> [<space>]          the teardown, then close the space (if given)
 #                                             and remove the worktree if clean; output to
 #                                             logs/<space>.log, else logs/closed-<name>.log
@@ -176,14 +178,15 @@ case "$cmd" in
     done
     ;;
   remove)
-    space="$1"; force="${2:-}"
+    space="$1"; force="${2:-}"; branch="${3:-}"
     mkdir -p "$here/logs"
     exec >"$here/logs/$space.log" 2>&1
     script="$(has teardown && get "$conf" teardown)"
     [ -z "$script" ] || { echo "Tearing down"; bash -c "$script"; }
     echo "Removing the worktree"
     herdr-app do space.close --id "$space" --confirmed true >/dev/null
-    cd "$main" && git worktree remove $force "$dir" && echo "Removed"
+    cd "$main" && git worktree remove $force "$dir" && echo "Removed" || exit
+    [ -z "$branch" ] || { git branch -D "$branch" && echo "Deleted branch $branch"; }
     ;;
   closed)
     # Closing its space: run the teardown, then remove the worktree when that loses

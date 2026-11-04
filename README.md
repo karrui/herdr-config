@@ -131,6 +131,8 @@ The branch always stays.
 
 Closing its last tab with `cmd-w` can't wait for the teardown, so the teardown runs right after the space is gone.
 **Remove worktree** in a space's menu deletes the worktree even with uncommitted changes, after warning.
+It also deletes the worktree's local branch, unless you uncheck **Delete branch**; it warns when the branch has commits that aren't pushed anywhere.
+The branch on GitHub stays.
 
 ### The Changes panel
 

@@ -2163,7 +2163,7 @@ export default class Chat extends View {
               // Commands and what they printed in the terminal's font, as code is.
               const out = this.results.get(s.id), mono = settings().font_family ?? "JetBrains Mono";
               // A command: its description, then the command itself ("Ran" when it has none).
-              const part = (line) => (s.cmd && !line.includes("\n") ? [s.label, s.cmd] : s.kind === "run" && line.startsWith("Ran ") ? ["Ran", line.slice(4)] : [line, null]);
+              const part = (line) => (s.cmd && !line.includes("\n") ? [s.label ?? "Ran", s.cmd] : s.kind === "run" && line.startsWith("Ran ") ? ["Ran", line.slice(4)] : [line, null]);
               // On two lines, for reading: what it's for, then the command.
               return [...s.line.split("\n").map((line) => { const [label, code] = part(line); return v_flex().min_w(0).gap(1)
                 .child(div().truncate().child(label))

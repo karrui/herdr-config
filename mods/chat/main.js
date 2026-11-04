@@ -1744,6 +1744,10 @@ export default class Chat extends View {
         out.push({ kind: "imgs", id: `i:${x.id}`, paths: x.paths, side: "agent", title: x.title, bar, dim: x.dim });
         out.push({ kind: "band", id: `ab:${x.id}`, bar });
         block(from, x.id);
+      } else if (x.kind === "gallery") {
+        // Gone once none of its paths turns out to be a picture here (a path named in a command's
+        // output, say): an empty strip would be a gap.
+        if (this.galleryBoxes(x).boxes.length) out.push(x);
       } else if (x.kind !== "mark") out.push(x);
     }
     while (ti < timed.length) { dated(timed[ti].at); put(timed[ti++]); }
@@ -2850,7 +2854,8 @@ export default class Chat extends View {
     const current = found.length ? this.findRow(found) : null;
     if (this.findJump && current) { this.findJump = false; this.pinned = false; this.scroll.scroll_to_item(current.index, "center"); }
     const lit = new Set(found.map((m) => m.id));
-    this.needViews([...this.files.filter((f) => f.image).map((f) => f.path), ...rows.flatMap((r) => (r.kind === "imgs" || r.kind === "gallery" ? r.paths : []))], cx);
+    this.needViews([...this.files.filter((f) => f.image).map((f) => f.path), ...rows.flatMap((r) => (r.kind === "imgs" ? r.paths : [])),
+      ...(this.conv?.items ?? []).flatMap((x) => (x.kind === "gallery" ? x.paths : []))], cx);
     // What sits under the list (an ask card, the working line) changes its height: stay on the newest.
     const below = `${this.asks.length}|${(this.addr && openCard(this.addr)?.id) ?? ""}|${st}|${this.focused}|${this.queue.length}|${this.files.length}|${Boolean(this.quote)}|${this.notes.length}`;
     if (below !== this.below) { this.below = below; if (this.pinned) this.stick = true; }

@@ -1615,8 +1615,9 @@ export default class Chat extends View {
   // Codex's way with a finished turn: the person's message, "Worked for 4m 5s", the last reply.
   // What came between (replies on the way, thoughts, tool steps, diffs) folds into that row and
   // opens on a click; the turn under way shows all of it as it comes. Questions, pictures and
-  // artifacts stay where they were, as do steps that failed, a checklist left unfinished and
-  // compactions. A turn ends at a message of yours or where Claude Code says one ended (turnend:
+  // artifacts stay where they were, as do a checklist left unfinished and compactions. A step
+  // that failed folds like the rest when a reply came after it (the agent got past it: a grep
+  // that found nothing fails too); after the last reply it stays. A turn ends at a message of yours or where Claude Code says one ended (turnend:
   // a helper's report starts a turn of its own, with no message). One you stopped doesn't fold:
   // all of it, then "You stopped after 12s".
   // A message sent while the turn was under way (a steer) splits it: the work before it folds
@@ -1625,7 +1626,7 @@ export default class Chat extends View {
   // folded with the work for the others.
   foldTurns(items, working) {
     const FOLDS = new Set(["agent", "thought", "tools", "diff", "plan", "files"]);
-    const folds = (x) => FOLDS.has(x.kind) && !x.steps?.some((s) => s.failed || (x.kind === "plan" && s.status !== "completed"));
+    const folds = (x) => FOLDS.has(x.kind) && !(x.kind === "plan" && x.steps?.some((s) => s.status !== "completed"));
     // Steers in a turn you stopped don't split it (it doesn't fold).
     const held = new Set();
     let steers = [];

@@ -211,6 +211,8 @@ function cleanWords(t) {
   const cmd = /<command-name>([^<]*)<\/command-name>/.exec(t);
   if (cmd) {
     const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1] ?? "";
+    // The model picker's effort change types /effort (main.js setEffort()): not the person's.
+    if (cmd[1].trim() === "/effort" && !args.trim()) return null;
     return { text: `${cmd[1].trim()} ${args.trim()}`.trim() };
   }
   if (INJECTED.test(t)) return null;

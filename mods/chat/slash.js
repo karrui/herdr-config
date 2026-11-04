@@ -28,41 +28,55 @@ const MENU = {
   codex: new Set(["model", "approvals", "review", "mention", "resume", "fork", "status", "diff"]),
 };
 
-// The person's own commands and skills, on the agent's machine: "name<TAB>description" lines.
+// The person's own commands and skills, on the agent's machine: "c|s<TAB>name<TAB>description"
+// lines (c a command, s a skill). Claude Code: ~/.claude and the project's commands and skills,
+// and those of enabled plugins as plugin:name. Codex: its skills (invoked as $name) and custom
+// prompts (/prompts:name). Skills marked user-invocable: false are left out.
 const SCAN = `
-cwd="$1"
-desc() { awk '/^description:/ { sub(/^description:[[:space:]]*/, ""); if ($0 ~ /^[>|]-?$/ || $0 == "") { getline; sub(/^[[:space:]]+/, "") } gsub(/"/, ""); print substr($0, 1, 90); exit }' "$1" 2>/dev/null; }
-for d in "$HOME/.claude/commands" "$cwd/.claude/commands"; do
-  [ -d "$d" ] || continue
-  find "$d" -name '*.md' 2>/dev/null | while read -r f; do n=\${f#"$d"/}; n=\${n%.md}; printf '%s\\t%s\\n' "$(echo "$n" | tr / :)" "$(desc "$f")"; done
-done
-for d in "$HOME/.claude/skills" "$cwd/.claude/skills"; do
-  for f in "$d"/*/SKILL.md; do [ -f "$f" ] || continue; n=\${f%/SKILL.md}; printf '%s\\t%s\\n' "\${n##*/}" "$(desc "$f")"; done
-done
+cwd="$1"; kind="$2"
+desc() { awk '/^description:/ { sub(/^description:[[:space:]]*/, ""); if ($0 ~ /^[>|]-?$/ || $0 == "") { getline; sub(/^[[:space:]]+/, "") } gsub(/[\\\\"]/, ""); print substr($0, 1, 90); exit }' "$1" 2>/dev/null; }
+skills() { pre="$1"; shift; for d in "$@"; do for f in "$d"/*/SKILL.md; do [ -f "$f" ] || continue; grep -qE '^user-invocable:[[:space:]]*false' "$f" && continue; n=\${f%/SKILL.md}; printf 's\\t%s%s\\t%s\\n' "$pre" "\${n##*/}" "$(desc "$f")"; done; done; }
+cmds() { pre="$1"; d="$2"; [ -d "$d" ] || return 0; find "$d" -name '*.md' 2>/dev/null | while read -r f; do n=\${f#"$d"/}; n=\${n%.md}; printf 'c\\t%s%s\\t%s\\n' "$pre" "$(echo "$n" | tr / :)" "$(desc "$f")"; done; }
+if [ "$kind" = codex ]; then
+  c="\${CODEX_HOME:-$HOME/.codex}"
+  skills "" "$HOME/.agents/skills" "$c/skills" "$cwd/.agents/skills" "$cwd/.codex/skills"
+  cmds "prompts:" "$c/prompts"
+else
+  cmds "" "$HOME/.claude/commands"; cmds "" "$cwd/.claude/commands"
+  skills "" "$HOME/.claude/skills" "$cwd/.claude/skills"
+  i="$HOME/.claude/plugins/installed_plugins.json"
+  if command -v jq >/dev/null && [ -f "$i" ]; then
+    jq -r --slurpfile s "$HOME/.claude/settings.json" '.plugins | to_entries[] | select($s[0].enabledPlugins[.key] == true) | "\\(.key | split("@")[0])\\t\\(.value[0].installPath)"' "$i" 2>/dev/null |
+      while IFS="$(printf '\\t')" read -r p d; do skills "$p:" "$d/skills"; cmds "$p:" "$d/commands"; done
+  fi
+fi
 true`;
 
 const cache = new Map();
-// Every command this agent knows: [{ name, about }], built-in first. Cached per machine and folder.
+// Every command this agent knows: [{ name, about, skill? }], built-in first. Cached per machine
+// and folder.
 export async function commands(kind, machine, cwd) {
   const own = kind === "codex" ? CODEX : CLAUDE;
   const list = own.map(([name, about]) => ({ name, about }));
-  if (kind !== "claude") return list;
-  const k = `${machine ?? ""}|${cwd ?? ""}`;
+  const k = `${kind}|${machine ?? ""}|${cwd ?? ""}`;
   if (!cache.has(k)) {
-    cache.set(k, exec("sh", ["-c", SCAN, "scan", cwd ?? ""], { on: machine }).then((r) => r.stdout.split("\n").filter(Boolean).map((l) => {
-      const [name, about] = l.split("\t");
-      return { name, about: about || "Your command" };
-    })).catch(() => []));
+    cache.set(k, exec("sh", ["-c", SCAN, "scan", cwd ?? "", kind], { on: machine }).then((r) => r.stdout.split("\n").filter(Boolean).map((l) => {
+      const [type, name, about] = l.split("\t");
+      return { name, about: about || (type === "s" ? "Your skill" : "Your command"), skill: type === "s" };
+    }).filter((c) => c.name)).catch(() => []));
   }
   const mine = await cache.get(k);
   const seen = new Set(list.map((c) => c.name));
   return [...list, ...mine.filter((c) => !seen.has(c.name) && seen.add(c.name))];
 }
 
-// The "/word" being typed, when the whole message is one command so far.
+// What is being typed for the list: "/word" when the whole message is one command so far, or
+// "$word" at its end (Codex takes a skill anywhere in a message). { sigil, word } or null.
 export function typing(text) {
   const m = /^\/([\w:.-]*)$/.exec(text);
-  return m ? m[1] : null;
+  if (m) return { sigil: "/", word: m[1] };
+  const d = /(?:^|\s)\$([\w:.-]*)$/.exec(text);
+  return d ? { sigil: "$", word: d[1] } : null;
 }
 
 // Suggestions for what is typed: names that start with it first, then names that contain it.

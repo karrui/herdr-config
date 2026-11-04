@@ -101,13 +101,13 @@ export default class ModelMenu extends View {
   }
 
   head(t, label) {
-    return div().h(HEAD).flex_none().px(9).pt(8).text_size(11).text_color(t.dim).child(label);
+    return div().h(HEAD).flex_none().px(8).pt(9).text_size(11).text_color(t.dim).child(label);
   }
 
   row(t, id, enabled, fn) {
-    return h_flex().id(id).h(ROW).flex_none().px(9).gap(10).rounded(7).items_center()
+    return h_flex().id(id).h(ROW).flex_none().px(8).gap(9).rounded(7).items_center()
       .text_color(enabled ? t.foreground : t.dim)
-      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.selected))
+      .when(enabled, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { cx.stop_propagation(); fn(); cx.notify(); }));
   }
 
@@ -191,7 +191,7 @@ export default class ModelMenu extends View {
         .child(div().flex_1().min_w(0).truncate().child(x.name))
         .when(Boolean(remote), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(remote)))
         .child(this.check(t, x.agent === this.sel.agent && x.id === this.sel.model))))
-      .child(div().h(SEP).flex_none().py(4).px(4).child(div().h(1).w_full().bg(t.border)))
+      .child(div().h(SEP).flex_none().py(4).px(7).child(div().h(1).w_full().bg(t.border)))
       .child(this.head(t, "Reasoning"))
       .child(this.levels(t))
       .when(fast, (el) => el.child(this.row(t, "fast", !remote, () => { this.sel = { ...this.sel, fast: !this.sel.fast }; })

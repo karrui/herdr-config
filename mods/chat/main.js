@@ -1233,7 +1233,7 @@ export default class Chat extends View {
     const list = this.suggestions();
     if (list.length) {
       const c = list[Math.min(this.slashSel, list.length - 1)];
-      if (this.box.value().trim() !== `/${c.name}`) { this.pick(c, cx); cx.timer.after(30, () => this.box.set_value(`/${c.name} `)); return; }
+      if (this.box.value().trim() !== c.insert.trim()) { this.pick(c, cx); cx.timer.after(30, () => this.box.set_value(c.insert)); return; }
     }
     this.send(cx, hold);
   }
@@ -1394,23 +1394,21 @@ export default class Chat extends View {
     if (h && this.tasks?.length) {
       const q = h[1].toLowerCase();
       return this.tasks.filter((x) => !q || String(x.id).startsWith(q) || taskRef(x).toLowerCase().includes(q) || x.title.toLowerCase().includes(q)).slice(0, 8)
-        .map((x) => ({ task: true, name: taskRef(x), about: x.title, state: x.status_text ?? x.state }));
+        .map((x) => ({ task: true, name: taskRef(x), about: x.title, state: x.status_text ?? x.state, insert: v.replace(/#[\w-]*$/, `${taskRef(x)} `) }));
     }
+    // "/": commands (and Claude Code's skills, which it runs as commands). "$": Codex's skills,
+    // which it takes anywhere in a message.
     const w = slash.typing(v);
-    if (w === null || !this.cmds.length) return [];
-    return slash.match(this.cmds, w);
+    if (!w || !this.cmds.length) return [];
+    const codexSkill = (c) => c.skill && this.kind === "codex";
+    const pool = this.cmds.filter((c) => (w.sigil === "$" ? codexSkill(c) : !codexSkill(c)));
+    return slash.match(pool, w.word).map((c) => ({ ...c, label: w.sigil + c.name, state: c.skill ? "Skill" : null,
+      insert: w.sigil === "$" ? v.replace(/\$[\w:.-]*$/, `$${c.name} `) : `/${c.name} ` }));
   }
 
   pick(c, cx) {
-    if (c.task) {
-      const v = this.box.value().replace(/\n+$/, "");
-      const next = v.replace(/#[\w-]*$/, `${c.name} `);
-      this.box.set_value(next);
-      this.slashOff = next;
-    } else {
-      this.box.set_value(`/${c.name} `);
-      this.slashOff = `/${c.name} `;
-    }
+    this.box.set_value(c.insert);
+    this.slashOff = c.insert;
     this.box.focus();
     cx.notify();
   }
@@ -3201,12 +3199,12 @@ export default class Chat extends View {
   slashList(t, list) {
     if (!list.length) return null;
     const sel = Math.min(this.slashSel, list.length - 1);
-    return v_flex().w_full().p(4).gap(1).border_b(1).border_color(t.border).children(list.map((c, i) =>
-      h_flex().id(`slash-${c.name}`).h(28).px(8).gap(10).items_center().rounded(6).cursor_pointer()
+    return v_flex().w_full().p(5).border_b(1).border_color(t.border).children(list.map((c, i) =>
+      h_flex().id(`slash-${c.name}`).h(28).px(8).gap(9).items_center().rounded(7).cursor_pointer()
         .when(i === sel, (el) => el.bg(t.selected))
         .hover((s) => s.bg(t.hover))
         .on_click((_e, cx) => { cx.stop_propagation(); this.pick(c, cx); })
-        .child(div().flex_none().text_size(12.5).font_medium().text_color(t.foreground).child(c.task ? c.name : `/${c.name}`))
+        .child(div().flex_none().text_size(12.5).font_medium().text_color(t.foreground).child(c.label ?? c.name))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(c.task ? t.muted : t.dim).child(c.about))
         .when(Boolean(c.state), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(c.state)))));
   }

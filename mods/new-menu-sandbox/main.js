@@ -14,6 +14,8 @@ function start(a, space) {
 
 // The last agents each machine reported, shown at once while knownAgents() checks again.
 const KNOWN = "new-menu.agents";
+// Sizes: a row, the "Start an agent" heading, a separator, the menu's padding.
+const ROW = 31, HEAD = 26, SEP = 9, PAD = 5;
 
 function shortcut(name) {
   const k = keys().find(b => b.section === "global" && b.action === name);
@@ -48,19 +50,22 @@ export default class NewMenu extends View {
       cx.notify();
     });
   }
+  // Herdr's menu metrics (its right-click menu): 31 rows, 8 in, 9 between icon and name.
   row(id, icon, name, action, hint = "", enabled = true) {
     const t = theme();
-    return h_flex().id(id).h(31).px(9).gap(10).rounded(7).items_center().flex_none()
-      .text_color(enabled ? t.foreground : t.dim).when(enabled, el => el.hover(s => s.bg(t.selected)))
+    return h_flex().id(id).h(ROW).px(8).gap(9).rounded(7).items_center().flex_none()
+      .text_color(enabled ? t.foreground : t.dim).when(enabled, el => el.cursor_pointer().hover(s => s.bg(t.hover)))
       .on_click(() => { if (enabled) { closeOverlay(props().overlay); action(); } })
-      .child(icon).child(div().flex_1().child(name)).child(div().text_size(11).text_color(t.dim).child(hint));
+      .child(div().flex_none().text_color(enabled ? t.muted : t.dim).child(icon)).child(div().flex_1().child(name)).child(div().text_size(11).text_color(t.dim).child(hint));
   }
   render() {
     const t = theme();
     const space = spaces().find(s => s.active);
     const installed = this.agents.filter(a => a.installed);
     const choices = [...installed, ...this.agents.filter(a => !a.installed).slice(0, 2)];
-    return v_flex().min_h(0).w_full().h(Math.min(553, 229 + Math.max(1, choices.length) * 31)).bg(t.popover).p(5).text_size(12.8)
+    // Its height is what its parts add up to (the agents list scrolls past 9), so none is squeezed.
+    const height = PAD * 2 + ROW * 2 + HEAD + ROW * Math.min(9, Math.max(1, choices.length)) + ROW + SEP + ROW * 3;
+    return v_flex().min_h(0).w_full().h(height).bg(t.popover).p(PAD).text_size(12.8)
       .id("new-menu").track_focus(this.handle)
       .on_key_down((e) => {
         if (e.modifiers.control || e.modifiers.platform || e.modifiers.alt) return;
@@ -74,15 +79,15 @@ export default class NewMenu extends View {
       .child(this.row("browser", svg("mods/new-menu-sandbox/browser.svg").size(14), "Browser", () => execFile(`${appHome()}/browser/open`, [])
         .then(r => r, e => ({ code: 1, stderr: String(e) }))
         .then(r => r.code && notify({ title: "Couldn't open the browser", body: r.stderr.trim(), level: "error" }))))
-      .child(div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child("Start an agent"))
-      .child(v_flex().flex_1().min_h(0).overflow_y_scrollbar()
+      .child(div().h(HEAD).flex_none().px(8).pt(9).text_size(11).text_color(t.dim).child("Start an agent"))
+      .child(v_flex().id("agents").flex_1().min_h(0).overflow_y_scrollbar()
         .children(choices.map((a, i) => this.row(a.key, a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14), a.name,
           () => start(a, space), a.installed ? (i < 9 ? String(i + 1) : "") : "not installed", a.installed)))
-        .when(this.agents.length === 0, el => el.child(div().px(9).py(6).text_color(t.dim).child(this.failed ? "Could not load agents" : "Checking installed agents…"))))
+        .when(this.agents.length === 0, el => el.child(div().h(ROW).flex_none().flex().items_center().px(8).text_color(t.dim).child(this.failed ? "Could not load agents" : "Checking installed agents…"))))
       // Agents cmd-w parked here, and sessions that ran in this space's folders (mods/resume).
       .child(this.row("resume", svg("mods/workspace-chrome/clock.svg").size(14), "Resume a session\u2026", () => openOverlay({ mod: "resume", kind: "dialog", width: 520, height: 480, props: { space: space?.id } }), "", Boolean(space)))
-      .child(div().h(1).mx(4).my(5).bg(t.border))
-      .child(this.row("space", div().w(14).child("+"), "New space", () => run("space.new"), shortcut("space.new")))
+      .child(div().h(SEP).flex_none().px(7).py(4).child(div().h(1).w_full().bg(t.border)))
+      .child(this.row("space", svg("mods/workspace-chrome/plus.svg").size(14), "New space", () => run("space.new"), shortcut("space.new")))
       .child(this.row("worktree", svg("mods/workspace-chrome/branch.svg").size(14), "New worktree…", () => openOverlay({ mod: "worktree-hooks", kind: "dialog", width: 460, height: 320, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "new" } }), "", Boolean(space)))
       .child(this.row("worktree-open", svg("mods/workspace-chrome/branch.svg").size(14), "Open worktree\u2026", () => openOverlay({ mod: "worktree-hooks", kind: "dialog", width: 560, height: 480, props: { space: space?.id, folder: panes().find(p => p.focused)?.cwd, action: "open" } }), "", Boolean(space)));
   }

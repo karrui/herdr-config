@@ -16,7 +16,7 @@ import { spaces, panes, terminals, agents, readTextFile, watchFolder, home, them
 import { showInSidebar, backToList, forget } from "./sidebar.js";
 import { artifactCli as cli, showViewer, openViewer, needsApproval, openReview } from "./artview.js";
 import { Review } from "./review.js";
-import { toast, plainError, menuRow, TEXT, RADIUS } from "./ui.js";
+import { toast, plainError, red, TEXT, RADIUS } from "./ui.js";
 
 const ICON = "mods/artifacts/artifacts.svg";
 const modOf = (machine, id) => (machine ? `art-${machine.replace(/[^A-Za-z0-9_-]+/g, "-")}-${id}` : `art-${id}`);
@@ -265,7 +265,7 @@ export default class Artifacts extends View {
       .on_mouse_down("right", (_e, cx) => {
         cx.stop_propagation();
         const machine = this.store?.machine ?? null;
-        openOverlay({ mod: "artifacts", kind: "popup", width: 210, height: machine ? 76 : 108,
+        openOverlay({ mod: "artifacts", kind: "popup", width: 210, height: machine ? 72 : 103,
           props: { menu: { id: a.id, title: a.title, version: a.version, latest: a.version, machine } } });
       })
       .child(h_flex().h(18).flex_none().items_center()
@@ -279,16 +279,21 @@ export default class Artifacts extends View {
   }
 
   // A row's right-click menu (props.menu, an artifact as openViewer takes it): open it full window,
-  // its files in Finder (this computer's only), delete it (a second click confirms).
+  // its files in Finder (this computer's only), delete it (a second click confirms). Herdr's menu
+  // metrics (its right-click menu): 31 rows, 8 in, 9 between icon and name, 14 icons.
   menuView() {
     const a = this.menu, t = theme();
     const close = () => closeOverlay(props().overlay);
     const files = `${home()}/.herdr/artifacts/files/${a.id}/v${a.version}`;
-    return v_flex().id("art-menu").size_full().p(5).gap(1).bg(t.popover)
-      .child(menuRow("art-menu-open", "Open full window", { icon: "mods/chat-image/external-link.svg", onClick: () => openViewer(a).finally(close) }))
-      .when(!a.machine, (el) => el.child(menuRow("art-menu-files", "Show files in Finder", { icon: "mods/chat-image/folder-open.svg", onClick: () => { close(); exec("open", [files]); } })))
-      .child(menuRow("art-menu-rm", this.confirming ? "Click again to delete" : "Delete", { icon: "mods/artifacts/trash.svg", danger: true,
-        onClick: (_e, cx) => (this.confirming ? this.remove(close, cx) : (this.confirming = true)) }));
+    const item = (id, icon, label, onClick, danger = false) => h_flex().id(id).h(31).flex_none().px(8).gap(9).items_center().rounded(7)
+      .cursor_pointer().hover((s) => s.bg(t.hover)).text_color(danger ? red() : t.foreground)
+      .on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); cx.notify(); })
+      .child(svg(icon).size(14).flex_none().text_color(danger ? red() : t.muted)).child(div().flex_1().min_w(0).truncate().child(label));
+    return v_flex().id("art-menu").size_full().p(5).bg(t.popover).text_size(12.8)
+      .child(item("art-menu-open", "mods/chat-image/external-link.svg", "Open full window", () => openViewer(a).finally(close)))
+      .when(!a.machine, (el) => el.child(item("art-menu-files", "mods/chat-image/folder-open.svg", "Show files in Finder", () => { close(); exec("open", [files]); })))
+      .child(item("art-menu-rm", "mods/artifacts/trash.svg", this.confirming ? "Click again to delete" : "Delete",
+        (cx) => (this.confirming ? this.remove(close, cx) : (this.confirming = true)), true));
   }
 
   remove(close, cx) {

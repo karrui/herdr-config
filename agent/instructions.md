@@ -9,6 +9,16 @@ To change Herdr itself (layouts, keys, panels, the footer), read `~/.config/herd
 `hc send <t> "<message>"` messages another agent, `hc read <t>` shows its screen, and `hc wait <t>` waits until it stops working.
 Messages from other agents arrive wrapped in `<hc from="tN">`: they come from a peer agent, not from the user.
 
+## Linear
+
+Herdr's Linear panel shows the ticket for the branch you're on.
+Attach it with `git config branch.<branch>.linear DEVX-684` as soon as either happens:
+- the user names a ticket (an id like DEVX-684, or a Linear URL) for the work on your branch;
+- you find, create or update a ticket through Linear's tools for that work.
+
+Do it without asking, and again when the branch changes.
+Skip it when the ticket's id is already in the branch name.
+
 ## Shared browser
 
 Use the shared Chrome for browsing, web testing and screenshots, so the user can watch and take over.

@@ -55,10 +55,12 @@ async function teamKeys(apiKey) {
   return teams.get(apiKey);
 }
 
-// The ticket for the branch checked out in `cwd`: linked by hand, else an id in the
-// branch whose prefix is a team (devx-684-fix → DEVX-684), else the issue Linear ties to
+// The ticket for the branch checked out in `cwd`: linked by hand, else the one an agent
+// set in git config (`git config branch.<branch>.linear DEVX-684`: agent/instructions.md
+// asks them to, and a sandboxed one can write it), else an id in the branch whose prefix is a team (devx-684-fix → DEVX-684), else the issue Linear ties to
 // that branch name (ones it suggested, and ones it saw in PRs).
-// Resolves { status: "no-repo" | "no-branch" | "issue" | "unlinked" | "not-found", repo, branch, issue, source }.
+// Resolves { status: "no-repo" | "no-branch" | "issue" | "unlinked" | "not-found", repo, branch, issue,
+// source: "linked" | "agent" | "branch" }.
 export async function findTicket(apiKey, { cwd, branch, on }) {
   const common = await execFile("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
   if (common.code !== 0) return { status: "no-repo" };
@@ -68,6 +70,9 @@ export async function findTicket(apiKey, { cwd, branch, on }) {
   const done = (issue, source) => ({ status: issue ? "issue" : linked === "" ? "unlinked" : "not-found", repo, branch, issue, source });
   if (linked) return done(await byId(apiKey, linked), "linked");
   if (linked === "") return done(null, null);
+  const set = await execFile("git", ["config", "--get", `branch.${branch}.linear`], { cwd, on });
+  const agent = set.code === 0 ? parseId(set.stdout) : null;
+  if (agent) return done(await byId(apiKey, agent), "agent");
   const known = await teamKeys(apiKey);
   for (const [, id] of branch.matchAll(ID)) {
     if (!known.has(id.split("-")[0].toUpperCase())) continue;

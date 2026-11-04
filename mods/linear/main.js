@@ -168,7 +168,7 @@ export default class LinearPanel extends View {
     const go = (action) => (cx) => { closeOverlay(overlay); action(cx); };
     const items = [
       ...(repo && branch ? [["link", issue ? "Link a different ticket…" : "Link a ticket…", "mods/workspace-chrome/square-pen.svg", go(() => openLinkDialog(repo, branch))]] : []),
-      ...(issue && source === "branch" ? [["not-this", "Not this ticket", "mods/workspace-chrome/x.svg", go(() => setLink(repo, branch, ""))]] : []),
+      ...(issue && source !== "linked" ? [["not-this", "Not this ticket", "mods/workspace-chrome/x.svg", go(() => setLink(repo, branch, ""))]] : []),
       ...(pinned !== undefined ? [["detect", "Detect from branch", "mods/workspace-chrome/git-branch.svg", go(() => setLink(repo, branch, null))]] : []),
       ...(issue ? [["open", "Open in Linear", "mods/linear/ticket.svg", go(() => execFile("open", [issue.url]))]] : []),
       ["key", "Linear API key…", "mods/workspace-chrome/settings.svg", go(() => openKeyDialog())],
@@ -216,7 +216,7 @@ export default class LinearPanel extends View {
         .child(svg("mods/linear/ticket.svg").size(14).text_color(t.muted))
         .child(div().font_semibold().child("Linear"))
         .when(Boolean(issue), (e) => e.child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted)
-          .child(this.source === "linked" ? "Linked" : "From branch"))))
+          .child(this.source === "linked" ? "Linked" : this.source === "agent" ? "Set by agent" : "From branch"))))
       .when(setup, (e) => e.child(div().p(14).child(this.setup(t, null))))
       .when(!setup && Boolean(issue), (e) => e.child(this.ticket(issue, t)))
       .when(!setup && !issue, (e) => e.child(div().flex_1().p(14).text_color(t.dim).child(message ?? "")))

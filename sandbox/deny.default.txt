@@ -8,6 +8,8 @@
 # Cloud credentials and SSH keys
 ~/.aws
 ~/.ssh
+# Shepherdr's secret vault (herdr-secret)
+~/.herdr/vault.json
 
 # Readable, never writable: what runs later outside any sandbox (your shells, your git,
 # an unsandboxed agent), so code planted there would escape it.

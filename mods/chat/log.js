@@ -6,6 +6,9 @@
 
 import { home } from "herdr";
 
+// Internal reviewers and helpers can hold rollouts under the same process tree.
+const MAIN = `[ -f "$f" ] && ! head -c 2000 "$f" | grep -Eq '"source"[[:space:]]*:[[:space:]]*\\{[[:space:]]*"subagent"'`;
+
 // Prints the log's path on the agent's machine, or nothing. Args: kind, pid.
 export const FIND = `
 kind="$1"; pid="$2"
@@ -20,10 +23,11 @@ for p in "$pid" $(kids "$pid"); do
     echo "pending"; exit 0
   else
     if [ -d "/proc/$p/fd" ]; then
-      f=$(for d in /proc/$p/fd/*; do readlink "$d"; done 2>/dev/null | grep '/rollout-.*\\.jsonl$' | head -1)
+      f=$(for d in /proc/$p/fd/*; do readlink "$d"; done 2>/dev/null | grep '/rollout-.*\\.jsonl$')
     else
-      f=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's/^n//p' | grep '/rollout-.*\\.jsonl$' | head -1)
+      f=$(lsof -p "$p" -Fn 2>/dev/null | sed -n 's/^n//p' | grep '/rollout-.*\\.jsonl$')
     fi
+    f=$(printf '%s\\n' "$f" | while IFS= read -r f; do ${MAIN} && { echo "$f"; break; }; done)
     [ -n "$f" ] && { echo "$f"; exit 0; }
   fi
 done
@@ -1156,7 +1160,7 @@ true`;
 
 // The first of these Codex rollouts that is a conversation, not a helper's or Codex's reviewer's
 // (their first line names them a subagent, near its start).
-export const MAIN_ROLLOUT = `for f in "$@"; do [ -f "$f" ] && ! head -c 2000 "$f" | grep -q '"source":{"subagent"' && { echo "$f"; exit 0; }; done; true`;
+export const MAIN_ROLLOUT = `for f in "$@"; do ${MAIN} && { echo "$f"; exit 0; }; done; true`;
 
 // A string's size in the file (UTF-8 bytes), as offsets there count.
 function bytes(s) {

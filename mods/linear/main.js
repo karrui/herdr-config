@@ -6,19 +6,14 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextView } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, focused, exec as execFile, readTextFile, writeTextFile, shared, setShared, theme, props, openOverlay, closeOverlay } from "herdr";
+import { exec as execFile, readTextFile, writeTextFile, shared, setShared, theme, props, openOverlay, closeOverlay } from "herdr";
 import * as fs from "fs/promises";
-import { KEY_DIR, KEY_FILE, KEY_CHANGED, LINKS, readKey, linear, findTicket, setLink, parseId } from "./resolve.js";
+import { KEY_DIR, KEY_FILE, KEY_CHANGED, LINKS, linearLocation, readKey, linear, findTicket, setLink, parseId } from "./resolve.js";
 
 const KEYS_URL = "https://linear.app/settings/account/security";
 
-function location() {
-  const space = spaces().find((s) => s.active), f = focused();
-  const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-  return { cwd: pane?.cwd || f?.cwd || space?.folder, branch: pane?.branch ?? space?.branch ?? null, on: space?.machine ?? null };
-}
 // A link made from the button's menu shows here at once.
-const key = () => JSON.stringify([location(), shared(LINKS) ?? null]);
+const key = () => JSON.stringify([linearLocation(), shared(LINKS) ?? null]);
 
 export function openLinkDialog(repo, branch) {
   openOverlay({ mod: "linear", kind: "dialog", width: 420, props: { view: "link", repo, branch } });
@@ -57,7 +52,7 @@ export default class LinearPanel extends View {
     // Another branch: its ticket isn't the one shown. A timed refresh keeps it until it's back.
     const moved = context !== this.context;
     this.context = context;
-    const { cwd, branch, on } = location();
+    const { cwd, branch, on } = linearLocation();
     const run = (this.run ?? 0) + 1;
     this.run = run;
     // Runs from render too, where cx.notify() isn't allowed, and a task runs in its caller

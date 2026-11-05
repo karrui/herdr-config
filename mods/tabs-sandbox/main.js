@@ -1,8 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, focused, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome, home, hc, nextCommand, notify } from "herdr";
-import { KEY_CHANGED, LINKS, readKey, findTicket } from "./linear-resolve.js";
+import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome, home, hc, nextCommand, notify } from "herdr";
+import { KEY_CHANGED, LINKS, linearLocation, readKey, findTicket } from "./linear-resolve.js";
 import { chatAgents, tabStatus } from "./parked.js";
 
 // The branch to compare against: origin's default branch, else the usual names.
@@ -100,9 +100,7 @@ export default class Tabs extends View {
   // The focused pane's branch; the ticket for it is asked again when its links or the API
   // key change, and every 5 minutes while the window is in front (a ticket can be renamed).
   linearPlace() {
-    const space = spaces().find((s) => s.active), f = focused();
-    const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
-    const where = { cwd: pane?.cwd || f?.cwd || space?.folder, branch: pane?.branch ?? space?.branch ?? null, on: space?.machine ?? null };
+    const where = linearLocation();
     return where.cwd ? { where, id: JSON.stringify(where) } : null;
   }
 
@@ -230,7 +228,7 @@ export default class Tabs extends View {
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).when(Boolean(menu), el => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); menu(); }))
-        .when(Boolean(tip), el => el.tooltip(tip)).child(svg(icon).size(14)).when(label !== null, el => el.child(label));
+        .when(Boolean(tip), el => el.tooltip(tip)).child(svg(icon).size(14)).when(Boolean(label), el => el.child(label));
     };
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })

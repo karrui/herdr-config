@@ -2,7 +2,17 @@
 // Linear button: mods can't import each other, so mods/tabs-sandbox/linear-resolve.js
 // is a copy of this file. Change both.
 // herdr's exec takes an argv list and never goes through a shell.
-import { exec as execFile, readTextFile, appHome, shared, setShared } from "herdr";
+import { spaces, panes, terminals, focused, exec as execFile, readTextFile, appHome, shared, setShared } from "herdr";
+
+// Chat panes park their terminal; its live folder still determines the ticket.
+export function linearLocation() {
+  const space = spaces().find((s) => s.active), f = focused();
+  const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+  const chat = pane?.mod === "chat";
+  const terminal = chat ? terminals().find((t) => t.state === "live" && t.labels?.["herdr.chat"] === pane.pane) : null;
+  return { cwd: terminal?.foreground?.cwd || terminal?.cwd || pane?.cwd || f?.cwd || space?.folder,
+    branch: chat ? null : pane?.branch ?? space?.branch ?? null, on: space?.machine ?? null };
+}
 
 // The key lives in Herdr's folder, which sandboxed agents can't read.
 export const KEY_DIR = () => `${appHome()}/data/linear`;
@@ -64,6 +74,10 @@ async function teamKeys(apiKey) {
 export async function findTicket(apiKey, { cwd, branch, on }) {
   const common = await execFile("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
   if (common.code !== 0) return { status: "no-repo" };
+  if (!branch) {
+    const current = await execFile("git", ["branch", "--show-current"], { cwd, on });
+    branch = current.code === 0 ? current.stdout.trim() : null;
+  }
   if (!branch) return { status: "no-branch" };
   const repo = common.stdout.trim().replace(/\/\.git$/, "");
   const linked = (shared(LINKS) ?? {})[`${repo}|${branch}`];

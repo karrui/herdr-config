@@ -769,10 +769,10 @@ export default class Chat extends View {
     }
     // Not in its session yet (no report, no turn): perhaps on its own start screen, which
     // shows as a card under an empty chat.
-    if (!path && starting(t)) path = "pending";
+    if (!path && (starting(t) || (kind === "codex" && !(t.turn > 0)))) path = "pending";
     if (path === "pending") {
-      // A Claude Code that hasn't written its first line yet has no file: an empty chat.
-      if (this.phase === "finding") { this.kind = kind; this.conv = new Conversation(kind, { side: Boolean(this.transcript) }); this.start = 0; this.set("ready", cx); }
+      // Before the first turn there may be no log yet: keep the composer available.
+      if (this.phase !== "ready") { this.kind = kind; this.conv = new Conversation(kind, { side: Boolean(this.transcript) }); this.start = 0; this.set("ready", cx); }
       return;
     }
     if (!path) { if (this.phase !== "ready") this.set("none", cx); return; }

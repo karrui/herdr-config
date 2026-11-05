@@ -475,7 +475,7 @@ function codexStep(name, args) {
   if (name === "spawn_agent") {
     // Newer Codex seals the helper's message ("gAAAAA…"): then its task_name says what it's for.
     const task = a.task ?? [a.message, a.prompt].find((m) => m && !/^gAAAAA/.test(m)) ?? String(a.task_name ?? "").replace(/_/g, " ");
-    return { kind: "agent", line: `Asked a helper: ${clip(task, 70)}`, doing: "Starting a helper", spawn: clip(task || "a helper", 60) };
+    return { kind: "agent", line: `Asked a helper: ${clip(task, 70)}`, doing: "Starting a helper", spawn: clip(task || "a helper", 60), model: a.model ?? null, effort: a.reasoning_effort ?? null };
   }
   if (name === "wait_agent") return { kind: "agent", line: "Waited for helpers", doing: "Waiting for helpers", waiting: true };
   return { kind: "tool", line: `Used ${name}`, doing: `Using ${name}` };
@@ -887,7 +887,8 @@ export class Conversation {
             // one task at a time, by ids only their results give: they stay steps.)
             this.planned(off, b.input.todos.map((x) => ({ text: String(x?.content ?? ""), status: x?.status, active: x?.activeForm })));
           } else {
-            if (b.name === "Agent" || b.name === "Task") this.helpers.set(String(b.id), { desc: String(b.input?.description ?? "a helper"), done: false, at: time(l.timestamp) });
+            // What it was asked to run on (none named: its agent's default or the session's).
+            if (b.name === "Agent" || b.name === "Task") this.helpers.set(String(b.id), { desc: String(b.input?.description ?? "a helper"), model: b.input?.model ?? null, effort: b.input?.effort ?? null, done: false, at: time(l.timestamp) });
             this.step(String(b.id), off, claudeStep(String(b.name ?? ""), b.input ?? {}), b.name === "Agent" || b.name === "Task" ? String(b.id) : null);
             if (b.name === "Bash" && ARTIFACT.test(String(b.input?.command ?? ""))) this.push({ kind: "artifact", id: `art${off}`, at: time(l.timestamp) });
           }
@@ -942,7 +943,7 @@ export class Conversation {
         }
         const st = codexStep(String(p.name ?? "shell"), p.arguments ?? p.input ?? p.action);
         // Codex's helpers count as running until its turn ends (its log says no more).
-        if (st?.spawn) this.helpers.set(cid, { desc: st.spawn, done: false, untilTurn: true });
+        if (st?.spawn) this.helpers.set(cid, { desc: st.spawn, model: st.model, effort: st.effort, done: false, untilTurn: true });
         this.step(cid, off, st, st?.spawn ? cid : null);
         if (ARTIFACT.test(JSON.stringify(p.arguments ?? p.input ?? p.action ?? ""))) this.push({ kind: "artifact", id: `art${off}`, at: time(l.timestamp) });
       }

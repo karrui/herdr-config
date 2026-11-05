@@ -215,6 +215,8 @@ export default class Agents extends View {
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
       .on_click(() => (k.helper ? this.openHelper(k.helper) : this.peek(k.address)))
+      // A Claude Code helper: what it runs on, on hover (its chat's helper rows say it too).
+      .when(Boolean(k.helper?.spec), (el) => el.tooltip(k.helper.spec))
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))

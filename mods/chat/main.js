@@ -2525,7 +2525,30 @@ export default class Chat extends View {
     // Only the CLI's own subagents (Claude Code's Agent/Task runs, Codex's spawned agents), from
     // its log. Agents it started with hc are terminals Herdr already lists under it in the
     // Agents sidebar, so they aren't repeated here.
-    return (this.conv?.running?.() ?? []).map((h) => ({ id: h.id, label: h.desc, at: h.at }));
+    // What each runs on: "Sonnet 5.5 · High". The model its own log shows (exact, and a Claude
+    // Code agent type can have its own), else the one the call named; an effort the call didn't
+    // name is the session's.
+    const c = this.current();
+    return (this.conv?.running?.() ?? []).map((h) => {
+      const model = this.helperModel(h.id) ?? h.model ?? (this.kind === "codex" ? c?.model : null);
+      const spec = [agent.modelName(model), agent.levelName(h.effort ?? c?.effort)].filter(Boolean).join(" · ");
+      return { id: h.id, label: h.desc, at: h.at, spec };
+    });
+  }
+
+  // A Claude Code helper's model from its own log (subagents/, found as openHelper() finds it):
+  // its first reply's, once it has one (other lines name the models of Claude Code's own side
+  // requests). Looked up once a helper, again every 10 s until there.
+  helperModel(id) {
+    this.helperModels ??= new Map();
+    const got = this.helperModels.get(id);
+    if (typeof got === "string") return got;
+    if (this.kind !== "claude" || !this.path || (got && Date.now() - got.at < 10000)) return null;
+    this.helperModels.set(id, { at: Date.now() });
+    const dir = `${this.path.replace(/\.jsonl$/, "")}/subagents`;
+    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && grep -m1 -F \'"type":"assistant"\' "${f%.meta.json}.jsonl" | grep -o \'"model":"claude-[^"]*"\' | head -1', "x", dir, `"toolUseId":"${id}"`], { on: this.machine })
+      .then((r) => { const m = /"model":"([^"]+)"/.exec(r.stdout ?? "")?.[1]; if (m) this.helperModels.set(id, m); }).catch(() => {});
+    return null;
   }
 
   // A code block's Run: Claude Code's ! commands, typed into it as you would ("! cmd"), so each
@@ -2546,7 +2569,7 @@ export default class Chat extends View {
   publishHelpers() {
     if (this.transcript || !this.addr) return;
     const all = shared("chat.subagents") ?? {};
-    const list = this.kind === "claude" && this.path ? this.helpers().map((h) => ({ id: h.id, label: h.label, at: h.at ?? null })) : [];
+    const list = this.kind === "claude" && this.path ? this.helpers().map((h) => ({ id: h.id, label: h.label, at: h.at ?? null, spec: h.spec || null })) : [];
     const mine = list.length ? { log: this.path, machine: this.machine, list } : null;
     if (JSON.stringify(mine) === JSON.stringify(all[this.addr] ?? null)) return;
     const next = { ...all };
@@ -2589,6 +2612,7 @@ export default class Chat extends View {
       .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.openHelper(h); })
       .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(h.label))
+      .when(Boolean(h.spec), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(h.spec)))
       .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(ago(h.at)));
     // A card docked on the box's top edge (as Manus shows its running work), so the helpers read
     // apart from the agent's own working line above: a count that folds it, then a row each.

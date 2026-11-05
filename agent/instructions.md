@@ -9,7 +9,7 @@ To change Herdr itself (layouts, keys, panels, the footer), read `~/.config/herd
 `hc send <t> "<message>"` messages another agent, `hc read <t>` shows its screen, and `hc wait <t>` waits until it stops working.
 Messages from other agents arrive wrapped in `<hc from="tN">`: they come from a peer agent, not from the user.
 
-To have another CLI agent (Codex, Claude Code) do part of the work, start it as a real agent, not headless (`codex exec`, `claude -p`): `hc run --bg ~/.config/herdr-app/agent/launch codex -m <model> -c model_reasoning_effort=<effort> "<brief>"`, adding `--sandbox` right after `launch` when `$HERDR_SANDBOX` is set.
+To have another CLI agent (Codex, Claude Code) do part of the work, start it as a real agent, not headless (`codex exec`, `claude -p`): `hc run --bg ~/.config/herdr-app/agent/launch codex -m <model> -c model_reasoning_effort=<effort> "<brief>"`; when `$HERDR_SANDBOX` is set, `hc run --bg codex …` alone (it goes through launch, sandboxed, by itself).
 It runs in its own terminal under yours, which Herdr lists with its status and the user can open as a chat.
 End the brief with where to write its result, `hc wait <t>` (again while it says `working`), then read that file; follow up with `hc send <t>`, and `hc kill <t>` then `hc rm <t>` once it's done.
 

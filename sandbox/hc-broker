@@ -104,6 +104,9 @@ serve() {
         i=$((i + 1))
       done
       [ ${#prog[@]} -gt 0 ] || { no "hc run needs a program: a bare shell would run outside"; return; }
+      # Started through launch already (as outside the sandbox): it goes through launch once.
+      if [ "${prog[0]##*/}" = launch ]; then prog=("${prog[@]:1}"); [ "${prog[0]:-}" = --sandbox ] && prog=("${prog[@]:1}"); fi
+      [ ${#prog[@]} -gt 0 ] || { no "hc run needs a program after launch"; return; }
       [ -n "$start" ] || start="$cwd"
       [[ "$start" == /* ]] || start="$cwd/$start"
       [ -d "$start" ] || { no "no such folder: $start"; return; }

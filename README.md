@@ -261,6 +261,7 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `browser/open` | A shared Chrome, inside the sandbox, that agents drive over CDP on port 9222. |
 | `mods/agent-bar` | The footer: usage, sandbox state and blocked accesses. |
 | `mods/usage`, `footer-sandbox` | The Usage popup, and the sidebar footer that opens it. |
+| `mods/insights` | Token usage by model and day from the agents' session logs, opened from the Usage popup. From [GaganSD/coding-agent-toolkit](https://github.com/GaganSD/coding-agent-toolkit/tree/main/herdr-insights) (MIT) at 9718f5f, unchanged; its `runtime.json` (this machine's Node path) stays out of git. |
 | `mods/space-folders` | The sidebar: folders, worktree spaces, pull requests, close-time teardown. |
 | `mods/changes-sandbox` | The Changes panel with modes. |
 | `mods/linear` | The Linear panel, its right-click menu and dialogs. |

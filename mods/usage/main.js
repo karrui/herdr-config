@@ -5,13 +5,23 @@
 // herdr's exec takes an argv list and never goes through a shell.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec as execFile, theme, appHome, readTextFile, watchFolder, window, props, closeOverlay } from "herdr";
+import { exec as execFile, theme, appHome, readTextFile, watchFolder, window, props, closeOverlay, run, spaces, panes } from "herdr";
 import * as fs from "fs/promises";
 
 const DIR = `${appHome()}/usage`;
 const CLAUDE = `${DIR}/claude`;
 // Codex has no feed to watch: read again this often while the window is in front.
 const EVERY = 30000;
+
+// Token history (mods/insights): its tab in this space if there is one, else a new one, as the mod's
+// own toolbar button does (it's only reached from here).
+function showInsights() {
+  const space = spaces().find((s) => s.active);
+  const tabs = new Set(space?.tabs.map((t) => t.id) ?? []);
+  const open = panes().find((p) => p.mod === "insights" && tabs.has(p.tab));
+  if (open) return run("pane.focus", { pane: open.pane });
+  run("tab.new", { name: "Insights", mod: "insights", space: space?.id });
+}
 
 // resetAt and level are copies of mods/agent-bar/usage.js's: mods can't import each other.
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -113,6 +123,14 @@ export default class Usage extends View {
       .child(this.section("claude", "Claude Code", "icons/claude.svg", this.claude,
         "No reading yet. Claude Code reports its limits after a turn, once its status line is set up (see the README).", t))
       .child(div().h(1).mx(14).bg(t.border))
-      .child(this.section("codex", "Codex", "icons/codex.svg", this.codex, "No reading yet. Codex reports its limits after a turn.", t));
+      .child(this.section("codex", "Codex", "icons/codex.svg", this.codex, "No reading yet. Codex reports its limits after a turn.", t))
+      .child(div().flex_1())
+      // Where the tokens went, by model and day, from the agents' session logs.
+      .child(h_flex().id("usage-insights").flex_none().h(36).mx(6).mb(6).px(8).gap(8).items_center().rounded(7).cursor_pointer()
+        .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); closeOverlay(props()?.overlay); showInsights(); })
+        .child(svg("mods/insights/insights.svg").size(14).flex_none())
+        .child(div().flex_1().child("Token insights"))
+        .child(svg("mods/workspace-chrome/chevron-right.svg").size(12).flex_none()));
   }
 }

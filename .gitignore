@@ -8,3 +8,6 @@ jsconfig.json
 sandbox/allow.txt
 sandbox/deny.txt
 worktrees/
+
+# Insights (mods/insights, from GaganSD/coding-agent-toolkit): this machine's Node path
+mods/insights/runtime.json

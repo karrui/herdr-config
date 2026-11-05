@@ -193,7 +193,9 @@ export default class Agents extends View {
   // chat lists in shared "chat.subagents" (mods/chat publishHelpers()).
   tree(all, addr, lead = []) {
     const own = shared("chat.subagents")?.[addr];
-    const helpers = (own?.list ?? []).map((h) => ({ address: `helper:${h.id}`, name: h.label, status: "working", state: "live", helper: { ...h, log: own.log, machine: own.machine } }));
+    // Claude Code's own helpers (only its chat lists them): its logo, as its terminals have.
+    const helpers = (own?.list ?? []).map((h) => ({ address: `helper:${h.id}`, name: h.label, status: "working", state: "live", program: { icon: "icons/claude.svg", tint: false },
+      helper: { ...h, log: own.log, machine: own.machine } }));
     const kids = [...all.filter((k) => k.parent === addr && k.state === "live"), ...helpers];
     return kids.flatMap((k, i) => {
       const last = i === kids.length - 1;

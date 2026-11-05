@@ -610,8 +610,8 @@ export default class Spaces extends View {
       for (const r of rows) r.tree && groups.length ? groups.at(-1).push(r) : groups.push([r]);
       return groups.map((g) => ({ busy: g.some(agentIn), shown: g.some((r) => r.w.active), draw: (away) => g.flatMap((r) => draw(r, away)) }));
     };
-    // A folder is active while any of its spaces has a terminal open, agent or not.
-    const open = (r) => this.now.terminals.some((x) => x.labels?.["herdr.space"] === localId(r.w));
+    // Chat agents keep their folder active even though their terminals are parked.
+    const open = (r) => agentIn(r) || this.now.terminals.some((x) => x.labels?.["herdr.space"] === localId(r.w));
     const folderItems = list.map((f, n) => {
       const inside = placed.filter((r) => r.folder === f.id);
       const visitors = guests.filter((g) => g.folder === f.id);
@@ -984,7 +984,7 @@ export default class Spaces extends View {
     // The repo line goes when it would only repeat the folder or the title.
     const title = shownName(w, lead);
     // A home space's "~" says nothing either.
-    const inline = !tree && (repo === "~" || [folderName, title].some((n) => n?.trim().toLowerCase() === repo.toLowerCase()));
+    const inline = repo === "~" || [folderName, title].some((n) => n?.trim().toLowerCase() === repo.toLowerCase());
     const badge = h_flex().size(14).flex_none().rounded(4).bg(fill).items_center().justify_center()
       .text_size(8.5).font_bold().text_color("#ffffff").child([...repo][0]?.toUpperCase() ?? "?");
     const icon = lead?.program?.icon ? (lead.program.tint ? svg(lead.program.icon).size(14).text_color(t.muted) : image(lead.program.icon).size(14)) : null;

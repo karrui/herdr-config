@@ -114,3 +114,64 @@ export async function textFile(text) {
   } catch { return null; }
   return { path, name: first.length > 40 ? first.slice(0, 39) + "…" : first, image: false, text: true, temp: true };
 }
+
+// LOG omits base64 from messages. Read those images once from their original byte offsets
+// and cache them beside other attachments, so the existing thumbnail and viewer path works.
+const LOG_IMAGES = String.raw`
+import base64, hashlib, json, os, sys
+file, dest, *offsets = sys.argv[1:]
+out = {}
+exts = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/bmp": "bmp", "image/tiff": "tiff"}
+with open(file, "rb") as source:
+    for offset in offsets:
+        source.seek(int(offset))
+        try:
+            content = json.loads(source.readline()).get("payload", {}).get("content", [])
+        except (ValueError, TypeError):
+            continue
+        for i, item in enumerate(content):
+            if not isinstance(item, dict) or item.get("type") != "input_image":
+                continue
+            url = item.get("image_url", "")
+            if not isinstance(url, str) or not url.startswith("data:image/") or "," not in url:
+                continue
+            head, encoded = url.split(",", 1)
+            ext = exts.get(head[5:].split(";")[0])
+            if not ext or not head.endswith(";base64"):
+                continue
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except ValueError:
+                continue
+            os.makedirs(dest, exist_ok=True)
+            path = os.path.join(dest, hashlib.sha256(data).hexdigest() + "." + ext)
+            if not os.path.exists(path):
+                temp = path + "." + str(os.getpid()) + ".tmp"
+                with open(temp, "wb") as target:
+                    target.write(data)
+                os.replace(temp, path)
+            out.setdefault(offset, {})[str(i)] = path
+print(json.dumps(out))
+`;
+
+export async function logImages(file, stdout) {
+  const lines = stdout.split("\n"), entries = [];
+  lines.forEach((line, index) => {
+    const m = /^(\d+)\tJ\t(.*)$/.exec(line);
+    if (!m || !m[2].includes('"type":"input_image"')) return;
+    let record;
+    try { record = JSON.parse(m[2]); } catch { return; }
+    if (record.payload?.role === "user" && Array.isArray(record.payload.content)) entries.push({ index, off: m[1], record });
+  });
+  if (!entries.length) return stdout;
+  try {
+    const r = await exec("python3", ["-c", LOG_IMAGES, file, `${DIR}/log-images`, ...entries.map((e) => e.off)]);
+    if (r.code !== 0) return stdout;
+    const paths = JSON.parse(r.stdout);
+    for (const { index, off, record } of entries) {
+      for (const [i, path] of Object.entries(paths[off] ?? {})) record.payload.content[Number(i)].image_url = path;
+      lines[index] = `${off}\tJ\t${JSON.stringify(record)}`;
+    }
+    return lines.join("\n");
+  } catch { return stdout; }
+}

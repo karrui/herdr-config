@@ -55,6 +55,16 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
   head = substr(line, 1, 400)
   claude = index(head, mine) && index(line, "\"type\":\"user\",\"message\"")
   codex = index(head, "\"type\":\"response_item\"")
+  # Codex records the actual MCP calls made inside code mode, including dynamic dispatch.
+  # Keep only names and status here; results stay at this byte offset for expansion.
+  if (index(head, "\"type\":\"event_msg\"") && index(line, "\"type\":\"item_completed\"") && index(line, "\"type\":\"McpToolCall\"")) {
+    if (!count) {
+      nm = ""; n = split("id server tool status", ks, " ")
+      for (k = 1; k <= n; k++) if (match(line, "\"" ks[k] "\":\"[^\"]*")) nm = nm "\037" ks[k] "=" substr(line, RSTART + length(ks[k]) + 4, RLENGTH - length(ks[k]) - 4)
+      print off "\tM\t" nm
+    }
+    next
+  }
   if ((claude && index(line, "\"tool_result\"")) || (codex && (index(head, "\"function_call_output\"") || index(head, "\"custom_tool_call_output\"")))) {
     if (count) next
     ids = ""; t = line
@@ -460,7 +470,7 @@ function codexStep(name, args) {
     // (tools.apply_patch("..."), its patch a JS string literal), or calls MCP tools. Its calls stay in order.
     const src = String(a.input ?? args ?? "");
     const parts = [];
-    // shortcut: recognizes literal tool calls; use execution events if Codex starts dispatching MCP tools dynamically.
+    // These preliminary labels are replaced by the recorded MCP execution events.
     for (const m of src.matchAll(/exec_command\(\{\s*cmd:\s*"((?:[^"\\]|\\.)*)"|apply_patch\(\s*("(?:[^"\\]|\\.)*")\s*\)|\btools\.(mcp__[A-Za-z0-9_]+)\s*\(/g)) {
       if (m[1] !== undefined) { const c = m[1].replace(/\\"/g, '"'); parts.push({ kind: "run", line: `Ran ${clip(c, 80)}`, count: 1, cmd: c }); continue; }
       if (m[3]) { parts.push({ ...claudeStepOnly(m[3]), count: 1 }); continue; }
@@ -628,7 +638,7 @@ export class Conversation {
       st.parts.forEach((p, k) => {
         if (k === st.parts.length - 1) { this.step(id, off, { ...st, ...p, diffs: p.diffs ?? null, parts: null }, helper); return; }
         const last = this.items[this.items.length - 1];
-        const s = { id: `${id}:${k}`, kind: p.kind, line: p.line, label: p.label, cmd: p.cmd, count: p.count ?? 1, helper, files: (p.diffs ?? []).map((d) => d.file) };
+        const s = { id: `${id}:${k}`, kind: p.kind, line: p.line, label: p.label, cmd: p.cmd, count: p.count ?? 1, script: st.script, helper, files: (p.diffs ?? []).map((d) => d.file) };
         if (last?.kind === "tools") last.steps.push(s);
         else this.push({ kind: "tools", id: `t${off}:${k}`, steps: [s] });
         (p.diffs ?? []).forEach((d, j) => { if (d.add || d.del) this.push({ kind: "diff", id: `d${off}:${id}:${k}:${j}`, ...d }); });
@@ -637,7 +647,7 @@ export class Conversation {
     }
     const last = this.items[this.items.length - 1];
     // (files: what an edit touched, for the summary's count.)
-    const s = { id, kind: st.kind, line: st.line, label: st.label, cmd: st.cmd, count: st.count ?? 1, helper, files: (st.diffs ?? []).map((d) => d.file) };
+    const s = { id, kind: st.kind, line: st.line, label: st.label, cmd: st.cmd, count: st.count ?? 1, script: st.script, helper, files: (st.diffs ?? []).map((d) => d.file) };
     if (last?.kind === "tools") last.steps.push(s);
     else this.push({ kind: "tools", id: `t${off}`, steps: [s] });
     this.calls.set(id, s);
@@ -694,7 +704,7 @@ export class Conversation {
     // Claude Code writes the /compact line again once it's done, dated from before: once is enough.
     const compact = /^\/compact\b/.test(text ?? "");
     if (compact && u.at && this.compactedAt >= u.at) return;
-    this.push({ kind: "user", id, text, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0, noteItems: u.noteItems, bang: u.bang, steer: this.mid });
+    this.push({ kind: "user", id, text, paths: u.paths, replyTo, from: u.from, at: u.at, images: u.images || 0, notes: u.notes || 0, noteItems: u.noteItems, bang: u.bang, steer: this.mid });
     this.doing = null;
     const said = String(text ?? "").replace(/\s+/g, " ").trim();
     if (said) this.queued = this.queued.filter((q) => !said.includes(q.text.replace(/\s+/g, " ").trim()));
@@ -812,6 +822,11 @@ export class Conversation {
       // Pictures a tool returned: a strip under its step (main.js "gallery").
       // (A path can come as $HOME/… or ~/…, as the tool's output put it.)
       if (r.kind === "I") { this.push({ kind: "gallery", id: `g${r.off}`, paths: r.data.split("\x1f").filter(Boolean).map((p) => p.replace(/^(\$HOME|~)(?=\/)/, home())) }); continue; }
+      if (r.kind === "M") {
+        const item = Object.fromEntries(r.data.split("\x1f").filter(Boolean).map((f) => { const i = f.indexOf("="); return [f.slice(0, i), f.slice(i + 1)]; }));
+        this.codex({ type: "event_msg", payload: { type: "item_completed", item: { ...item, type: "McpToolCall" } } }, r.off);
+        continue;
+      }
       if (r.kind === "R") {
         const ids = r.data.split(" ").filter(Boolean);
         const async = ids.includes("ASYNC");
@@ -983,8 +998,14 @@ export class Conversation {
           if (Array.isArray(kinds) && kinds.length === items.length) return kinds[i] === "user.text" ? it.text.trim() : "";
           return CODEX_INJECTED.test(it.text) ? "" : it.text.trim();
         }).filter(Boolean).join("\n\n");
-        const u = words ? cleanUser(words) : null;
-        if (u) this.user(`u${off}`, { ...u, at: time(l.timestamp) });
+        const images = items.filter((it) => it?.type === "input_image" || it?.type === "image");
+        const paths = images.map((it) => it.image_url ?? it.path).filter((p) => typeof p === "string" && p.startsWith("/"));
+        const text = words.split("\n").filter((line) => {
+          if (!/^\/[^\n]+\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(line.trim())) return true;
+          paths.push(line.trim()); return false;
+        }).join("\n").trim();
+        const u = text ? cleanUser(images.length ? text.replace(/\[Image #\d+\]\s*/g, "") : text) : null;
+        if (u || images.length || paths.length) this.user(`u${off}`, { ...u, paths: [...new Set(paths)], images: Math.max(images.length, paths.length), at: time(l.timestamp) });
       } else if (p.type === "message" && p.role === "assistant") {
         const words = this.agentText((Array.isArray(p.content) ? p.content : []).filter((it) => it?.type === "output_text" && it.text?.trim()).map((it) => it.text.trim()).join("\n\n"));
         // (mid: the message's id, which its live words carry too: Live.logged().)
@@ -1014,6 +1035,8 @@ export class Conversation {
           if (Array.isArray(a?.plan)) { this.planned(off, a.plan.map((x) => ({ text: String(x?.step ?? ""), status: x?.status }))); return; }
         }
         const st = codexStep(String(p.name ?? "shell"), p.arguments ?? p.input ?? p.action);
+        this.script = p.name === "exec" ? cid : null;
+        if (this.script) st.script = cid;
         // Codex's helpers count as running until its turn ends (its log says no more).
         if (st?.spawn) this.helpers.set(cid, { desc: st.spawn, model: st.model, effort: st.effort, done: false, untilTurn: true });
         this.step(cid, off, st, st?.spawn ? cid : null);
@@ -1034,6 +1057,20 @@ export class Conversation {
       // turns name who started them; older Codex named no one, so it counts only after one did).
       if (p.turn_attribution) this.attributed = true;
       else if (this.attributed) this.user(`u${off}`, { text: "/compact", at: time(l.timestamp) });
+    } else if (p.type === "item_completed" && p.item?.type === "McpToolCall") {
+      const it = p.item;
+      if (!it.id || !it.server || !it.tool) return;
+      // Actual execution replaces source-code guesses and the outer script placeholder.
+      if (this.script) this.items = this.items.filter((x) => {
+        if (x.kind !== "tools") return true;
+        x.steps = x.steps.filter((s) => s.script !== this.script || (s.kind !== "mcp" && s.line !== "Ran a script"));
+        return x.steps.length > 0;
+      });
+      const st = { kind: "mcp", line: `Used ${it.server}: ${it.tool}`, doing: `Using ${it.server}: ${it.tool}`, count: 1 };
+      const existing = this.items.filter((x) => x.kind === "tools").flatMap((x) => x.steps).find((s) => s.id === it.id);
+      if (existing) Object.assign(existing, st, { out: off, failed: it.status === "failed" });
+      else this.step(it.id, off, st);
+      this.done(it.id, off, it.status === "failed");
     } else if (p.type === "item_completed" && p.item?.type === "ContextCompaction") {
       // A /compact is a turn of its own (task_started); one in a turn someone started is
       // automatic (older Codex names no one: then it isn't known).
@@ -1102,6 +1139,7 @@ export function resultText(line, id) {
       const v = b?.content;
       text = typeof v === "string" ? v : Array.isArray(v) ? v.map((x) => x?.text ?? "").join("\n") : null;
     }
+    if (text === null && l.payload?.item?.result) text = codeModeOutput([{ text: JSON.stringify(l.payload.item.result) }]);
     const o = l.payload?.output;
     if (text === null && o !== undefined) text = typeof o === "string" ? o : Array.isArray(o) ? codeModeOutput(o) : String(o?.output ?? o?.content ?? JSON.stringify(o));
   } else {

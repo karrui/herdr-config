@@ -412,7 +412,8 @@ export default class Chat extends View {
             const v = String(req.text ?? "");
             this.box.set_value(v);
             this.box.set_selected_range({ start: v.length, end: v.length });
-            this.box.focus();
+            if (focused()?.pane === me) this.box.focus();
+            this.saveSoon(cx);
             cx.notify();
           } else if (req?.pane && req.pane === me && String(req.text ?? "").trim()) {
             await fs.unlink(f).catch(() => {});
@@ -622,8 +623,10 @@ export default class Chat extends View {
     return live ? { ...this.t, status: live.status, turn: live.turn, state: live.state } : this.t;
   }
 
-  log(args) {
-    return exec("sh", ["-c", this.transcript ? `SIDE=1\n${LOG}` : LOG, "log", ...args], { on: this.machine });
+  async log(args) {
+    const r = await exec("sh", ["-c", this.transcript ? `SIDE=1\n${LOG}` : LOG, "log", ...args], { on: this.machine });
+    if (!this.machine && args[0] !== "results" && r.stdout.includes('"type":"input_image"')) r.stdout = await attach.logImages(args[1], r.stdout);
+    return r;
   }
 
   // ---- start screens and lost sessions ------------------------------------------------------
@@ -1049,14 +1052,21 @@ export default class Chat extends View {
     const list = this.suggestions();
     if (list.length) {
       const c = list[Math.min(this.slashSel, list.length - 1)];
-      if (this.box.value().trim() !== c.insert.trim()) { this.pick(c, cx); cx.timer.after(30, () => this.box.set_value(c.insert)); return; }
+      if (this.box.value().trim() !== c.insert.trim()) {
+        this.pick(c, cx);
+        cx.timer.after(30, () => {
+          this.box.set_value(c.insert);
+          this.box.set_selected_range({ start: c.insert.length, end: c.insert.length });
+        });
+        return;
+      }
     }
     this.send(cx, hold);
   }
 
   // A held message goes once the agent stops working (and isn't asking something).
   drainQueue(cx) {
-    if (!this.queue.length || this.phase !== "ready") return;
+    if (!this.queue.length || this.phase !== "ready" || this.queueDrag) return;
     const st = this.status();
     if (st === "working" || st === "blocked" || this.asks.length || openCard(this.addr) || this.pending.some((p) => !p.failed && !p.late)) return;
     const msg = this.queue.shift();
@@ -1094,6 +1104,8 @@ export default class Chat extends View {
       try {
         const paths = await attach.deliver(msg.files, this.addr, this.machine, this.deliverTo());
         p.sent = [body, ...paths].filter(Boolean).join("\n\n");
+        // A final skill token opens Codex's completion menu, consuming the send Enter.
+        if (this.kind === "codex" && /(?:^|\s)\$[\w:.-]+$/.test(p.sent)) p.sent += " ";
         r = await this.typed(() => hc(["send", this.addr, p.sent]));
         // Its own dialog is open in its terminal (a question or a permission with no card
         // here): the words answer it the "Reply instead…" way.
@@ -1167,6 +1179,14 @@ export default class Chat extends View {
     }
   }
 
+  moveQueued(msg, target, cx) {
+    const from = this.queue.indexOf(msg), to = this.queue.indexOf(target);
+    if (from < 0 || to < 0 || from === to) return;
+    this.queue.splice(from, 1);
+    this.queue.splice(to, 0, msg);
+    this.saveSoon(cx);
+  }
+
   // A held message sent at once (the agent takes it mid-turn).
   sendQueued(msg, cx) {
     this.queue = this.queue.filter((m) => m !== msg);
@@ -1226,6 +1246,7 @@ export default class Chat extends View {
 
   pick(c, cx) {
     this.box.set_value(c.insert);
+    this.box.set_selected_range({ start: c.insert.length, end: c.insert.length });
     this.slashOff = c.insert;
     this.box.focus();
     cx.notify();
@@ -1809,8 +1830,8 @@ export default class Chat extends View {
     };
     for (const x of items) {
       if (x.kind === "diff") {
-        const e = edits.get(x.file) ?? { file: x.file, add: 0, del: 0 };
-        edits.set(x.file, { ...e, add: e.add + x.add, del: e.del + x.del });
+        const e = edits.get(x.file) ?? { file: x.file, add: 0, del: 0, diffs: [] };
+        edits.set(x.file, { ...e, add: e.add + x.add, del: e.del + x.del, diffs: [...e.diffs, x] });
       }
       if (x.kind === "user" && x.steer && !held.has(x.id)) { close(false, null, x); out.push(x); lead = x; }
       else if (x.kind === "user" && !x.steer) { close(false); out.push(x); lead = x; }
@@ -1944,6 +1965,11 @@ export default class Chat extends View {
         card[card.length - 1].bar = bar;
         out.push(...card, { kind: "band", id: `ab:${x.id}`, bar });
         block(from, x.id);
+      } else if (x.kind === "files") {
+        out.push(x);
+        if (this.opened.has(x.id)) for (const f of x.files) for (const diff of f.diffs ?? []) {
+          out.push({ ...diff, id: `${x.id}:${diff.id}`, dim: x.dim });
+        }
       } else if (x.kind === "gallery") {
         // Gone once none of its paths turns out to be a picture here (a path named in a command's
         // output, say): an empty strip would be a gap.
@@ -2080,7 +2106,7 @@ export default class Chat extends View {
   key(x) {
     const q = this.findQuery();
     const found = q && String(x.text ?? x.code ?? "").toLowerCase().includes(q.toLowerCase()) ? `|f:${q}` : "";
-    const open = (x.kind === "tools" || x.kind === "brief") && this.opened.has(x.id);
+    const open = ["tools", "brief", "files", "diff"].includes(x.kind) && this.opened.has(x.id);
     const shown = open && x.steps ? x.steps.filter((s) => this.results.get(s.id) != null).length : 0;
     return `${x.id}|${x.kind}${x.closed ? `.${x.closed}` : ""}|${open ? `o${x.steps?.length ?? 1}.${shown}` : ""}|${x.text?.length ?? x.code?.length ?? 0}|${x.from ? 1 : 0}${x.steer ? 1 : 0}${x.failed ? 1 : 0}${x.late ? 1 : 0}${x.queued ? 1 : 0}${x.images ? 1 : 0}${x.files?.length ?? 0}|${x.paths?.length ?? 0}${x.paths?.every((p) => this.views[p]) ? "v" : ""}|${(x.pills ?? []).map((p) => p.emoji + (p.you ? 1 : 0) + (p.agent ? 1 : 0)).join("")}|${x.bar ? "b" : ""}${x.kind === "artifact" ? `|a${x.version ?? ""}${x.line ? "l" : ""}${x.pending ? "p" : ""}` : ""}${x.kind === "cardstrip" ? `|cs${x.sig}${x.first ? "F" : ""}${x.last ? "L" : ""}` : ""}|${x.clip ? `c${x.clip}` : ""}${x.open ? "o" : ""}${x.kind === "day" ? x.text : ""}|${x.top0 ? "T" : ""}${x.bot0 ? "B" : ""}${x.h ?? ""}${x.sig ? `|${x.sig}` : ""}${found}`;
   }
@@ -2123,7 +2149,7 @@ export default class Chat extends View {
       case "plan": return 54 + x.steps.reduce((n, s) => n + lines(s.text, w - 46) * 20, 0);
       case "files": return 50 + (Math.min(x.files.length, FILES_SHOWN) + (x.files.length > FILES_SHOWN ? 1 : 0)) * 24;
       case "gallery": return GALLERY_H + 8;
-      case "diff": return 32 + (this.opened.has(x.id) ? 0 : 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0));
+      case "diff": return 32 + (this.opened.has(x.id) ? 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0) : 0);
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.reduce((n, s) => n + (s.cmd || s.kind === "run" ? 36 : 19), 0) : 20;
       case "artifact": return x.pending || x.line ? 20 : 62;
       case "cardstrip": {
@@ -2318,9 +2344,8 @@ export default class Chat extends View {
             .bg("#000000a0").text_size(15).font_semibold().text_color("#ffffff").child(`+${more}`))))), 18, 4);
       }
       case "diff": {
-        // An edit (log.js diffOf()): "Edited <file> +N −M" over its lines, red and green, open
-        // until its header is clicked shut (clickRow(); opened here means shut).
-        const shut = this.opened.has(x.id);
+        // An edit starts closed; clicking its header reveals the recorded diff.
+        const open = this.opened.has(x.id);
         const shown = x.lines.slice(0, DIFF_SHOWN), left = x.lines.length - shown.length + (x.more ?? 0);
         const tint = (l) => (l.t === "+" ? green() : l.t === "-" ? red() : null);
         const line = (l) => (l.t === "@"
@@ -2335,8 +2360,8 @@ export default class Chat extends View {
             .child(div().flex_none().font_medium().text_color(t.foreground).child(fileName(x.file)))
             .when(x.add > 0, (el) => el.child(div().flex_none().text_color(green()).child(`+${x.add}`)))
             .when(x.del > 0, (el) => el.child(div().flex_none().text_color(red()).child(`−${x.del}`)))
-            .child(svg(`mods/workspace-chrome/chevron-${shut ? "right" : "down"}.svg`).size(12).flex_none()))
-          .when(!shut, (el) => el.child(v_flex().w_full().py(4).rounded(8).border_1().border_color(t.border).bg(t.surface).overflow_hidden()
+            .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none()))
+          .when(open, (el) => el.child(v_flex().w_full().py(4).rounded(8).border_1().border_color(t.border).bg(t.surface).overflow_hidden()
             .font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
             .children(shown.map(line))
             .when(left > 0, (el) => el.child(div().h(18).px(10).text_color(t.dim).child(`${left} more line${left === 1 ? "" : "s"}`))))), 18, 4);
@@ -2380,12 +2405,15 @@ export default class Chat extends View {
         // The files a finished turn edited (foldTurns()), in the order it first edited them, each
         // with its lines added and removed over all its edits, as a diff's header says them.
         const shown = x.files.slice(0, FILES_SHOWN), left = x.files.length - shown.length;
+        const open = this.opened.has(x.id);
         const counts = (el, add, del) => el.when(add > 0, (el) => el.child(div().flex_none().text_color(green()).child(`+${add}`)))
           .when(del > 0, (el) => el.child(div().flex_none().text_color(red()).child(`−${del}`)));
-        return pad(v_flex().w_full().gap(4).px(12).py(10).rounded(10).border_1().border_color(t.border)
+        return pad(v_flex().w_full().gap(4).px(12).py(10).rounded(10).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
           .child(counts(h_flex().gap(6).items_center().text_size(12).font_medium().text_color(t.dim)
             .child(div().flex_none().child(x.files.length === 1 ? "Edited 1 file" : `Edited ${x.files.length} files`)),
-          x.files.reduce((n, f) => n + f.add, 0), x.files.reduce((n, f) => n + f.del, 0)))
+          x.files.reduce((n, f) => n + f.add, 0), x.files.reduce((n, f) => n + f.del, 0))
+            .child(div().flex_1())
+            .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none()))
           .children(shown.map((f) => counts(h_flex().w_full().h(20).gap(6).items_center().text_size(12.5)
             .child(div().min_w(0).truncate().text_color(t.foreground).child(fileName(f.file)))
             // Its folder's last two parts: enough to tell two files of one name apart.
@@ -2517,6 +2545,12 @@ export default class Chat extends View {
       if (row.ask) row.owner?.pressed(row.ask);
       if (c?.kind === "input") (c.state ?? null)?.focus();
       else c?.fn?.(cx);
+    }
+    else if (row.kind === "files") {
+      const open = !this.opened.has(key);
+      for (const id of [key, ...row.files.flatMap((f) => (f.diffs ?? []).map((d) => `${key}:${d.id}`))]) {
+        if (open) this.opened.add(id); else this.opened.delete(id);
+      }
     }
     else if (row.kind === "brief" || (row.kind === "worked" && !row.stopped) || row.kind === "diff") { if (this.opened.has(key)) this.opened.delete(key); else this.opened.add(key); }
     else if (row.kind === "fold") {
@@ -2737,25 +2771,46 @@ export default class Chat extends View {
             .child(`+${shown.length - 4} more`)))));
   }
 
-  // Held messages, each with Edit and Cancel; they go once the agent is free.
+  // A compact queue docked behind the composer's top edge.
   queued(t) {
     if (!this.queue.length) return null;
-    const ghost = (id, label, fn) => h_flex().id(id).h(22).px(8).flex_none().items_center().rounded(6).cursor_pointer().text_size(12).font_medium()
-      .text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
+    const drag = this.queueDrag;
+    const cancel = (_e, cx) => { if (this.queueDrag) { this.queueDrag = null; cx.notify(); } };
+    const action = (id, label, icon, title, fn) => h_flex().id(id).h(24).px(5).gap(4).flex_none().items_center().justify_center().rounded(5)
+      .cursor_pointer().text_size(12).text_color(t.dim).tooltip(title).accessibility_label(title)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => { cx.stop_propagation(); fn(cx); cx.notify(); })
-      .child(label);
-    return v_flex().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(6).gap(4).children(this.queue.map((m) =>
-      h_flex().id(`queued-${m.id}`).w_full().h(40).pl(10).pr(4).gap(8).items_center().rounded(8).border_1().border_color(t.border).bg(t.background)
-        .child(svg("mods/chat/clock.svg").size(14).flex_none().text_color(t.dim))
-        .child(v_flex().flex_1().min_w(0)
-          .child(div().truncate().text_size(12.5).text_color(t.foreground).child(m.label ?? (m.text || m.files.map((f) => f.name).join(", "))))
-          .child(div().truncate().text_size(12).text_color(t.dim).child("Queued · Sends when the agent is free")))
-        .child(ghost(`queued-now-${m.id}`, "Send now", (cx) => this.sendQueued(m, cx)))
-        .child(ghost(`queued-edit-${m.id}`, "Edit", (cx) => this.editQueued(m, cx)))
-        .child(div().id(`queued-x-${m.id}`).size(22).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer().text_color(t.dim)
-          .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .on_click((_e, cx) => { cx.stop_propagation(); this.queue = this.queue.filter((x) => x !== m); this.saveSoon(cx); cx.notify(); })
-          .child(svg("mods/chat/x.svg").size(12)))));
+      .child(svg(icon).size(12).flex_none()).when(Boolean(label), (el) => el.child(label));
+    return v_flex().id("queued-tray").flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(26).pt(6)
+      .on_hover((hovered, cx) => { if (!hovered) cancel(null, cx); })
+      .on_mouse_down("left", cancel).on_mouse_down_out(cancel).on_mouse_up("left", cancel)
+      .child(v_flex().w_full().pt(3).pb(12).mb(-12).rounded_t(12).border_1().border_b(0).border_color(t.border).bg(t.surface)
+        .children(this.queue.map((m, i) => h_flex().id(`queued-${m.id}`).relative().w_full().h(32).pl(6).pr(6).gap(8).items_center()
+          .when(drag?.msg === m, (el) => el.bg(t.raised).opacity(0.6))
+          .on_mouse_move((_e, cx) => { if (this.queueDrag && this.queueDrag.target !== m) { this.queueDrag.target = m; cx.notify(); } })
+          .on_mouse_up("left", (_e, cx) => {
+            if (!this.queueDrag) return;
+            this.moveQueued(this.queueDrag.msg, m, cx); this.queueDrag = null;
+            cx.stop_propagation(); cx.notify();
+          })
+          .child(div().id(`queued-grip-${m.id}`).w(22).h(28).flex_none().flex().items_center().justify_center().text_color(t.dim)
+            .cursor_grab().role("button").tab_index(0).accessibility_label("Drag to reorder; Up and Down also move this message")
+            .on_mouse_down("left", (_e, cx) => { this.queueDrag = { msg: m, target: m }; cx.stop_propagation(); cx.notify(); })
+            .on_key_down((e, cx) => {
+              if (e.key === "escape") { cancel(e, cx); cx.stop_propagation(); return; }
+              if (e.key !== "up" && e.key !== "down") return;
+              this.moveQueued(m, this.queue[this.queue.indexOf(m) + (e.key === "up" ? -1 : 1)], cx);
+              cx.stop_propagation(); cx.notify();
+            }).child("⠿"))
+          .when(drag?.target === m && drag.msg !== m, (el) => el.child(div().absolute().left(8).right(8).h(2).bg(t.accent)
+            .when(i < this.queue.indexOf(drag.msg), (el) => el.top(0)).when(i > this.queue.indexOf(drag.msg), (el) => el.bottom(0))))
+          .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.foreground)
+            .child(m.label ?? (m.text || m.files.map((f) => f.name).join(", "))))
+          .child(action(`queued-now-${m.id}`, "Steer", "mods/chat/reply.svg", "Send this message now", (cx) => this.sendQueued(m, cx)))
+          .child(action(`queued-x-${m.id}`, null, "mods/artifacts/trash.svg", "Remove queued message", (cx) => {
+            this.queue = this.queue.filter((x) => x !== m); this.saveSoon(cx);
+          }))
+          .child(action(`queued-edit-${m.id}`, null, "mods/workspace-chrome/square-pen.svg", "Edit queued message", (cx) => this.editQueued(m, cx))))));
   }
 
   // The "/" list: the agent's commands that match what is typed.
@@ -3143,7 +3198,7 @@ export default class Chat extends View {
     const pct = this.addr ? agent.toCompact(this.current()) : null;
     const meter = pct !== null && (pct >= 85 || (this.width ?? 600) >= 420);
     // Flush under the helpers' card when it shows (background()).
-    return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(this.helpers().length ? 0 : 8).child(v_flex().id("chat-composer").w_full().rounded(10).border_1()
+    return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(this.queue.length || this.helpers().length ? 0 : 8).child(v_flex().id("chat-composer").w_full().rounded(10).border_1()
       // Esc stops a working agent while the box is empty and nothing is open over it.
       .key_context([list.length ? "chat_slash" : recallable ? "chat_recall" : "chat_composer",
         st === "working" && !list.length && !this.box.value().trim() && !this.quote ? "chat_stop" : null].filter(Boolean).join(" "))
@@ -3469,8 +3524,8 @@ export default class Chat extends View {
       .child(body)
       .when(Boolean(this.error), (el) => el.child(div().flex_none().px(18).py(4).text_size(12).text_color(t.blocked).truncate().child(this.error)))
       .child(this.statusLine(t, st) ?? div())
-      .child(this.queued(t) ?? div())
       .child(this.background(t, st) ?? div())
+      .child(this.queued(t) ?? div())
       .child(this.composer(t, st))
       .child(div().flex_none().h(12));
   }

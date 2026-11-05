@@ -34,7 +34,11 @@ pids=$(ps -A -o pid=,ppid= | awk -v root="$root" '
 pids="${pids%,}"
 [ -n "$pids" ] || exit 0
 
-rollout=$(lsof -a -p "$pids" -Fn 2>/dev/null | sed -n 's|^n\(.*/\.codex/sessions/.*\.jsonl\)$|\1|p' | sort | tail -1)
+# Helpers and internal reviewers can have newer rollouts under the same process tree.
+rollout=$(lsof -a -p "$pids" -Fn 2>/dev/null | sed -n 's|^n\(.*/\.codex/sessions/.*\.jsonl\)$|\1|p' | sort -r | while IFS= read -r f; do
+  head -n 1 "$f" | /usr/bin/jq -e '.payload.source | if type == "object" then has("subagent") | not else true end' >/dev/null 2>&1 || continue
+  printf '%s\n' "$f"; break
+done)
 [ -n "$rollout" ] || exit 0
 
 model=$(grep '"type":"turn_context"' "$rollout" | tail -1 | /usr/bin/jq -r '.payload.model // empty')

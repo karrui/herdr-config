@@ -173,7 +173,7 @@ export default class Agents extends View {
     exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && printf %s "${f%.meta.json}.jsonl"', "x", dir, `"toolUseId":"${h.id}"`], { on: h.machine ?? undefined })
       .then((r) => {
         if (!r.stdout) { notify({ title: "No conversation for this helper", body: "Claude Code hasn't written its log yet.", level: "info" }); return; }
-        openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: r.stdout, kind: "claude", title: h.label } } });
+        openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: r.stdout, kind: "claude", title: h.label, spec: h.spec || null } } });
       }).catch(() => {});
   }
 

@@ -2525,29 +2525,33 @@ export default class Chat extends View {
     // Only the CLI's own subagents (Claude Code's Agent/Task runs, Codex's spawned agents), from
     // its log. Agents it started with hc are terminals Herdr already lists under it in the
     // Agents sidebar, so they aren't repeated here.
-    // What each runs on: "Sonnet 5.5 · High". The model its own log shows (exact, and a Claude
-    // Code agent type can have its own), else the one the call named; an effort the call didn't
-    // name is the session's.
+    // What each runs on: "Sonnet 5.5 · High". What its own log shows (exact: a Claude Code agent
+    // type can have its own model, and its effort isn't always the session's), else what the
+    // call named, else the session's.
     const c = this.current();
     return (this.conv?.running?.() ?? []).map((h) => {
-      const model = this.helperModel(h.id) ?? h.model ?? (this.kind === "codex" ? c?.model : null);
-      const spec = [agent.modelName(model), agent.levelName(h.effort ?? c?.effort)].filter(Boolean).join(" · ");
+      const own = this.helperRuns(h.id);
+      const model = own?.model ?? h.model ?? (this.kind === "codex" ? c?.model : null);
+      const spec = [agent.modelName(model), agent.levelName(own?.effort ?? h.effort ?? c?.effort)].filter(Boolean).join(" · ");
       return { id: h.id, label: h.desc, at: h.at, spec };
     });
   }
 
-  // A Claude Code helper's model from its own log (subagents/, found as openHelper() finds it):
-  // its first reply's, once it has one (other lines name the models of Claude Code's own side
-  // requests). Looked up once a helper, again every 10 s until there.
-  helperModel(id) {
+  // A Claude Code helper's model and effort from its own log (subagents/, found as openHelper()
+  // finds it): its first reply's, once it has one (other lines name the models of Claude Code's
+  // own side requests). { model, effort }. Looked up once a helper, again every 10 s until there.
+  helperRuns(id) {
     this.helperModels ??= new Map();
     const got = this.helperModels.get(id);
-    if (typeof got === "string") return got;
+    if (got?.model) return got;
     if (this.kind !== "claude" || !this.path || (got && Date.now() - got.at < 10000)) return null;
     this.helperModels.set(id, { at: Date.now() });
     const dir = `${this.path.replace(/\.jsonl$/, "")}/subagents`;
-    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && grep -m1 -F \'"type":"assistant"\' "${f%.meta.json}.jsonl" | grep -o \'"model":"claude-[^"]*"\' | head -1', "x", dir, `"toolUseId":"${id}"`], { on: this.machine })
-      .then((r) => { const m = /"model":"([^"]+)"/.exec(r.stdout ?? "")?.[1]; if (m) this.helperModels.set(id, m); }).catch(() => {});
+    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && grep -m1 -F \'"type":"assistant"\' "${f%.meta.json}.jsonl" | grep -o -e \'"model":"claude-[^"]*"\' -e \'"perTurnEffort":"[^"]*"\'', "x", dir, `"toolUseId":"${id}"`], { on: this.machine })
+      .then((r) => {
+        const model = /"model":"([^"]+)"/.exec(r.stdout ?? "")?.[1], effort = /"perTurnEffort":"([^"]+)"/.exec(r.stdout ?? "")?.[1] ?? null;
+        if (model) this.helperModels.set(id, { model, effort });
+      }).catch(() => {});
     return null;
   }
 
@@ -2583,7 +2587,7 @@ export default class Chat extends View {
     exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && printf %s "${f%.meta.json}.jsonl"', "x", dir, `"toolUseId":"${h.id}"`], { on: this.machine })
       .then((r) => {
         if (!r.stdout) { toast({ title: "No conversation for this helper", body: "Claude Code hasn't written its log yet.", level: "info" }); return; }
-        openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: r.stdout, kind: "claude", title: h.label } } });
+        openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: r.stdout, kind: "claude", title: h.label, spec: h.spec || null } } });
       }).catch(() => {});
   }
 
@@ -2880,6 +2884,9 @@ export default class Chat extends View {
     if (this.transcript) return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(8)
       .child(h_flex().w_full().h(36).px(12).gap(8).items_center().rounded(10).border_1().border_color(t.border).text_size(12.5).text_color(t.dim)
         .child(div().flex_1().min_w(0).truncate().child(`${this.transcript.title} · a helper's conversation, read-only`))
+        // What it runs on, where the box's model button sits: its log's, else its row's.
+        .when(Boolean(this.conv?.meta?.model || this.transcript.spec), (el) => el.child(div().flex_none().text_color(t.muted)
+          .child(this.conv?.meta?.model ? [agent.modelName(this.conv.meta.model), agent.levelName(this.conv.meta.effort)].filter(Boolean).join(" · ") : this.transcript.spec)))
         .child(this.button("chat-close", "Close", null, "secondary", t, () => closeOverlay(props().overlay))));
     // An open card, or the agent's own dialog in its terminal, doesn't lock the box: words
     // written there answer it ("Reply instead…").

@@ -36,6 +36,13 @@ for ((i = 0; i < ${#rest[@]}; i++)); do
   a="${rest[$i]}"
   case "$program:$a" in
     claude:--resume|claude:-r|claude:--session-id|claude:--append-system-prompt-file|codex:--sandbox|codex:-s) i=$((i + 1)) ;;
+    # Launch's own hooks (the chat's cards and live events) come back with it: kept, the line
+    # typed into the shell grows past what a terminal line takes and arrives cut off.
+    claude:--settings)
+      v=$(jq -c '(.hooks // {}) |= with_entries(.value |= map(select(tostring | test("mods/chat/(ask|event)-hook\\.sh") | not)) | select(.value | length > 0))
+        | if .hooks == {} then del(.hooks) else . end' <<<"${rest[$((i + 1))]:-}" 2>/dev/null || printf '%s' "${rest[$((i + 1))]:-}")
+      [ "$v" = "{}" ] || flags+=("$a" "$v")
+      i=$((i + 1)) ;;
     claude:--continue|claude:-c|codex:resume|codex:--last|codex:--dangerously-bypass-approvals-and-sandbox) ;;
     codex:-c) if [[ "${rest[$((i + 1))]:-}" == developer_instructions=* ]]; then i=$((i + 1)); else flags+=("$a"); fi ;;
     codex:*-*-*-*-*) [[ "$a" =~ ^[0-9a-f-]{36}$ ]] || flags+=("$a") ;;

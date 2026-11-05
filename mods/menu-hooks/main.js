@@ -6,7 +6,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, agents, exec as execFile, appHome, notify, home } from "herdr";
+import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, agents, exec as execFile, appHome, notify, home, setShared } from "herdr";
 import { chatAgents } from "./parked.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
@@ -131,6 +131,8 @@ export default class Menu extends View {
     const it = items(props(), this.git)[i];
     if (!it) return;
     closeOverlay(props()?.overlay);
+    // Its chat, if it shows one, says it's restarting until the new agent is up (mods/chat).
+    if (it[1] === "restart") setShared("chat.restarting", { terminal: it[2].address, at: Date.now() });
     if (it[1] === "restart")
       execFile(`${appHome()}/sandbox/agent-restart`, [it[2].address, it[2].mode])
         .catch((e) => ({ code: 1, stderr: String(e) }))

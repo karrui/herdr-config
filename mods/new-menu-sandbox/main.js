@@ -1,15 +1,16 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { theme, spaces, panes, knownAgents, run, hc, openOverlay, closeOverlay, props, window, keys, shared, setShared, exec as execFile, notify, appHome } from "herdr";
+import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, exec as execFile, notify, appHome } from "herdr";
 
 // Claude Code and Codex start as a chat: their tab's pane header (pane-sandbox) swaps the new
 // terminal for the chat once it shows, from this label. Terminal there shows the CLI again.
+// The terminal labels itself before the agent starts: the menu closes as it starts one, and a
+// label set here once tab.new answered was dropped with it.
 function start(a, space) {
-  if (!/^(claude|codex)(-|$)/.test(a.key ?? "")) return run("tab.new", { name: a.name, space: space?.id, argv: a.run });
-  execFile("herdr-app", ["do", "tab.new", "--name", a.name, ...(space ? ["--space", space.id] : []), "--argv", JSON.stringify(a.run)])
-    .then((r) => { const t = JSON.parse(r.stdout || "{}").terminal; if (t) hc(["label", t, "chat.start=1"]); })
-    .catch((e) => notify({ title: `${a.name} didn't start`, body: String(e?.message ?? e), level: "error" }));
+  const chat = /^(claude|codex)(-|$)/.test(a.key ?? "");
+  const argv = chat ? ["sh", "-c", 'hc label "$HC_TERMINAL_ID" chat.start=1 >/dev/null 2>&1; exec "$@"', "sh", ...a.run] : a.run;
+  run("tab.new", { name: a.name, space: space?.id, argv });
 }
 
 // The last agents each machine reported, shown at once while knownAgents() checks again.

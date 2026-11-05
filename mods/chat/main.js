@@ -345,6 +345,7 @@ export default class Chat extends View {
     });
     this.viewAsked = new Set();
     this.restartReqAt = shared("chat.restartreq")?.at ?? null;
+    this.restartingAt = shared("chat.restarting")?.at ?? null;
     this.reactReqAt = shared("chat.reactreq")?.at ?? null;
     this.sendReqAt = shared("chat.sendreq")?.at ?? null;
     // The working line's clock, once a second while the agent works.
@@ -699,6 +700,14 @@ export default class Chat extends View {
     // machine offline: try again later, don't call it ended).
     const gone = /not_found|no terminal/.test(`${r.stdout}\n${r.stderr}`);
     if (!gone && (!t || t.error)) return;
+    // Restarted in its terminal (a tab's Restart agent): its shell shows for a moment between
+    // the two agents, which isn't an end. Done once another agent process reports itself.
+    if (this.relaunch) {
+      const pid = t?.foreground?.pid;
+      const up = t?.state === "live" && KINDS[t.status?.app] && pid && pid !== this.relaunch.pid && pid !== t.pid;
+      if (up || gone || Date.now() - this.relaunch.at > 60000) { this.relaunch = null; cx.notify(); }
+      else return;
+    }
     if (gone || t?.state !== "live") {
       // Restarted from here (perhaps before Herdr restarted): the new agent carries the origin.
       const next = terminals().find((x) => x.state === "live" && x.address !== this.addr && x.labels?.["herdr.chat.origin"] === this.originKey);
@@ -898,7 +907,7 @@ export default class Chat extends View {
     let last = 0;
     for (;;) {
       try {
-        if (!this.path || Date.now() - last > 4000) { last = Date.now(); await this.locate(cx); }
+        if (!this.path || Date.now() - last > (this.relaunch ? 700 : 4000)) { last = Date.now(); await this.locate(cx); }
         if (this.phase === "ended" && !this.swapping) {
           this.closeSelf();
           return;
@@ -3028,6 +3037,12 @@ export default class Chat extends View {
     this.wasFocused = paneFocused;
     this.hadBox = showsBox;
     this.paneFocused = paneFocused;
+    // A tab's Restart agent (mods/menu-hooks): shared "chat.restarting" = { terminal, at }.
+    const rs = shared("chat.restarting");
+    if (rs && rs.terminal === this.addr && rs.at !== this.restartingAt && Date.now() - rs.at < 5000) {
+      this.restartingAt = rs.at;
+      this.relaunch = { at: rs.at, pid: this.t?.foreground?.pid ?? null };
+    }
     // The model picker's Restart (mods/chat-models): shared "chat.restartreq" = { pane, at, pick }.
     const rr = shared("chat.restartreq");
     if (rr && mine && rr.pane === mine && rr.at !== this.restartReqAt && Date.now() - rr.at < 5000) {
@@ -3073,6 +3088,7 @@ export default class Chat extends View {
       "Chat reads Claude Code's and Codex's own session logs. This agent works in its terminal only.", [open]));
     if (this.phase === "none") return root.child(this.notice(t, "Can't find this conversation",
       "Chat reads the agent's own session log, and Herdr can't tell which one this agent writes. Rather than show the wrong one, it shows none.", [open]));
+    if (this.relaunch) return root.child(this.notice(t, "Restarting the agent…", null));
     if (this.phase === "finding" || this.phase === "ended") return root.child(this.notice(t, this.swapping ? "Restarting the agent…" : "Opening the conversation…", null));
 
     this.sizeBox();

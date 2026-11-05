@@ -68,6 +68,28 @@ function duration(ms) {
 // (a spinner while it works, then its folder). Null when that leaves nothing.
 const task = (title) => String(title ?? "").replace(/^[\u2800-\u28ff\u2733\u273b\u00b7*✻✳]+\s*/u, "").replace(/\s+\|\s+[^|]+$/, "").trim() || null;
 
+// What a sub-agent started with hc runs on, from its command line: Codex's -m and
+// model_reasoning_effort, Claude Code's --model and --effort. "GPT-6.1-Sol · Extra high".
+const LEVELS = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+function specOf(argv) {
+  if (!Array.isArray(argv)) return null;
+  let model = null, effort = null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = String(argv[i]), next = argv[i + 1] == null ? null : String(argv[i + 1]);
+    if ((a === "-m" || a === "--model") && next) model = next;
+    else if (a.startsWith("--model=")) model = a.slice(8);
+    else if (a === "--effort" && next) effort = next;
+    else if (a === "-c" && next?.startsWith("model_reasoning_effort=")) effort = next.split("=")[1].replace(/"/g, "");
+  }
+  const cap = (w) => w[0].toUpperCase() + w.slice(1);
+  const name = (m) => {
+    const c = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?/.exec(m);
+    if (c) return `${cap(c[1])} ${c[2]}${c[3] ? "." + c[3] : ""}`;
+    return /^gpt-/i.test(m) ? m.split("-").map((w, i) => (i ? cap(w) : w.toUpperCase())).join("-") : cap(m);
+  };
+  return [model && name(model), effort && (LEVELS[effort] ?? effort)].filter(Boolean).join(" · ") || null;
+}
+
 function icon(p, size, color) {
   if (!p?.icon) return null;
   return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
@@ -228,8 +250,8 @@ export default class Agents extends View {
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
       .on_click(() => (k.helper ? this.openHelper(k.helper) : this.open(k)))
-      // A Claude Code helper: what it runs on, on hover (its chat's helper rows say it too).
-      .when(Boolean(k.helper?.spec), (el) => el.tooltip(k.helper.spec))
+      // What it runs on, on hover: a Claude Code helper's from its chat, an hc one's from its argv.
+      .when(Boolean(k.helper?.spec || specOf(k.argv)), (el) => el.tooltip(k.helper?.spec || specOf(k.argv)))
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))

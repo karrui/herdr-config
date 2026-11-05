@@ -430,12 +430,14 @@ function claudeStepOnly(name, input = {}) {
       const cmd = { label: input.description || "Ran", cmd: String(input.command ?? "").split("\n")[0] };
       // A job left running in the background: the turn goes on; the chat watches the job.
       if (input.run_in_background) return { kind: "run", line, ...cmd, doing: `Started ${input.description || cmdWords(input.command)}`,
-        bg: { label: input.description || cmdWords(input.command), cmd: String(input.command ?? "") } };
+        bg: { label: input.description || cmdWords(input.command), cmd: String(input.command ?? ""), kind: "job" } };
       const wait = waitWords(input.command, input.description);
       return { kind: "run", line, ...cmd, doing: wait ?? (input.description || `Running ${cmdWords(input.command)}`), waiting: Boolean(wait) };
     }
+    // A monitor runs on after the call, as a background job does, until its last notice.
     case "Monitor": return { kind: "tool", line: `Watched ${clip(input.description ?? input.command, 70)}`,
-      doing: `Watching ${clip(input.description ?? input.command ?? "", 50)}`.trim(), waiting: true };
+      doing: `Watching ${clip(input.description ?? input.command ?? "", 50)}`.trim(), waiting: true,
+      bg: { label: input.description || cmdWords(input.command), cmd: String(input.command ?? ""), kind: "monitor" } };
     case "Grep": return { kind: "search", line: `Searched for “${clip(input.pattern, 50)}”`, doing: `Searching for “${clip(input.pattern, 40)}”` };
     case "Glob": return { kind: "search", line: `Looked for ${clip(input.pattern, 60)}`, doing: `Looking for ${clip(input.pattern, 40)}` };
     case "WebSearch": return { kind: "web", line: `Searched the web for “${clip(input.query, 60)}”`, doing: `Searching the web for “${clip(input.query, 40)}”` };
@@ -977,6 +979,9 @@ export class Conversation {
             // What it was asked to run on (none named: its agent's default or the session's).
             if (b.name === "Agent" || b.name === "Task") this.helpers.set(String(b.id), { desc: String(b.input?.description ?? "a helper"), model: b.input?.model ?? null, effort: b.input?.effort ?? null, done: false, at: time(l.timestamp) });
             this.step(String(b.id), off, claudeStep(String(b.name ?? ""), b.input ?? {}), b.name === "Agent" || b.name === "Task" ? String(b.id) : null);
+            // When a job or monitor it left running began (the panel says how long).
+            const job = this.bg[this.bg.length - 1];
+            if (job?.id === String(b.id)) job.at = time(l.timestamp);
             if (b.name === "Bash" && ARTIFACT.test(String(b.input?.command ?? ""))) this.push({ kind: "artifact", id: `art${off}`, at: time(l.timestamp) });
           }
         }

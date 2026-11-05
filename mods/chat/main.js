@@ -2672,6 +2672,13 @@ export default class Chat extends View {
     });
   }
 
+  // Monitors and background commands it left running, until their last notice (log.js bg): for
+  // the panel above the box. One silent for three hours is taken as gone.
+  jobs() {
+    const old = Date.now() - 3 * 3600000;
+    return (this.conv?.bg ?? []).filter((j) => !j.at || j.at > old).map((j) => ({ id: j.id, label: j.label, at: j.at, cmd: j.cmd, job: j.kind ?? "job" }));
+  }
+
   // A Claude Code helper's model and effort from its own log (subagents/, found as openHelper()
   // finds it): its first reply's, once it has one (other lines name the models of Claude Code's
   // own side requests). { model, effort }. Looked up once a helper, again every 10 s until there.
@@ -2736,9 +2743,9 @@ export default class Chat extends View {
   // (a spinner, its name, how long). Four rows, then "+N more" opens the rest.
   background(t, st) {
     const now = Date.now();
-    const helpers = this.helpers();
-    if (!helpers.length) return null;
-    const shown = helpers;
+    const helpers = this.helpers(), jobs = this.jobs();
+    if (!helpers.length && !jobs.length) return null;
+    const shown = [...helpers, ...jobs];
     const open = this.helpersOpen || shown.length <= 5;
     const list = open ? shown : shown.slice(0, 4);
     const ago = (at) => {
@@ -2747,11 +2754,13 @@ export default class Chat extends View {
       return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`;
     };
     // A click opens its conversation (openHelper()).
-    const row = (h, i) => h_flex().id(`helper-${i}`).w_full().h(24).px(6).gap(8).items_center().text_size(12).rounded(6).cursor_pointer()
-      .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.openHelper(h); })
+    // A monitor or background command has no conversation: its command shows on hover instead.
+    const row = (h, i) => h_flex().id(`helper-${i}`).w_full().h(24).px(6).gap(8).items_center().text_size(12).rounded(6)
+      .when(!h.job, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.openHelper(h); }))
+      .when(Boolean(h.job && h.cmd), (el) => el.tooltip(h.cmd.length > 300 ? `${h.cmd.slice(0, 299)}…` : h.cmd))
       .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(h.label))
-      .when(Boolean(h.spec), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(h.spec)))
+      .when(Boolean(h.spec || h.job), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(h.spec || (h.job === "monitor" ? "Monitor" : "In background"))))
       .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(ago(h.at)));
     // A card docked on the box's top edge (as Manus shows its running work), so the helpers read
     // apart from the agent's own working line above: a count that folds it, then a row each.
@@ -2761,7 +2770,8 @@ export default class Chat extends View {
         .child(h_flex().id("helpers-head").h(24).px(6).gap(6).items_center().rounded(6).cursor_pointer().text_size(12).text_color(t.muted)
           .hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { cx.stop_propagation(); this.helpersShut = !shut; cx.notify(); })
-          .child(div().flex_1().child(`${shown.length} helper${shown.length === 1 ? "" : "s"} running`))
+          .child(div().flex_1().child(`${[[helpers.length, "helper"], [jobs.filter((j) => j.job === "monitor").length, "monitor"], [jobs.filter((j) => j.job !== "monitor").length, "background command"]]
+            .filter(([n]) => n).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ")} running`))
           .child(svg(`mods/chat/chevron-${shut ? "up" : "down"}.svg`).size(12).flex_none()))
         .when(!shut, (el) => el.children(list.map(row))
           .when(!open, (el) => el.child(h_flex().id("helpers-more").h(22).px(6).gap(6).items_center().rounded(6).cursor_pointer()
@@ -3198,7 +3208,7 @@ export default class Chat extends View {
     const pct = this.addr ? agent.toCompact(this.current()) : null;
     const meter = pct !== null && (pct >= 85 || (this.width ?? 600) >= 420);
     // Flush under the helpers' card when it shows (background()).
-    return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(this.queue.length || this.helpers().length ? 0 : 8).child(v_flex().id("chat-composer").w_full().rounded(10).border_1()
+    return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(this.queue.length || this.helpers().length || this.jobs().length ? 0 : 8).child(v_flex().id("chat-composer").w_full().rounded(10).border_1()
       // Esc stops a working agent while the box is empty and nothing is open over it.
       .key_context([list.length ? "chat_slash" : recallable ? "chat_recall" : "chat_composer",
         st === "working" && !list.length && !this.box.value().trim() && !this.quote ? "chat_stop" : null].filter(Boolean).join(" "))

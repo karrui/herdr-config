@@ -7,6 +7,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
 import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, agents, exec as execFile, appHome, notify, home } from "herdr";
+import { chatAgents } from "./parked.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
@@ -56,8 +57,9 @@ function items(p, git) {
     }
     case "tab": {
       // A Claude or Codex agent in the tab can be restarted in place, e.g. to pick up
-      // sandbox list changes; it keeps its sandbox mode and resumes its conversation.
-      const agent = agents().filter((a) => a.tab === tg.id && (a.app === "claude-code" || a.app === "codex")).sort((a, b) => b.focused - a.focused)[0];
+      // sandbox list changes; it keeps its sandbox mode and resumes its conversation. One whose
+      // chat shows is parked behind it, out of agents().
+      const agent = [...agents(), ...chatAgents()].filter((a) => a.tab === tg.id && (a.app === "claude-code" || a.app === "codex")).sort((a, b) => b.focused - a.focused)[0];
       const sandboxed = Boolean(agent && terminals().find((t) => t.address === agent.address)?.labels?.["herdr.sandbox"]);
       return [
         ["Rename", "tab.rename", { id: tg.id }],

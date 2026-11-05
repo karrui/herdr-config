@@ -2,8 +2,8 @@
 // herdr.chat=<chat pane>. Herdr lists an agent through its
 // pane, so an agent whose terminal is parked while its chat shows drops out of agents(), tab
 // and space status. Mods that list agents add these back, as the chat pane's agent.
-// The same file is in mods/chat, agents-sandbox, status-sandbox, agent-bar, tabs-sandbox and
-// space-folders (a mod imports only its own files): change them all together.
+// The same file is in mods/chat, agents-sandbox, status-sandbox, agent-bar, tabs-sandbox,
+// space-folders and menu-hooks (a mod imports only its own files): change them all together.
 
 import { panes, terminals, spaces, focused, shared, machines, run, exec, hc, appHome } from "herdr";
 

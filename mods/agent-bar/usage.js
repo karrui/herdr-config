@@ -24,7 +24,7 @@ async function claudeUsage(address) {
   if (!own) return null;
   const latest = all.reduce((a, b) => (b.u.at ?? 0) > (a.u.at ?? 0) ? b : a).u;
   const { five, five_reset, week, week_reset } = latest;
-  return { ...own, five, five_reset, week, week_reset };
+  return { ...own, five, five_reset, week, week_reset, limits_at: latest.at };
 }
 
 export async function loadUsage(agent) {
@@ -32,7 +32,8 @@ export async function loadUsage(agent) {
     if (agent?.app === "claude-code") return await claudeUsage(agent.address);
     if (agent?.app === "codex") {
       const pid = terminals().find(t => t.address === agent.address)?.pid;
-      return JSON.parse((await execFile(`${DIR}/codex-usage`, [String(pid)])).stdout.trim() || "null");
+      const u = JSON.parse((await execFile(`${DIR}/codex-usage`, [String(pid)])).stdout.trim() || "null");
+      return u && { ...u, limits_at: u.at };
     }
   } catch { /* no reading yet */ }
   return null;
@@ -41,6 +42,20 @@ export async function loadUsage(agent) {
 // Codex has no feed to watch, so it's read again whenever its agent changes (a turn ends).
 export function usageKey(agent) {
   return agent ? `${agent.address}:${agent.app === "codex" ? `${agent.status}:${agent.seq}` : ""}` : null;
+}
+
+// A plan limit as last reported (at, in seconds): 0 once its window has reset since; stale when
+// older than half an hour, as use elsewhere (the web, another machine) hasn't reached it.
+const STALE = 1800;
+export function limitShown(pct, reset, at) {
+  const now = Date.now() / 1000;
+  if (reset && reset <= now) return { pct: 0, passed: true };
+  if (at && now - at > STALE) return { pct, stale: true, ago: ago(at) };
+  return { pct };
+}
+export function ago(sec) {
+  const m = Math.floor((Date.now() / 1000 - sec) / 60);
+  return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`;
 }
 
 export function tokens(n) {

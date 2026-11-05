@@ -4,7 +4,7 @@ import { h_flex, v_flex } from "gpui-base";
 import { exec as execFile, theme, focused, terminals, window, watchFolder, openOverlay, closeOverlay, props, settings } from "herdr";
 import * as fs from "fs/promises";
 import { DIR as SANDBOX_DIR, BLOCKED, runOf, loadBlocked, loadRules, allowed, denied, needsWrite, splitPath, allowUpTo, openSandboxLists } from "./sandbox.js";
-import { CLAUDE, agentAt, loadUsage, usageKey, tokens, resetAt, level } from "./usage.js";
+import { CLAUDE, agentAt, loadUsage, usageKey, tokens, resetAt, level, limitShown } from "./usage.js";
 
 const ICON = "mods/agent-bar/shield.svg";
 const POPOVER_WIDTH = 300;
@@ -73,12 +73,15 @@ export default class AgentBar extends View {
 
   // Footer
 
+  // pct: a number, or limitShown()'s { pct, stale, ago } (a stale one dims, and says so on hover).
   chip(id, pct, label, width) {
     const t = theme();
+    const s = typeof pct === "object" ? pct : { pct };
     return div().id(id).relative().h(20).w(width).flex_none().rounded(5).bg(t.raised).overflow_hidden()
-      .child(div().absolute().left(0).top(0).h_full().w(Math.round(width * Math.min(100, pct) / 100)).bg(t.selected))
+      .when(Boolean(s.stale), (el) => el.tooltip(`As of ${s.ago}: may be higher now`))
+      .child(div().absolute().left(0).top(0).h_full().w(Math.round(width * Math.min(100, s.pct) / 100)).bg(t.selected))
       .child(h_flex().relative().size_full().gap(4).items_center().justify_center()
-        .child(div().text_color(level(t, pct)).child(`${Math.round(pct)}%`))
+        .child(div().text_color(s.stale ? t.dim : level(t, s.pct)).child(`${Math.round(s.pct)}%`))
         .child(div().text_color(t.muted).child(label)));
   }
 
@@ -90,8 +93,8 @@ export default class AgentBar extends View {
     const total = this.entries.reduce((n, e) => n + e.count, 0);
     const chips = [
       u?.ctx != null && this.chip("ctx", u.ctx, "ctx", 72),
-      u?.five != null && this.chip("five", u.five, "5h", 64),
-      u?.week != null && this.chip("week", u.week, "wk", 64),
+      u?.five != null && this.chip("five", limitShown(u.five, u.five_reset, u.limits_at), "5h", 64),
+      u?.week != null && this.chip("week", limitShown(u.week, u.week_reset, u.limits_at), "wk", 64),
     ].filter(Boolean);
     return h_flex().size_full().px(14).gap(14).items_center().justify_end().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8)
       // Just above the bars, their right edges lined up.
@@ -156,11 +159,18 @@ export default class AgentBar extends View {
     return 58 + (u?.ctx != null ? 84 : 0) + (u?.five != null ? 72 : 0) + (u?.week != null ? 72 : 0) + (u?.cost != null ? 82 : 0) + 44;
   }
 
-  meter(id, title, pct, left, right) {
+  // A plan limit's meter: "reset since" once its window has, "as of 2h ago" when the reading is old.
+  limitMeter(id, title, left, pct, reset, at) {
+    const s = limitShown(pct, reset, at);
+    const right = s.passed ? "reset since" : s.stale ? `as of ${s.ago} · may be higher` : reset ? `resets ${resetAt(reset)}` : "";
+    return this.meter(id, title, s.pct, left, right, s.stale);
+  }
+
+  meter(id, title, pct, left, right, stale = false) {
     const t = theme();
     const width = POPOVER_WIDTH - 36;
     return v_flex().id(id).px(18).py(10).gap(7)
-      .child(h_flex().justify_between().child(div().text_color(t.foreground).child(title)).child(div().text_color(level(t, pct)).child(`${Math.round(pct)}%`)))
+      .child(h_flex().justify_between().child(div().text_color(t.foreground).child(title)).child(div().text_color(stale ? t.dim : level(t, pct)).child(`${Math.round(pct)}%`)))
       .child(div().h(6).w(width).rounded(3).bg(t.raised)
         .child(div().h(6).w(Math.max(6, Math.round(width * Math.min(100, pct) / 100))).rounded(3).bg(pct >= 75 ? level(t, pct) : t.muted)))
       .child(h_flex().justify_between().text_size(12).text_color(t.dim).child(left).child(right));
@@ -180,8 +190,8 @@ export default class AgentBar extends View {
       .when(!u, el => el.child(div().px(18).py(14).text_color(t.dim).child("No reading yet. It arrives after the agent's next turn.")))
       .when(u?.ctx != null, el => el.child(this.meter("m-ctx", "Context", u.ctx, "this conversation",
         u.ctx_tokens != null && u.ctx_size ? `${tokens(u.ctx_tokens)} / ${tokens(u.ctx_size)} tokens` : "")).child(rule()))
-      .when(u?.five != null, el => el.child(this.meter("m-five", "Session", u.five, "rolling 5 hours", u.five_reset ? `resets ${resetAt(u.five_reset)}` : "")))
-      .when(u?.week != null, el => el.child(this.meter("m-week", "Weekly", u.week, "rolling 7 days", u.week_reset ? `resets ${resetAt(u.week_reset)}` : "")))
+      .when(u?.five != null, el => el.child(this.limitMeter("m-five", "Session", "rolling 5 hours", u.five, u.five_reset, u.limits_at)))
+      .when(u?.week != null, el => el.child(this.limitMeter("m-week", "Weekly", "rolling 7 days", u.week, u.week_reset, u.limits_at)))
       .when(u?.cost != null, el => el.child(rule()).child(v_flex().px(18).py(12).gap(4)
         .child(h_flex().justify_between().child(div().text_color(t.foreground).child("Would have cost"))
           .child(div().font_semibold().text_color(t.foreground).child(`$${u.cost.toFixed(2)}`)))

@@ -90,25 +90,28 @@ export default class Usage extends View {
   }
 
   // A window's share used, and when it resets. Past its reset, the reading is old news: 0%.
-  meter(id, w, t) {
+  // Older than half an hour, it's dimmed: use elsewhere (the web, another machine) isn't in it.
+  meter(id, w, t, stale = false) {
     const passed = Boolean(w.reset) && w.reset * 1000 <= Date.now(), p = passed ? 0 : w.pct;
+    const old = stale && !passed;
     return v_flex().id(id).gap(5)
       .child(h_flex().gap(6).items_baseline()
         .child(div().text_color(t.foreground).child(w.name))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(passed ? "reset since" : w.reset ? `resets ${resetAt(w.reset)}` : ""))
-        .child(div().text_color(level(t, p)).child(`${Math.round(p)}%`)))
+        .child(div().text_color(old ? t.dim : level(t, p)).child(`${Math.round(p)}%`)))
       .child(div().h(5).w_full().rounded(3).bg(t.raised)
         .child(div().h(5).w(`${Math.max(2, Math.min(100, p))}%`).rounded(3).bg(p >= 75 ? level(t, p) : t.muted)));
   }
 
   section(id, name, icon, u, missing, t) {
     const note = (text) => div().text_size(11.5).text_color(t.dim).child(text);
+    const stale = Boolean(u?.at) && Date.now() / 1000 - u.at > 1800;
     return v_flex().id(id).px(14).py(10).gap(9)
       .child(h_flex().gap(7).items_center().child(image(icon).size(14)).child(div().flex_1().font_semibold().child(name))
-        .when(Boolean(u?.at), (el) => el.child(note(ago(u.at)))))
+        .when(Boolean(u?.at), (el) => el.child(note(stale ? `${ago(u.at)} · may be higher` : ago(u.at)))))
       .when(u === undefined, (el) => el.child(note("Reading…")))
       .when(u === null, (el) => el.child(note(missing)))
-      .children((u?.windows ?? []).map((w) => this.meter(`${id}-${w.key}`, w, t)));
+      .children((u?.windows ?? []).map((w) => this.meter(`${id}-${w.key}`, w, t, stale)));
   }
 
   render(cx) {

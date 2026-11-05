@@ -177,6 +177,8 @@ Right-click the Linear button to link a different ticket, stop or restore detect
   The rest go under an Inactive line, in each folder and at the bottom; click it to fold them away.
 - **Usage**, above Settings, shows Claude Code's and Codex's plan limits: each 5-hour and weekly window, when it resets, and how old the reading is.
   They're account-wide, as each agent last reported them, so Claude Code needs the status line set up above.
+  A reading older than half an hour is dimmed, as use elsewhere isn't in it, and a window that has reset since reads 0%.
+  **Token insights** at its foot opens a dashboard of tokens by model and day, from the agents' session logs (`mods/insights`).
 
   ![The Usage popup with Claude Code's and Codex's limits](docs/usage.png)
 
@@ -202,7 +204,10 @@ Claude Code and Codex panes have a Chat | Terminal switch in their header.
 Chat shows the agent as a conversation, read from its own session log, with a box to write to it; the agent keeps running in its terminal behind it.
 Agents you start from the + menu open in Chat.
 The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliasstravik/shepherdr) (3.0.0), changed to fit this config's sandbox:
-- Pictures an agent shows with show-your-work, or links as Markdown images, show inline; a recording shows its first frame and opens in your player.
+- Pictures an agent shows with show-your-work, or links as Markdown images, show inline.
+  A show-your-work card has its title, a PR or page link, "What changed" and its checks beside the picture, and Original | Updated | Compare when it has a before.
+  A newer version of the same picture marks the earlier card, and History steps back through them.
+  A recording shows its first frame, its length and its timestamped changes and checks; play opens it full-pane with pause, a scrub bar and change markers.
 - Questions (AskUserQuestion) and permission prompts come as cards to answer, for sandboxed agents too: `agent/launch` adds the hook for agents Herdr starts, and a sandboxed agent's hook talks to the chat through its own broker folder, so it can't answer another agent's prompt.
   Codex's approvals and questions come as the same cards, answered in the chat or its terminal, whichever is first.
 - Live events fill in what the session log can't say yet, after its last record, until the log says the same or the turn ends.
@@ -229,9 +234,18 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
   A turn that edited files ends in a card of them, each with its lines added and removed; it folds with the turn once a newer one starts.
   Beside the model button, "62% to compact" says how near the agent is to compacting its context (Claude Code at the window less 33k, Codex at 90% of it), in amber from 85%.
 - Ask about this, under a message or a picture, adds it to your next message as an annotation with an optional comment.
-- `/btw` opens Claude Code's answer in a panel over the chat; `/` lists commands and skills, `$` Codex's skills.
+- `/btw` opens Claude Code's answer in a panel over the chat; `/` lists commands and skills (later in a message, only skills), `$` Codex's skills.
+  A skill or command named in a message you sent is marked, as the CLI marks it.
+- Above the box, the agent's helpers at work, one row each with what they run on ("Opus 5.5 · Extra high", from the helper's own log) and for how long; click one to read its conversation.
+  Monitors and commands left running in the background are listed there too until they end, with their command on hover.
 
 cmd-w on a tab in Chat parks its agent, as for a terminal; the tab's × ends it.
+
+Agents that other agents start show under them in the Agents list.
+Claude Code's own helpers carry its logo and read their model and effort on hover.
+One started with `hc`, such as a Codex reviewer, is named by its task and shows its model and effort on hover too.
+Click it to open its chat in a dialog, with Chat | Terminal (the terminal opens in a peek); right-click it to open its chat or terminal, or to stop it.
+An agent in Herdr is told to start another CLI agent this way, as a real agent through `agent/launch`, rather than headless (`codex exec`, `claude -p`), so it can be watched, followed up with `hc send`, and stopped.
 Shepherdr's tasks, assistants, voice and other machines aren't included.
 
 ## Updating
@@ -267,7 +281,7 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `mods/linear` | The Linear panel, its right-click menu and dialogs. |
 | `mods/tabs-sandbox` | The tab bar, with the Changes, Linear and containers buttons. |
 | `mods/worktree-hooks`, `worktree-setup`, `resources` | The worktree dialogs, the setup editor and a worktree's containers. |
-| `mods/menu-hooks` | Right-click menus, including Restart agent. |
+| `mods/menu-hooks` | Right-click menus, including Restart agent and a sub-agent's Open chat, Show terminal and Stop agent. |
 | `mods/resume`, `agent/sessions` | Resume a session: parked agents and past sessions in a space's folders. |
 | `mods/pane-sandbox` | Herdr's pane header, with Run for the `!` commands Claude Code asks you to run, and Chat \| Terminal. |
 | `mods/chat`, `chat-image`, `chat-models`, `chat-react` | The chat view (from Shepherdr): its image viewer, model picker and reactions. |

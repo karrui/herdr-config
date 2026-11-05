@@ -64,6 +64,10 @@ function duration(ms) {
 }
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
+// What a sub-agent's title says it's doing: Codex titles its terminal "⠹ Fix the build | folder"
+// (a spinner while it works, then its folder). Null when that leaves nothing.
+const task = (title) => String(title ?? "").replace(/^[\u2800-\u28ff\u2733\u273b\u00b7*✻✳]+\s*/u, "").replace(/\s+\|\s+[^|]+$/, "").trim() || null;
+
 function icon(p, size, color) {
   if (!p?.icon) return null;
   return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
@@ -230,7 +234,7 @@ export default class Agents extends View {
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
       .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))
-      .child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address))
+      .child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted).child(k.name || task(k.title) || k.template || k.program?.name || k.address))
       .child(this.status(t, { status: st }, compact));
   }
 

@@ -1359,7 +1359,9 @@ export default class Chat extends View {
   // which can keep it as a tab), and close.
   dialogHead(t) {
     const k = terminals().find((x) => x.address === this.addr);
-    const name = k?.name || k?.title || agent.NAMES[this.kind] || this.addr;
+    // Codex titles its terminal "⠹ Fix the build | folder": the task, without spinner or folder.
+    const title = String(k?.title ?? "").replace(/^[\u2800-\u28ff\u2733\u273b\u00b7*✻✳]+\s*/u, "").replace(/\s+\|\s+[^|]+$/, "").trim();
+    const name = k?.name || title || agent.NAMES[this.kind] || this.addr;
     const seg = (id, label, on, fn) => div().id(id).h(22).px(10).flex().items_center().rounded(6).text_size(12).font_medium()
       .when(on, (el) => el.bg(t.raised).text_color(t.foreground)).when(!on, (el) => el.text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); fn(); })).child(label);

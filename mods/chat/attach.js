@@ -59,17 +59,19 @@ export function prune() {
 
 // Images shown in the chat (thumbnails, the viewer): `image()` loads from the app's folder, so
 // each one is linked (or copied) into data/chat-attach/view, with its pixel size for fitting.
-// Resolves { <path>: { rel, w, h } } for the ones that exist here and are images.
+// Resolves { <path>: { rel, w, h, video, dur } } for the ones that exist here and are images
+// (or clips: their first frame, and dur their length in seconds when the system can tell).
 const VIEW = `
-d="$1"; shift; mkdir -p "$d"
+j="$1"; d="$2"; shift 2; mkdir -p "$d"
 for p in "$@"; do
   [ -f "$p" ] || continue
   n=$(printf '%s' "$p" | cksum | cut -d' ' -f1)-$(printf '%s' "\${p##*/}" | tr -c 'A-Za-z0-9._-' '_')
   src="$p" v=""
   case "$p" in
-    # A video shows its first frame (Quick Look's thumbnail), marked to play.
+    # A video shows its first frame (Quick Look's thumbnail), marked to play, with its length
+    # (chat-image's video.jxa).
     *.mp4|*.MP4|*.mov|*.MOV|*.m4v|*.webm)
-      n="$n.png" v=v
+      n="$n.png" v="v:$(osascript -l JavaScript "$j" "$p" 2>/dev/null | cut -d' ' -f1)"
       [ -f "$d/$n" ] || { qlmanage -t -s 960 -o "$d" "$p" >/dev/null 2>&1 && mv -f "$d/\${p##*/}.png" "$d/$n" 2>/dev/null; } || continue
       src="$d/$n" ;;
   esac
@@ -82,12 +84,12 @@ done
 true`;
 export async function viewable(list) {
   const dir = `${appHome()}/data/chat-attach/view`;
-  const r = await exec("sh", ["-c", VIEW, "view", dir, ...list]).catch(() => null);
+  const r = await exec("sh", ["-c", VIEW, "view", `${appHome()}/mods/chat-image/video.jxa`, dir, ...list]).catch(() => null);
   const out = {};
   for (const line of (r?.stdout ?? "").split("\n")) {
     const [p, n, size, v] = line.split("\t");
     const [w, h] = (size ?? "").split(" ").map(Number);
-    if (p && n && w && h) out[p] = { rel: `data/chat-attach/view/${n}`, w, h, video: v === "v" };
+    if (p && n && w && h) out[p] = { rel: `data/chat-attach/view/${n}`, w, h, video: Boolean(v), dur: Number(String(v ?? "").slice(2)) || null };
   }
   return out;
 }

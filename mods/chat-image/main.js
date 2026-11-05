@@ -11,11 +11,13 @@
 // it isn't opened from a chat): artview.js opens a layout overlay whose top block is this mod with props { artifact: { mod, id, title, version, machine } } (its toolbar,
 // artifact-bar.js: title, version stepper, Mark up, Open in the sidebar, close) over the
 // artifact's own mod, on the same backdrop.
+// Or a clip, played as frames (video.js): props { video: { title, sides, changes } }.
 
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { theme, props, closeOverlay, readTextFile, settings, exec, appHome, window as win } from "herdr";
 import { initArtifactBar, artifactBar, closeArtifactBar } from "./artifact-bar.js";
+import { initVideo, videoView } from "./video.js";
 import { toast, TEXT, RADIUS } from "./ui.js";
 
 const BAR = 48;                      // the toolbar's height
@@ -38,6 +40,7 @@ export default class ImageViewer extends View {
     if (props()?.textPath) cx.spawn(async (cx) => { this.text = (await readTextFile(props().textPath).catch(() => null)) ?? "(can't read it)"; cx.notify(); });
     // Or an artifact's toolbar (artifact-bar.js): its versions, Mark up.
     if (props()?.artifact) initArtifactBar(this, cx);
+    if (props()?.video) initVideo(this, cx);
   }
 
   async close() { if (props()?.artifact) closeArtifactBar(props().artifact); }
@@ -293,6 +296,7 @@ export default class ImageViewer extends View {
     const t = theme();
     if (props()?.artifact) return artifactBar(this, props().artifact, this.handle);
     if (props()?.textPath) return this.textView(t);
+    if (props()?.video) return videoView(this, t, (...a) => this.btn(...a), (t) => this.rule(t));
     const img = this.img();
     const s = this.stage();
     if (img && !this.fit) this.clamp();

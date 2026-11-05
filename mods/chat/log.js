@@ -70,6 +70,9 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
     # A helper (or job) launched to run on its own: its result came at once, it is not done yet.
     if (index(line, "Async agent launched") || index(line, "running in background")) ids = ids " ASYNC"
     print off "\tR\t" ids
+    # show-your-work names what it kept in its result ("show-your-work:#<id>"): the kept copy,
+    # and the id a later version names as the one it revises (S: the id, then the call ids).
+    if (claude && match(line, /show-your-work:#[0-9a-f]+/)) print off "\tS\t" substr(line, RSTART + 16, RLENGTH - 16) ids
     # Pictures a tool returned (screens from an MCP server): Claude Code saves each in the session
     # folder (tool-results) and names the file in the line. The chat shows them in a strip (I).
     # (No apostrophes in here: this awk program sits in single quotes.)
@@ -483,6 +486,29 @@ function codexStep(name, args) {
 
 // show-your-work's tools (an MCP server or a plugin's): show_image, show_video.
 const SHOW = /show[-_]your[-_]work__show_(image|video)$/;
+// One of its calls, as its player shows it (each field as its tool describes it): the picture or
+// clip (video), what it's compared with, what changed (at: the second, in a clip), its QA
+// summary and a clip's checks, earlier versions handed in (versions), the one it revises
+// (previous: an #id an earlier result named), links (url, pr). cwd: where the agent ran, where
+// the plugin keeps its copies. Fields come as the model sent them, so each is checked.
+export function showOf(name, a, cwd = null) {
+  const list = (v) => { if (typeof v === "string") { try { v = JSON.parse(v); } catch { return []; } } return Array.isArray(v) ? v : []; };
+  const objs = (v) => list(v).filter((x) => x && typeof x === "object");
+  const str = (v) => (v == null || String(v).trim() === "" ? undefined : String(v).trim());
+  const num = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
+  const checks = (v) => objs(v).map((c) => ({ name: String(c.name ?? ""), ok: c.ok === true, at: num(c.at), step: str(c.step), expected: str(c.expected), actual: str(c.actual) })).filter((c) => c.name);
+  const versions = typeof a.versions === "string" && !a.versions.trim().startsWith("[") ? [a.versions] : list(a.versions);
+  return {
+    path: String(a.path), compare: str(a.compare), video: /video$/.test(name), cwd: cwd ?? null,
+    title: String(a.title ?? "").trim(), label: str(a.label), compareLabel: str(a.compare_label),
+    changes: objs(a.changes).map((c) => ({ title: String(c.title ?? "").trim(), detail: str(c.detail), at: num(c.at), url: str(c.url) })).filter((c) => c.title),
+    changesTitle: str(a.changes_title),
+    summary: objs(a.summary).map((x) => ({ label: String(x.label ?? "").trim(), ok: x.ok === true, passed: num(x.passed), total: num(x.total) })).filter((x) => x.label),
+    checks: checks(a.checks), compareChecks: checks(a.compare_checks),
+    versions: versions.map((v) => (typeof v === "string" ? { path: v } : v && typeof v === "object" && typeof v.path === "string" ? { path: v.path, note: str(v.note) } : null)).filter(Boolean),
+    previous: str(a.previous)?.replace(/^#/, "").toLowerCase(), url: str(a.url), pr: str(a.pr),
+  };
+}
 // Pictures a reply points at by path, as Markdown images: ![what](/abs/path.png).
 export function pictures(text) {
   const out = [];
@@ -505,6 +531,8 @@ export function pictures(text) {
 //   { kind: "compacted", id, text, at }  (the context was compacted: how, in words)
 //   { kind: "plan", id, steps: [{ text, status, active? }], text }  (the turn's checklist, its
 //                                             latest state; status: pending | in_progress | completed)
+//   { kind: "shots", id, at, ...showOf(), history: [{ paths, note? }], note, mark?, kept?, newer? }
+//                                            (show-your-work's card: shown(), kept())
 // `doing` is what it does right now (the last call not answered yet), for the status line.
 // `meta` is what the agent runs on, from its newest lines: { model, effort, speed, used, window }
 // (used: tokens in its context window now; window: that window's size when the log says it;
@@ -735,8 +763,45 @@ export class Conversation {
     return out.join("\n").trim();
   }
 
+  // A show-your-work card. One that revises an earlier card (previous) has that card's versions
+  // and that card's own picture as its history ({ paths, note }: where it may be, best first),
+  // after any handed in. The earlier card learns it was replaced (newer: { id, n }, n the new
+  // one's version number). A clip keeps only the version before it (the plugin keeps no more).
+  shown(call, item) {
+    this.shows ??= new Map();
+    this.marked ??= new Map();
+    const before = item.previous ? this.marked.get(item.previous) : null;
+    // Its file at the same path is this one's picture now: only its kept copy shows it.
+    const chain = before ? [...before.history, { paths: [...(before.kept ?? []), ...(before.path !== item.path ? [before.path] : [])], note: before.note }] : [];
+    const given = item.versions.map((v) => ({ paths: [v.path], note: v.note }));
+    let history = [...given, ...chain.filter((c) => !item.versions.some((v) => c.paths.includes(v.path)))];
+    if (item.video) history = history.slice(-1);
+    const titles = item.changes.map((c) => c.title);
+    item.history = history;
+    item.note = titles.length ? titles[0] + (titles.length > 1 ? ` and ${titles.length - 1} more` : "") : item.title;
+    if (before) before.newer = { id: item.id, n: history.length + 1 };
+    this.shows.set(call, item);
+    this.push(item);
+  }
+
+  // Its result came: the #id it was kept by, so a later version can name it, and where the kept
+  // copy may be (kept: the plugin's .show-your-work in the folder the agent started in, which
+  // may be above where it is now), which still holds the picture shown after the file at its
+  // path is saved over.
+  kept(call, mark) {
+    const s = this.shows?.get(call);
+    if (!s || !/^[0-9a-f]{4,12}$/.test(mark)) return;
+    s.mark = mark;
+    const ext = /\.[A-Za-z0-9]{1,5}$/.exec(s.path)?.[0] ?? "";
+    const dirs = [];
+    for (let d = String(s.cwd ?? "").replace(/\/+$/, ""); d && d !== home() && dirs.length < 4; d = d.replace(/\/[^/]*$/, "")) dirs.push(d);
+    s.kept = dirs.map((d) => `${d}/.show-your-work/${mark}${ext}`);
+    this.marked.set(mark, s);
+  }
+
   feed(records) {
     for (const r of records) {
+      if (r.kind === "S") { const [mark, ...ids] = r.data.split(" ").filter(Boolean); for (const id of ids) this.kept(id.replace(/!$/, ""), mark); continue; }
       // Pictures a tool returned: a strip under its step (main.js "gallery").
       // (A path can come as $HOME/… or ~/…, as the tool's output put it.)
       if (r.kind === "I") { this.push({ kind: "gallery", id: `g${r.off}`, paths: r.data.split("\x1f").filter(Boolean).map((p) => p.replace(/^(\$HOME|~)(?=\/)/, home())) }); continue; }
@@ -880,8 +945,8 @@ export class Conversation {
             this.doing = "Asking you something";
           } else if (SHOW.test(String(b.name ?? "")) && b.input?.path) {
             // show-your-work's picture or recording: shown in the chat itself, not as a step.
-            const paths = [b.input.path, ...(b.input.compare ? [b.input.compare] : [])].map(String);
-            this.push({ kind: "shots", id: `s${off}`, paths, title: String(b.input.title ?? ""), at: time(l.timestamp) });
+            const s = showOf(String(b.name), b.input, typeof l.cwd === "string" ? l.cwd : null);
+            this.shown(String(b.id), { kind: "shots", id: `s${off}`, ...s, paths: [s.path, ...(s.compare ? [s.compare] : [])], at: time(l.timestamp) });
           } else if (b.name === "TodoWrite" && Array.isArray(b.input?.todos)) {
             // Its todo list: the turn's checklist, not a step. (TaskCreate and TaskUpdate say
             // one task at a time, by ids only their results give: they stay steps.)

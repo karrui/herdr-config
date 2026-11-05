@@ -1,0 +1,39 @@
+// A clip's length and size, or its frames, with the system's own AVFoundation (no ffmpeg).
+//   osascript -l JavaScript video.jxa <clip>                       prints "<seconds> <w> <h>"
+//   osascript -l JavaScript video.jxa <clip> <dir> <fps> <width>   writes <dir>/0001.jpg… at
+//     <fps> a second, at most <width> wide, each whole before it's named (a player reads them
+//     as they come); prints "<seconds> <frames>"
+ObjC.import("AVFoundation");
+ObjC.import("CoreMedia");
+ObjC.import("AppKit");
+
+function run(argv) {
+  // (Its classes are looked up by name: JXA's $ doesn't see AVFoundation's.)
+  const asset = $.NSClassFromString("AVURLAsset").alloc.initWithURLOptions($.NSURL.fileURLWithPath(argv[0]), $());
+  const secs = $.CMTimeGetSeconds(asset.duration);
+  if (!(secs > 0)) throw new Error("not a clip");
+  if (argv.length < 4) {
+    const tracks = asset.tracksWithMediaType("vide");
+    if (!tracks.count) throw new Error("no picture");
+    const s = tracks.objectAtIndex(0).naturalSize;
+    return `${secs} ${Math.round(Math.abs(s.width))} ${Math.round(Math.abs(s.height))}`;
+  }
+  const [dir, fps, width] = [argv[1], Number(argv[2]), Number(argv[3])];
+  const gen = $.NSClassFromString("AVAssetImageGenerator").alloc.initWithAsset(asset);
+  gen.appliesPreferredTrackTransform = true;
+  gen.maximumSize = $.NSMakeSize(width, width * 4);
+  // Half a frame either way: exact times decode far slower and look the same.
+  const near = $.CMTimeMakeWithSeconds(0.5 / fps, 600);
+  gen.requestedTimeToleranceBefore = near;
+  gen.requestedTimeToleranceAfter = near;
+  const n = Math.max(1, Math.floor(secs * fps));
+  let made = 0;
+  for (let i = 0; i < n; i++) {
+    const cg = gen.copyCGImageAtTimeActualTimeError($.CMTimeMakeWithSeconds(i / fps, 600), null, null);
+    if (!cg) break;
+    const jpg = $.NSBitmapImageRep.alloc.initWithCGImage(cg).representationUsingTypeProperties($.NSBitmapImageFileTypeJPEG, $({ NSImageCompressionFactor: 0.8 }));
+    if (!jpg.writeToFileAtomically(`${dir}/${String(i + 1).padStart(4, "0")}.jpg`, true)) break;
+    made++;
+  }
+  return `${secs} ${made}`;
+}

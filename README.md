@@ -30,6 +30,12 @@ Here Codex answers a question another agent sent it, marked `<hc from="t5g">`.
 
 The reply comes back the same way: a Claude Code agent reports what it did to the agent that asked.
 
+![The chat view, with sub-agents under their agents in the Agents list](docs/chat.png)
+
+Chat shows an agent as a conversation, with its terminal one click away.
+Messages sent while it worked are marked Steer, and the work after them folds under "Continued for".
+In the Agents list, each agent's helpers sit under it, named by their task: Codex reviewers it started with `hc`, and Claude Code's own helpers.
+
 ## Requirements
 
 - The Herdr app, started at least once (it creates `~/.config/herdr-app`).
@@ -180,7 +186,7 @@ Right-click the Linear button to link a different ticket, stop or restore detect
   A reading older than half an hour is dimmed, as use elsewhere isn't in it, and a window that has reset since reads 0%.
   **Token insights** at its foot opens a dashboard of tokens by model and day, from the agents' session logs (`mods/insights`).
 
-  ![The Usage popup with Claude Code's and Codex's limits](docs/usage.png)
+  ![The Usage popup: Claude Code's limits just reported, Codex's dimmed as old, and Token insights](docs/usage.png)
 
 ### Closing and resuming agents
 

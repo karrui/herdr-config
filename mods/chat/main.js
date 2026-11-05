@@ -210,6 +210,10 @@ export default class Chat extends View {
     this.results = new Map();
     this.pinned = true;
     this.width = 600;
+    // Logical px per layout unit: sizes come back in logical px, which the app's zoom scales,
+    // while widths, heights and places are set in units. Every measure is divided by it, or at
+    // 110% each row's room is a tenth taller than its words and the bands sit off the column.
+    this.unit = 1;
     this.heights = new Map();
     // When each row's height was first measured: kept measuring a few seconds after (measurer).
     this.measuredAt = new Map();
@@ -1443,11 +1447,12 @@ export default class Chat extends View {
     const p = this.pressWin, local = this.press;
     let at = "pointer";
     if (p && local?.x !== undefined) {
-      const paneX = p.x - local.x, paneY = p.y - (local.y ?? 0);
-      const left = anchor ?? local.x;
-      const x = Math.max(8, Math.min(paneX + left, paneX + this.width - W - 8));
+      // In the window's px: the press's own (rx, ry), and units times the zoom.
+      const u = this.unit, paneX = p.x - local.rx, paneY = p.y - (local.ry ?? 0);
+      const left = (anchor ?? local.x) * u;
+      const x = Math.max(8, Math.min(paneX + left, paneX + (this.width - W - 8) * u));
       const rowTop = p.y - 14, rowBottom = p.y + 14;
-      const y = rowTop - H - 4 >= 8 ? rowTop - H - 4 : Math.min(rowBottom + 4, paneY + (this.height ?? 800) - H - 8);
+      const y = rowTop - H * u - 4 >= 8 ? rowTop - H * u - 4 : Math.min(rowBottom + 4, paneY + ((this.height ?? 800) - H - 8) * u);
       at = { x, y: Math.max(8, y) };
     }
     const fr = this.frequent(18);
@@ -2152,7 +2157,7 @@ export default class Chat extends View {
         .child(x.clip ? this.clipped(t.background, x.clip, div().id(`${pre}fold-in-${x.id}`).flex_none()
           // Its words' drawn height: a reply shorter than it looked isn't folded (foldOf()). Taken
           // in the measurer only: a handler on a row the list draws throws, and the list goes blank.
-          .when(pre === "m-", (el) => el.on_size_change((size, cx) => { const was = this.natural.get(x.id); if (!was || Math.abs(was - size.height) > 1) { this.natural.set(x.id, size.height); cx.notify(); } }))
+          .when(pre === "m-", (el) => el.on_size_change((size, cx) => { const h = size.height / this.unit; const was = this.natural.get(x.id); if (!was || Math.abs(was - h) > 1) { this.natural.set(x.id, h); cx.notify(); } }))
           .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(text) || " ").selectable(true)))
           : TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(text) || " ").selectable(true)));
     const fileLine = (label, icon = "paperclip") => h_flex().gap(5).items_center().text_size(12).text_color(t.dim)
@@ -2793,7 +2798,7 @@ export default class Chat extends View {
   paneArea() {
     const p = this.pressWin, local = this.press;
     if (!p || local?.x === undefined) return null;
-    return { x: p.x - local.x, y: p.y - (local.y ?? 0), width: Math.round(this.width), height: Math.round(this.height ?? 700) };
+    return { x: p.x - local.rx, y: p.y - (local.ry ?? 0), width: Math.round(this.width), height: Math.round(this.height ?? 700) };
   }
 
   // A pasted text file in the viewer (mods/chat-image), over this chat pane.
@@ -2945,11 +2950,11 @@ export default class Chat extends View {
       .child(div().relative().w_full().min_h(TEXT_ROW).px(12).pt(9).pb(4)
         // Measured, unseen: a line's height, and the words' height at the box's width (sizeBox()).
         .child(div().id("chat-line-h").absolute().top(0).left(0).opacity(0).text_size(13).child("Xg")
-          .on_size_change((size, cx) => { if (Math.abs((this.lineH ?? 0) - size.height) > 0.1) { this.lineH = size.height; this.sizeBox(); cx.notify(); } }))
+          .on_size_change((size, cx) => { if (Math.abs((this.lineH ?? 0) - size.height / this.unit) > 0.1) { this.lineH = size.height / this.unit; this.sizeBox(); cx.notify(); } }))
         .child(div().absolute().top(0).left(12).right(12).h(0).overflow_hidden().opacity(0)
           .child(div().id("chat-text-h").w_full().text_size(13)
             .child(/\n$/.test(this.box.value()) || !this.box.value() ? `${this.box.value()} ` : this.box.value())
-            .on_size_change((size, cx) => { if (Math.abs((this.textH ?? 0) - size.height) > 0.1) { this.textH = size.height; this.sizeBox(); cx.notify(); } })))
+            .on_size_change((size, cx) => { if (Math.abs((this.textH ?? 0) - size.height / this.unit) > 0.1) { this.textH = size.height / this.unit; this.sizeBox(); cx.notify(); } })))
         .child(Textarea.new(this.box).w_full().text_size(13).text_color(t.foreground)
           .when(Boolean(this.boxSpare && this.lineH), (el) => el.mb(-this.lineH)))
         .when(!this.box.value().trim(), (el) => el.child(div().absolute().top(9).left(12).text_size(13).text_color(t.dim)
@@ -3111,13 +3116,23 @@ export default class Chat extends View {
     this.lastWorking = st;
     const root = v_flex().id("chat").size_full().bg(t.background).text_color(t.foreground).text_size(13)
       .on_size_change((size, cx) => {
-        if (Math.abs(size.width - this.width) > 1) this.width = size.width;
-        this.height = size.height;
+        this.rawSize = size;
+        if (Math.abs(size.width / this.unit - this.width) > 1) this.width = size.width / this.unit;
+        this.height = size.height / this.unit;
         if (this.pinned) this.stick = true;
         cx.notify();
       })
+      // A 100-unit box, measured: the zoom (this.unit).
+      .child(div().id("chat-unit").absolute().top(0).left(0).w(100).h(1).opacity(0)
+        .on_size_change((size, cx) => {
+          const u = size.width / 100;
+          if (!(u > 0) || Math.abs(u - this.unit) < 0.001) return;
+          this.unit = u;
+          if (this.rawSize) { this.width = this.rawSize.width / u; this.height = this.rawSize.height / u; }
+          cx.notify();
+        }))
       // Where a press was, for the action buttons under messages (rows can't take handlers).
-      .on_mouse_down("left", (e) => { this.press = { x: e.local_position?.x, y: e.local_position?.y, at: Date.now() }; this.pressWin = e.position; this.keepIcons = null; })
+      .on_mouse_down("left", (e) => { this.press = { x: e.local_position?.x / this.unit, y: e.local_position?.y / this.unit, rx: e.local_position?.x, ry: e.local_position?.y, at: Date.now() }; this.pressWin = e.position; this.keepIcons = null; })
       // Files dropped anywhere on the chat go with the next message.
       .on_drop((e, cx) => { this.addFiles(attach.paths(e.paths ?? [])); this.saveSoon(cx); this.box.focus(); cx.notify(); });
 
@@ -3166,14 +3181,14 @@ export default class Chat extends View {
         .id("chat-body")
         .on_size_change((size, cx) => {
           const was = this.listH;
-          this.listH = size.height;
-          if (was && Math.abs(was - size.height) > 0.5 && this.pinned) { this.stick = true; cx.notify(); }
+          this.listH = size.height / this.unit;
+          if (was && Math.abs(was - this.listH) > 0.5 && this.pinned) { this.stick = true; cx.notify(); }
         })
         // How far down the list a press was, for the action bands (rows take no handlers).
-        .on_mouse_down("left", (e) => { this.bodyPress = e.local_position?.y; })
+        .on_mouse_down("left", (e) => { this.bodyPress = e.local_position?.y / this.unit; })
         // Rows' hover styles show on a redraw: one per 6 px the pointer moves down or up.
         .on_mouse_move((e, cx) => {
-          const b = Math.floor((e.local_position?.y ?? 0) / 6);
+          const b = Math.floor((e.local_position?.y ?? 0) / this.unit / 6);
           if (b !== this.hoverBand) { this.hoverBand = b; cx.notify(); }
         })
         .on_hover((hovered, cx) => { if (!hovered) { this.hoverBand = null; cx.notify(); } })
@@ -3210,7 +3225,7 @@ export default class Chat extends View {
         .child(Scrollbar.vertical("chat-rows").absolute().inset_0())
         .child(this.measurer(rows, keys, t))
         // Cards' controls measured (strips.js hit()), and where question cards' keys come in.
-        .child(strips.measure(t, rows.filter((r) => r.kind === "cardstrip").map((r) => r.s), this.cardW, (cx) => cx.notify()))
+        .child(strips.measure(t, rows.filter((r) => r.kind === "cardstrip").map((r) => r.s), this.cardW, (cx) => cx.notify(), this.unit))
         .child(this.cards.sink("own"))
         .when(!this.pinned, (el) => {
           // Scrolled up: a card waiting below what's shown is pointed to; else the newest.
@@ -3268,10 +3283,11 @@ export default class Chat extends View {
     return div().absolute().top(0).left(0).w(this.width).h(0).overflow_hidden().opacity(0)
       .child(v_flex().w_full().children(order.map((i) => div().id(`m${this.measureGen}-${keys[i]}`).flex_none().w_full()
         .on_size_change((size, cx) => {
+          const h = size.height / this.unit;
           if (!this.measuredAt.has(keys[i])) this.measuredAt.set(keys[i], Date.now());
-          if (rows[i].live) this.liveMeasured(rows[i], keys[i], size.height);
-          if (this.heights.get(keys[i]) === size.height) return;
-          this.heights.set(keys[i], size.height);
+          if (rows[i].live) this.liveMeasured(rows[i], keys[i], h);
+          if (this.heights.get(keys[i]) === h) return;
+          this.heights.set(keys[i], h);
           if (this.pinned) this.stick = true;
           if (this.anchor && Date.now() < this.anchor.until) this.reanchor = true;
           cx.notify();

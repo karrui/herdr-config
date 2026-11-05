@@ -139,7 +139,8 @@ export const innerOf = ({ left, right }) => ({ left: left + 1 + PAD, right: righ
 
 // Every control of these strips drawn once out of sight, each reporting its width (for hit()).
 // Built in render, outside the list, where handlers are allowed.
-export function measure(t, strips, widths, onChange) {
+// unit: logical px per layout unit (the app's zoom), as the chat measures it.
+export function measure(t, strips, widths, onChange, unit = 1) {
   const ctls = [];
   for (const s of strips) {
     if (s.kind === "head") ctls.push(...(s.links ?? []));
@@ -147,6 +148,6 @@ export function measure(t, strips, widths, onChange) {
   }
   return div().absolute().top(0).left(0).h(0).overflow_hidden().opacity(0)
     .child(h_flex().items_start().children(ctls.map((c) => div().id(`mwb-${c.id}`).flex_none()
-      .on_size_change((size, cx) => { if (widths.get(c.id) !== size.width) { widths.set(c.id, size.width); onChange?.(cx); } })
+      .on_size_change((size, cx) => { const w = size.width / unit; if (widths.get(c.id) !== w) { widths.set(c.id, w); onChange?.(cx); } })
       .child(ctlEl(t, c, "mw-")))));
 }

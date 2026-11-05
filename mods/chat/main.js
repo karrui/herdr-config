@@ -2263,7 +2263,7 @@ export default class Chat extends View {
         // The card's title bar: its title, which version it is (and that a newer one came),
         // then its links and tabs at showState()'s places (pressed through clickRow()).
         const { st } = x, sh = x.show;
-        const meta = [st.n > 1 ? `v${st.n}` : null, sh.newer ? `v${sh.newer.n} below` : null].filter(Boolean).join(" · ");
+        const meta = [st.n > 1 ? `v${st.n}` : null, sh.newer ? `newer v${sh.newer.n} below` : null].filter(Boolean).join(" · ");
         const right = st.parts.length ? st.parts[st.parts.length - 1].x + st.parts[st.parts.length - 1].w - st.parts[0].x : 0;
         const part = (p) => {
           const on = p.what === `tab:${st.tab}`, link = !p.what.startsWith("tab:");
@@ -2296,7 +2296,7 @@ export default class Chat extends View {
         return col(h_flex().w_full().gap(16).items_start().px(SHOW_PAD).py(12).border_1().border_t(0).border_color(t.border)
           .when(x.last, (el) => el.rounded_b(10)).when(!x.last, (el) => el.border_b(0))
           .child(stage)
-          .when(st.wide, (el) => el.child(this.showReport(t, st.report).w(REPORT_W).flex_none())), 18, 0);
+          .when(st.wide, (el) => el.child(div().flex_1().min_w(REPORT_W).child(this.showReport(t, st.report)))), 18, 0);
       }
       case "showreport":
         // A narrow column: the report under the picture.
@@ -2944,9 +2944,11 @@ export default class Chat extends View {
     } else boxes = [fit(tab === "original" ? compare : main, stageW, SHOW_H)];
     boxes = boxes.map((b) => ({ x: 0, y: 0, ...b }));
     const h = Math.max(...boxes.map((b) => b.h + (b.label ? LABEL_H : 0)));
+    // The report sits right beside the pictures (History keeps its row for "N more").
+    const usedW = tab === "history" ? stageW : Math.max(...boxes.map((b) => b.x + b.w));
     const wants = [...(x.kept ?? []), x.path, x.compare, ...x.history.flatMap((v) => v.paths)].filter(Boolean);
     const sig = `${tab}${wide ? "w" : ""}${boxes.map((b) => `${b.w}x${b.h}`).join(",")}.${report.map((r) => r.items.length).join(",")}.${x.newer?.n ?? ""}`;
-    return { main, compare, versions, tabs, tab, parts, report, wide, under: !wide && report.length > 0, boxes, stageW, h, left, more, n, wants, sig, label };
+    return { main, compare, versions, tabs, tab, parts, report, wide, under: !wide && report.length > 0, boxes, stageW: usedW, h, left, more, n, wants, sig, label };
   }
 
   // A card's report (showState() report): each section's heading (with its score: passed of

@@ -73,6 +73,14 @@ function items(p, git) {
         })()),
       ];
     }
+    case "agent":
+      // A sub-agent another agent started with hc (the Agents sidebar): open it, or stop it, as
+      // nothing else ends it.
+      return [
+        ...(tg.chat ? [["Open chat", "subchat", { terminal: tg.address }]] : []),
+        ["Show terminal", "terminal.peek", { terminal: tg.address }],
+        ["Stop agent", "kill", { terminal: tg.address }],
+      ];
     case "space":
       return [
         ["Rename", "space.rename", { id: tg.id }],
@@ -99,6 +107,8 @@ const isClose = (it) => it[1].endsWith(".close") || it[2]?.action === "close";
 function menuIcon(it) {
   const command = it[1];
   if (command === "restart") return "mods/menu-hooks/rotate-ccw.svg";
+  if (command === "kill") return "mods/workspace-chrome/x.svg";
+  if (command === "subchat") return "mods/workspace-chrome/panel-right.svg";
   const name = isClose(it) ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
@@ -137,6 +147,9 @@ export default class Menu extends View {
       execFile(`${appHome()}/sandbox/agent-restart`, [it[2].address, it[2].mode])
         .catch((e) => ({ code: 1, stderr: String(e) }))
         .then((r) => r.code === 0 || notify({ title: "Couldn't restart the agent", body: r.stderr.trim(), level: "error" }));
+    // Killed and removed in one process: it outlives this menu, which closes now.
+    else if (it[1] === "kill") execFile("sh", ["-c", 'hc kill "$1" >/dev/null 2>&1; hc rm "$1" >/dev/null 2>&1', "x", it[2].terminal]).catch(() => {});
+    else if (it[1] === "subchat") openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { terminal: it[2].terminal, dialog: true } });
     else if (it[1] === "worktree") openOverlay({ mod: "worktree-hooks", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: it[2].action === "close" ? 260 : 300 }), props: it[2] });
     else run(it[1], it[2]);
   }

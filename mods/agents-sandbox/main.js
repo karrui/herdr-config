@@ -250,6 +250,12 @@ export default class Agents extends View {
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
       .on_click(() => (k.helper ? this.openHelper(k.helper) : this.open(k)))
+      // One started with hc: open it or stop it (mods/menu-hooks). Claude Code's own helpers end
+      // with their task.
+      .when(!k.helper, (el) => el.on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        openOverlay({ mod: "menu-hooks", kind: "popup", width: 200, props: { tab: "agent", target: { address: k.address, chat: ["claude-code", "codex"].includes(k.report?.app) } } });
+      }))
       // What it runs on, on hover: a Claude Code helper's from its chat, an hc one's from its argv.
       .when(Boolean(k.helper?.spec || specOf(k.argv)), (el) => el.tooltip(k.helper?.spec || specOf(k.argv)))
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()

@@ -120,6 +120,14 @@ const COPY_W = 70, RUN_W = 56;
 const bangs = (code) => [...String(code).matchAll(/^\s*!\s*(\S.*)$/gm)].map((m) => m[1].trim()).filter(Boolean);
 // Pictures a tool returned (log.js I records): a strip this tall, each as wide as its shape.
 const GALLERY_H = 160;
+// A show-your-work card (log.js showOf()), as its player in the terminal: a title bar
+// SHOW_HEAD tall (title, version, links, tabs), the picture at most SHOW_H tall, its report
+// (what changed, QA, a clip's checks) beside it REPORT_W wide when the column is SHOW_WIDE or
+// more, else under it; History's versions VERSION_H tall. Tabs and links have fixed places,
+// so a press finds them (clickRow(), showState()).
+const SHOW_HEAD = 38, SHOW_H = 320, REPORT_W = 220, SHOW_WIDE = 600, VERSION_H = 110, SHOW_PAD = 12, TAB_GAP = 2, LABEL_H = 20;
+// A clip's moment: "1:05".
+const mmss = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const fileName = (p) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
 const ICONS = { copy: "copy", reply: "reply", annotate: "annotate", rewind: "rewind", fork: "git-fork", react: "smile-plus" };
 // Annotations as the agent reads them, ahead of the message's words: what the person points at
@@ -205,8 +213,13 @@ export default class Chat extends View {
     // A helper's conversation (a Claude Code subagent's own log), opened from a helper row above
     // the box (openHelper()): { path, kind, title }. Read-only, following the log as it grows.
     this.transcript = P?.transcript ?? null;
+    // A sub-agent with a terminal of its own, opened from the Agents sidebar: { terminal,
+    // dialog: true }. Over the window, with a header to switch to its terminal (peek) and back.
+    this.dialog = Boolean(P?.dialog);
     if (this.transcript) { this.path = this.transcript.path; this.kind = KINDS[this.transcript.kind] ?? "claude"; }
     this.opened = new Set();
+    // Show-your-work cards' tabs by card id (showState()): Updated until another is picked.
+    this.showTabs = new Map();
     this.results = new Map();
     this.pinned = true;
     this.width = 600;
@@ -723,7 +736,7 @@ export default class Chat extends View {
     }
     // Parked behind this chat, the terminal lost core keep (terminal.park turns it off): turn it
     // back on, so the agent survives a lost core like any pane's terminal.
-    if (t.keep === false && !t.labels?.["herdr.tab"] && !panes().some((p) => p.terminal === this.addr)) await hc(["keep", this.addr]);
+    if (!this.dialog && t.keep === false && !t.labels?.["herdr.tab"] && !panes().some((p) => p.terminal === this.addr)) await hc(["keep", this.addr]);
     // The agent lost its link to this chat (herdr.chat) while it has no pane of its own: link it
     // again, or the header, the agents list and the sweep take it for an agent without a chat.
     // Only to the pane this chat last knew as its own, while that is still a chat pane.
@@ -1334,6 +1347,7 @@ export default class Chat extends View {
   // Back to the terminal: the header's switch (pane-sandbox) puts the agent's terminal back in
   // this pane's spot. It acts on the focused pane, so focus this one first.
   toTerminal() {
+    if (this.dialog) { closeOverlay(props()?.overlay); run("terminal.peek", { terminal: this.addr }); return; }
     const mine = this.myPane();
     if (!mine) return;
     run("pane.focus", { pane: mine });
@@ -1341,7 +1355,24 @@ export default class Chat extends View {
   }
 
   // The agent ended: its pane would have closed, so this one does.
+  // A sub-agent's dialog: its name, Chat | Terminal (the terminal opens in a peek over the tab,
+  // which can keep it as a tab), and close.
+  dialogHead(t) {
+    const k = terminals().find((x) => x.address === this.addr);
+    const name = k?.name || k?.title || agent.NAMES[this.kind] || this.addr;
+    const seg = (id, label, on, fn) => div().id(id).h(22).px(10).flex().items_center().rounded(6).text_size(12).font_medium()
+      .when(on, (el) => el.bg(t.raised).text_color(t.foreground)).when(!on, (el) => el.text_color(t.muted).cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { cx.stop_propagation(); fn(); })).child(label);
+    return h_flex().flex_none().h(38).px(14).gap(10).items_center().border_b(1).border_color(t.border).text_size(12.5)
+      .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(name))
+      .child(h_flex().p(2).gap(2).rounded(8).bg(t.surface).border_1().border_color(t.border)
+        .child(seg("dlg-chat", "Chat", true, () => {}))
+        .child(seg("dlg-term", "Terminal", false, () => this.toTerminal())))
+      .child(this.button("dlg-close", "Close", null, "secondary", t, () => closeOverlay(props()?.overlay)));
+  }
+
   closeSelf() {
+    if (this.dialog) { closeOverlay(props()?.overlay); return; }
     const mine = this.myPane() ?? this.lastPane;
     if (mine) run("pane.close", { pane: mine });
   }
@@ -1901,12 +1932,17 @@ export default class Chat extends View {
         }
         block(first, x.id);
       } else if (x.kind === "shots") {
-        // show-your-work: what the agent shows you (a screenshot, a recording), on its side,
-        // with Ask about this under it.
+        // show-your-work: what the agent shows you (a screenshot, a recording) in a card, as its
+        // player in the terminal has it, with Ask about this under it. Rows: its title bar, its
+        // picture (and report, when beside it), its report under it when the column is narrow.
         const from = out.length;
-        const bar = { id: `b:${x.id}`, of: x.id, target: x.title || "picture", text: x.title ?? "", side: "agent", at: x.at, pills: this.pills(x.id), acts: ["annotate"], paths: x.paths };
-        out.push({ kind: "imgs", id: `i:${x.id}`, paths: x.paths, side: "agent", title: x.title, bar, dim: x.dim });
-        out.push({ kind: "band", id: `ab:${x.id}`, bar });
+        const st = this.showState(x);
+        const bar = { id: `b:${x.id}`, of: x.id, target: x.title || "picture", text: x.title ?? "", side: "agent", at: x.at, pills: this.pills(x.id), acts: ["annotate"], paths: [st.main] };
+        const card = [{ kind: "showhead", id: `sh:${x.id}`, show: x, st, sig: st.sig, dim: x.dim },
+          { kind: "showbody", id: `sb:${x.id}`, show: x, st, sig: st.sig, dim: x.dim, last: !st.under }];
+        if (st.under) card.push({ kind: "showreport", id: `sr:${x.id}`, show: x, st, sig: st.sig, dim: x.dim, last: true });
+        card[card.length - 1].bar = bar;
+        out.push(...card, { kind: "band", id: `ab:${x.id}`, bar });
         block(from, x.id);
       } else if (x.kind === "gallery") {
         // Gone once none of its paths turns out to be a picture here (a path named in a command's
@@ -2046,7 +2082,7 @@ export default class Chat extends View {
     const found = q && String(x.text ?? x.code ?? "").toLowerCase().includes(q.toLowerCase()) ? `|f:${q}` : "";
     const open = (x.kind === "tools" || x.kind === "brief") && this.opened.has(x.id);
     const shown = open && x.steps ? x.steps.filter((s) => this.results.get(s.id) != null).length : 0;
-    return `${x.id}|${x.kind}${x.closed ? `.${x.closed}` : ""}|${open ? `o${x.steps?.length ?? 1}.${shown}` : ""}|${x.text?.length ?? x.code?.length ?? 0}|${x.from ? 1 : 0}${x.steer ? 1 : 0}${x.failed ? 1 : 0}${x.late ? 1 : 0}${x.queued ? 1 : 0}${x.images ? 1 : 0}${x.files?.length ?? 0}|${x.paths?.length ?? 0}${x.paths?.every((p) => this.views[p]) ? "v" : ""}|${(x.pills ?? []).map((p) => p.emoji + (p.you ? 1 : 0) + (p.agent ? 1 : 0)).join("")}|${x.bar ? "b" : ""}${x.kind === "artifact" ? `|a${x.version ?? ""}${x.line ? "l" : ""}${x.pending ? "p" : ""}` : ""}${x.kind === "cardstrip" ? `|cs${x.sig}${x.first ? "F" : ""}${x.last ? "L" : ""}` : ""}|${x.clip ? `c${x.clip}` : ""}${x.open ? "o" : ""}${x.kind === "day" ? x.text : ""}|${x.top0 ? "T" : ""}${x.bot0 ? "B" : ""}${x.h ?? ""}${found}`;
+    return `${x.id}|${x.kind}${x.closed ? `.${x.closed}` : ""}|${open ? `o${x.steps?.length ?? 1}.${shown}` : ""}|${x.text?.length ?? x.code?.length ?? 0}|${x.from ? 1 : 0}${x.steer ? 1 : 0}${x.failed ? 1 : 0}${x.late ? 1 : 0}${x.queued ? 1 : 0}${x.images ? 1 : 0}${x.files?.length ?? 0}|${x.paths?.length ?? 0}${x.paths?.every((p) => this.views[p]) ? "v" : ""}|${(x.pills ?? []).map((p) => p.emoji + (p.you ? 1 : 0) + (p.agent ? 1 : 0)).join("")}|${x.bar ? "b" : ""}${x.kind === "artifact" ? `|a${x.version ?? ""}${x.line ? "l" : ""}${x.pending ? "p" : ""}` : ""}${x.kind === "cardstrip" ? `|cs${x.sig}${x.first ? "F" : ""}${x.last ? "L" : ""}` : ""}|${x.clip ? `c${x.clip}` : ""}${x.open ? "o" : ""}${x.kind === "day" ? x.text : ""}|${x.top0 ? "T" : ""}${x.bot0 ? "B" : ""}${x.h ?? ""}${x.sig ? `|${x.sig}` : ""}${found}`;
   }
 
   // A row not measured yet that a streaming reply's row was: its words as the log has them now
@@ -2070,7 +2106,10 @@ export default class Chat extends View {
       case "top": case "loading": case "note": return 36;
       case "brief": return this.opened.has(x.id) ? 32 + lines(x.text, w) * 19 : 20;
       case "replyref": return 22;
-      case "imgs": return this.fitThumbs(x.paths).h + 8 + (x.title ? 20 : 0);
+      case "imgs": return this.fitThumbs(x.paths).h + 8;
+      case "showhead": return SHOW_HEAD;
+      case "showbody": return 24 + Math.max(x.st.h, x.st.wide ? this.reportGuess(x.st.report, REPORT_W) : 0);
+      case "showreport": return 12 + this.reportGuess(x.st.report, w - 2 * SHOW_PAD);
       case "codehead": return 34;
       case "code": return 16 + (x.clip ?? String(x.code).split("\n").length * 19);
       case "fold": return 26;
@@ -2218,8 +2257,51 @@ export default class Chat extends View {
         const row = h_flex().w_full().gap(THUMB_GAP).items_start().when(mine, (el) => el.justify_end()).when(!mine, (el) => el.justify_start())
           .when(Boolean(x.faded), (el) => el.opacity(0.55))
           .children(this.fitThumbs(x.paths).boxes.map((b) => this.shot(t, b).cursor_pointer()));
-        return col(x.title ? v_flex().w_full().gap(4).child(row).child(div().w_full().truncate().text_size(12).text_color(t.dim).child(x.title)) : row, 18, 4);
+        return col(row, 18, 4);
       }
+      case "showhead": {
+        // The card's title bar: its title, which version it is (and that a newer one came),
+        // then its links and tabs at showState()'s places (pressed through clickRow()).
+        const { st } = x, sh = x.show;
+        const meta = [st.n > 1 ? `v${st.n}` : null, sh.newer ? `v${sh.newer.n} below` : null].filter(Boolean).join(" · ");
+        const right = st.parts.length ? st.parts[st.parts.length - 1].x + st.parts[st.parts.length - 1].w - st.parts[0].x : 0;
+        const part = (p) => {
+          const on = p.what === `tab:${st.tab}`, link = !p.what.startsWith("tab:");
+          return h_flex().absolute().top(0).left(p.x - st.parts[0].x).w(p.w).h(24).gap(4).px(link ? 8 : 0).items_center().justify_center().rounded(6)
+            .cursor_pointer().text_size(12)
+            .when(on, (el) => el.bg(t.hover).font_medium().text_color(t.foreground))
+            .when(!on, (el) => el.text_color(link ? t.muted : t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)))
+            .when(link, (el) => el.child(svg("mods/chat-image/external-link.svg").size(12).flex_none()))
+            .child(div().min_w(0).truncate().child(p.label));
+        };
+        return col(h_flex().w_full().h(SHOW_HEAD).px(SHOW_PAD).gap(8).items_center().rounded_t(10).border_1().border_color(t.border)
+          .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(sh.title || fileName(sh.path)))
+          .when(Boolean(meta), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child(meta)))
+          .when(right > 0, (el) => el.child(div().relative().flex_none().w(right).h(24).children(st.parts.map(part)))), 18, 0);
+      }
+      case "showbody": {
+        // The picture for the tab picked (both side by side in Compare; every version in
+        // History), each where showState() placed it, so a press finds it; a clip's first
+        // frame with its length, to play. The report beside it when there's room.
+        const { st } = x;
+        const box = (b) => div().absolute().left(b.x).top(b.y).w(b.w).h(b.h + (b.label ? LABEL_H : 0))
+          .child(div().absolute().left(0).top(b.label && !b.under ? LABEL_H : 0).child(this.shot(t, b).cursor_pointer()
+            .when(Boolean(b.dur), (el) => el.child(div().absolute().right(6).bottom(6).px(5).h(18).flex().items_center().rounded(4)
+              .bg("#000000a0").text_size(11).text_color("#ffffff").child(mmss(b.dur))))))
+          .when(Boolean(b.label), (el) => el.child(div().absolute().left(0).top(b.under ? b.h + 2 : 0).w(b.w).h(LABEL_H - 2).truncate()
+            .text_size(11.5).text_color(b.current ? t.foreground : t.dim).when(Boolean(b.current), (el) => el.font_medium()).child(b.label)));
+        const stage = div().relative().flex_none().w(st.stageW).h(st.h).children(st.boxes.map(box))
+          .when(st.more > 0, (el) => el.child(div().absolute().left(st.boxes.length ? st.boxes[st.boxes.length - 1].x + st.boxes[st.boxes.length - 1].w + 10 : 0)
+            .top(Math.round(VERSION_H / 2) - 9).text_size(12).text_color(t.dim).child(`${st.more} more`)));
+        return col(h_flex().w_full().gap(16).items_start().px(SHOW_PAD).py(12).border_1().border_t(0).border_color(t.border)
+          .when(x.last, (el) => el.rounded_b(10)).when(!x.last, (el) => el.border_b(0))
+          .child(stage)
+          .when(st.wide, (el) => el.child(this.showReport(t, st.report).w(REPORT_W).flex_none())), 18, 0);
+      }
+      case "showreport":
+        // A narrow column: the report under the picture.
+        return col(div().w_full().px(SHOW_PAD).pb(12).border_1().border_t(0).border_color(t.border).rounded_b(10)
+          .child(this.showReport(t, x.st.report)), 18, 0);
       case "agent":
         return pad(theirs(x.text));
       case "thought":
@@ -2454,6 +2536,20 @@ export default class Chat extends View {
       const off = (this.press?.x ?? -1) - this.edges().left;
       for (let i = 0, edge = 0; i < boxes.length && off >= 0; edge += boxes[i].w + THUMB_GAP, i++)
         if (off >= edge && off <= edge + boxes[i].w) { this.openImages(paths, i); break; }
+    }
+    else if (row.kind === "showhead") {
+      // A tab, or a link (showState() placed them).
+      const x = this.press?.x ?? -1, s = row.show;
+      const p = row.st.parts.find((p) => x >= p.x && x <= p.x + p.w);
+      if (p?.what.startsWith("tab:")) this.showTabs.set(s.id, p.what.slice(4));
+      else if (p?.what === "url") exec("open", [s.url]).catch(() => {});
+      else if (p?.what === "pr") (/^https?:/.test(s.pr) ? exec("open", [s.pr]) : exec("gh", ["pr", "view", p.num, "--web"], { cwd: s.cwd ?? undefined })).catch(() => {});
+    }
+    else if (row.kind === "showbody") {
+      // The picture the press was on: large in the viewer, a clip played there.
+      const off = (this.press?.x ?? -1) - row.st.left;
+      const b = row.st.boxes.find((b) => off >= b.x && off <= b.x + b.w);
+      if (b) this.openShow(row.show, row.st, b);
     }
     else if (row.kind === "imgs") {
       // Which thumbnail the press was on (rows take no handlers of their own): the person's are
@@ -2770,6 +2866,143 @@ export default class Chat extends View {
     return { boxes, more: paths.length - boxes.length, paths };
   }
 
+  // What a show-your-work card shows now (rows(), drawn by case "showhead" and "showbody").
+  //   main, compare: the pictures (main: its kept copy when there, as the file at its path may
+  //     have been saved over since); compare: the one given, else the version before
+  //   tabs, tab: Original / Updated / Compare / History, when there's something to compare
+  //     with; the one picked (this.showTabs), Updated at first
+  //   parts: the title bar's links and tabs, at their places in the pane ({ what, x, w, label })
+  //   boxes: the pictures in the stage ({ path, x, y, w, h, label?, under?, dur? }), stageW, h,
+  //     left (the stage's left edge in the pane), more (versions that didn't fit)
+  //   report: its sections (showReport()); wide: beside the stage, under: in a row of its own
+  //   n: its version number; wants: every path it may show, for needViews(); sig: what its
+  //     rows' heights depend on
+  showState(x) {
+    const pick = (paths) => paths.find((p) => p && this.views[p]) ?? null;
+    const main = pick([...(x.kept ?? []), x.path]) ?? x.path;
+    const versions = x.history.map((h, i) => ({ path: pick(h.paths), note: h.note, n: i + 1 })).filter((h) => h.path);
+    const n = x.history.length + 1;
+    const compare = pick([x.compare ?? versions[versions.length - 1]?.path]);
+    const tabs = compare ? ["original", "updated", "compare", ...(versions.length > 1 || (x.compare && versions.length) ? ["history"] : [])] : [];
+    const picked = this.showTabs.get(x.id);
+    const tab = tabs.includes(picked) ? picked : "updated";
+    const label = { original: x.compareLabel ?? "Original", updated: x.label ?? "Updated", compare: "Compare", history: `History · ${versions.length + 1}` };
+    const { left: colL, right: colR } = this.edges();
+    const left = colL + 1 + SHOW_PAD, right = colR - 1 - SHOW_PAD;
+    // The title bar, from its right end: the tabs, then the links before them, while the title
+    // keeps 120 px.
+    const parts = [];
+    let at = right;
+    const put = (what, w, text, more = {}) => { at -= w; parts.unshift({ what, x: at, w, label: text, ...more }); };
+    [...tabs].reverse().forEach((k, i) => { if (i) at -= TAB_GAP; put(`tab:${k}`, Math.round(label[k].length * 6.6) + 20, label[k]); });
+    const num = x.pr ? /(\d+)\/?$/.exec(x.pr)?.[1] ?? null : null;
+    let host = null;
+    try { host = x.url ? new URL(x.url).host || "Link" : null; } catch { host = x.url ? "Link" : null; }
+    const links = [...(x.pr && (num || /^https?:/.test(x.pr)) ? [{ what: "pr", label: num ? `PR #${num}` : "PR", num }] : []), ...(host ? [{ what: "url", label: host }] : [])];
+    const keep = at;
+    links.reverse().forEach((l, i) => { at -= i ? 6 : tabs.length ? 10 : 0; put(l.what, Math.min(150, Math.round(l.label.length * 6.6) + 34), l.label, { num: l.num }); });
+    if (at - left < 120) { parts.splice(0, links.length); at = keep; }
+    // The report: what changed (or the versions, in History), QA, a clip's checks (the side shown).
+    const report = [];
+    if (tab === "history") report.push({ head: "Versions", items: [...versions, { n, note: x.note }].map((v) => ({ title: `v${v.n}${v.n === n ? " · this one" : ""}`, detail: v.note })) });
+    else if (x.changes.length) report.push({ head: x.changesTitle ?? "What changed", items: x.changes.map((c) => ({ at: x.video ? c.at : undefined, title: c.title, detail: c.detail })) });
+    if (x.summary.length) {
+      const counted = x.summary.some((l) => l.total != null);
+      const total = counted ? x.summary.reduce((k, l) => k + (l.total ?? 0), 0) : x.summary.length;
+      const passed = counted ? x.summary.reduce((k, l) => k + (l.passed ?? (l.ok ? l.total ?? 0 : 0)), 0) : x.summary.filter((l) => l.ok).length;
+      report.push({ head: "QA", score: { text: `${passed}/${total}`, ok: passed === total }, items: x.summary.map((l) => ({ ok: l.ok, title: l.label, count: l.total != null ? `${l.passed ?? (l.ok ? l.total : 0)}/${l.total}` : null })) });
+    }
+    const checks = tab === "original" ? x.compareChecks : tab === "history" ? [] : x.checks;
+    if (checks.length) {
+      const passed = checks.filter((c) => c.ok).length;
+      report.push({ head: tab === "original" ? `Checks · ${label.original}` : "Checks", score: { text: `${passed}/${checks.length}`, ok: passed === checks.length },
+        items: checks.map((c) => ({ ok: c.ok, at: c.at, title: c.name, detail: c.step,
+          lines: c.ok ? [] : [c.expected ? `Expected: ${c.expected}` : null, c.actual ? `Got: ${c.actual}` : null].filter(Boolean) })) });
+    }
+    const wide = colR - colL >= SHOW_WIDE && report.length > 0;
+    const stageW = Math.max(80, right - left - (wide ? REPORT_W + 16 : 0));
+    // Each picture whole, its shape kept, never above its own size.
+    const fit = (path, mw, mh) => {
+      const v = this.views[path];
+      if (!v) return { path, w: Math.min(mw, Math.round(mh * 4 / 3)), h: mh };
+      const k = Math.min(1, mw / v.w, mh / v.h);
+      return { path, w: Math.max(24, Math.round(v.w * k)), h: Math.max(24, Math.round(v.h * k)), dur: v.video ? v.dur : null };
+    };
+    let boxes = [], more = 0;
+    if (tab === "compare") {
+      const half = Math.floor((stageW - 8) / 2);
+      boxes = [{ ...fit(compare, half, SHOW_H), label: label.original }, { ...fit(main, half, SHOW_H), label: label.updated }];
+      boxes[1].x = boxes[0].w + 8;
+    } else if (tab === "history") {
+      // Every version, oldest first, as many as fit across; the rest counted.
+      for (const v of [...versions, { path: main, n }]) {
+        const b = { ...fit(v.path, 240, VERSION_H), label: `v${v.n}`, under: true, current: v.n === n };
+        const x0 = boxes.length ? boxes[boxes.length - 1].x + boxes[boxes.length - 1].w + 8 : 0;
+        if (boxes.length && x0 + b.w > stageW - 60) { more++; continue; }
+        boxes.push({ ...b, x: x0 });
+      }
+    } else boxes = [fit(tab === "original" ? compare : main, stageW, SHOW_H)];
+    boxes = boxes.map((b) => ({ x: 0, y: 0, ...b }));
+    const h = Math.max(...boxes.map((b) => b.h + (b.label ? LABEL_H : 0)));
+    const wants = [...(x.kept ?? []), x.path, x.compare, ...x.history.flatMap((v) => v.paths)].filter(Boolean);
+    const sig = `${tab}${wide ? "w" : ""}${boxes.map((b) => `${b.w}x${b.h}`).join(",")}.${report.map((r) => r.items.length).join(",")}.${x.newer?.n ?? ""}`;
+    return { main, compare, versions, tabs, tab, parts, report, wide, under: !wide && report.length > 0, boxes, stageW, h, left, more, n, wants, sig, label };
+  }
+
+  // A card's report (showState() report): each section's heading (with its score: passed of
+  // total, green or red), then its lines: a mark when it passed or failed, a clip's moment, the
+  // line, its detail and what a failed check expected and got, dim under it.
+  showReport(t, sections) {
+    const mono = settings().font_family ?? "JetBrains Mono";
+    return v_flex().w_full().gap(12).children(sections.map((sec) => v_flex().w_full().gap(5)
+      .child(h_flex().w_full().h(18).gap(6).items_center().text_size(12).font_medium().text_color(t.dim)
+        .child(div().flex_1().min_w(0).truncate().child(sec.head))
+        .when(Boolean(sec.score), (el) => el.child(div().flex_none().text_color(sec.score.ok ? t.done : t.blocked).child(sec.score.text))))
+      .children(sec.items.map((it) => h_flex().w_full().gap(6).items_start()
+        .when(it.ok !== undefined, (el) => el.child(h_flex().h(18).flex_none().items_center()
+          .child(svg(`mods/chat/${it.ok ? "check" : "x"}.svg`).size(12).text_color(it.ok ? t.done : t.blocked))))
+        .when(it.at != null, (el) => el.child(div().h(18).flex_none().flex().items_center().font_family(mono).text_size(11.5).text_color(t.dim).child(mmss(it.at))))
+        .child(v_flex().flex_1().min_w(0).gap(1)
+          .child(div().w_full().min_h(18).whitespace_normal().text_size(12.5).text_color(t.foreground).child(it.title))
+          .when(Boolean(it.detail), (el) => el.child(div().w_full().whitespace_normal().text_size(12).text_color(t.dim).child(it.detail)))
+          .children((it.lines ?? []).map((l) => div().w_full().whitespace_normal().text_size(12).text_color(t.muted).child(l))))
+        .when(Boolean(it.count), (el) => el.child(div().h(18).flex_none().flex().items_center().text_size(12).text_color(t.dim).child(it.count)))))));
+  }
+
+  // A report's height before it's measured: 18 a heading, about 18 a line of words, 17 a line
+  // of detail, at about 6.5 px a letter.
+  reportGuess(sections, width) {
+    const lines = (text, w) => Math.max(1, Math.ceil((String(text ?? "").length * 6.5) / Math.max(60, w)));
+    return sections.reduce((h, sec, i) => h + (i ? 12 : 0) + 18 + sec.items.reduce((k, it) => k + 5 + 18 * lines(it.title, width - 60)
+      + (it.detail ? 17 * lines(it.detail, width - 60) : 0) + (it.lines ?? []).reduce((j, l) => j + 17 * lines(l, width - 60), 0), 0), 0);
+  }
+
+  // A card's picture pressed (showState() boxes): a clip plays in the viewer (side by side in
+  // Compare), a picture opens large there with the card's others to step to, oldest first.
+  openShow(x, st, b) {
+    if (st.tab === "history") {
+      const all = [...st.versions, { path: st.main, n: st.n }];
+      return this.openImages(all.map((v) => v.path), all.findIndex((v) => v.path === b.path), all.map((v) => `v${v.n}${v.note ? ` · ${v.note}` : ""}`));
+    }
+    if (this.views[b.path]?.video || (x.video && !this.views[b.path])) return this.openVideo(x, st, b);
+    const both = st.compare ? [st.compare, st.main] : [st.main];
+    this.openImages(both, both.indexOf(b.path), st.compare ? [st.label.original, st.label.updated] : [x.title || fileName(st.main)]);
+  }
+
+  // A card's clip in the viewer (mods/chat-image), played as frames: the one pressed, or both
+  // side by side on one clock in Compare. Its changes' moments mark the scrub bar (the updated
+  // side's). A clip the system can't open (no first frame here) opens in its own app.
+  openVideo(x, st, b) {
+    const side = (p, name) => (this.views[p]?.video ? { path: p, name, dur: this.views[p].dur, w: this.views[p].w, h: this.views[p].h } : null);
+    const sides = (st.tab === "compare" ? [side(st.compare, st.label.original), side(st.main, st.label.updated)] : [side(b.path, b.path === st.compare && st.tab !== "updated" ? st.label.original : st.label.updated)]).filter(Boolean);
+    if (!sides.length) return exec("open", [b.path ?? x.path]).catch(() => {});
+    const a = this.paneArea();
+    const width = Math.round(this.width), height = Math.round(this.height ?? 700);
+    const changes = sides.some((s) => s.path === st.main) ? x.changes.filter((c) => c.at != null).map((c) => ({ title: c.title, at: c.at })) : [];
+    openOverlay({ mod: "chat-image", kind: "popup", frame: "none", width, height, at: a ? { x: a.x, y: a.y } : "pointer",
+      props: { video: { title: x.title || fileName(x.path), sides, changes }, width, height } });
+  }
+
   // One of those: the whole image, rounded, a faint edge drawn over it.
   shot(t, b) {
     const v = this.views[b.path];
@@ -2809,9 +3042,10 @@ export default class Chat extends View {
     openOverlay({ mod: "chat-image", kind: "popup", frame: "none", width, height, at, props: { textPath: f.path, title: f.name, width, height } });
   }
 
-  // The viewer (mods/chat-image) on these images, from the i-th.
-  openImages(paths, i) {
-    const all = paths.map((p) => this.views[p] ? { ...this.views[p], name: p.split("/").pop(), path: p } : null);
+  // The viewer (mods/chat-image) on these images, from the i-th (names: what its bar calls
+  // each, else its file's name).
+  openImages(paths, i, names = []) {
+    const all = paths.map((p, k) => this.views[p] ? { ...this.views[p], name: names[k] ?? p.split("/").pop(), path: p } : null);
     const images = all.filter(Boolean);
     if (!images.length) return;
     i = images.indexOf(all[i] ?? images[0]);
@@ -3160,7 +3394,7 @@ export default class Chat extends View {
     const current = found.length ? this.findRow(found) : null;
     if (this.findJump && current) { this.findJump = false; this.pinned = false; this.scroll.scroll_to_item(current.index, "center"); }
     const lit = new Set(found.map((m) => m.id));
-    this.needViews([...this.files.filter((f) => f.image).map((f) => f.path), ...rows.flatMap((r) => (r.kind === "imgs" ? r.paths : [])),
+    this.needViews([...this.files.filter((f) => f.image).map((f) => f.path), ...rows.flatMap((r) => (r.kind === "imgs" ? r.paths : r.kind === "showhead" ? r.st.wants : [])),
       ...(this.conv?.items ?? []).flatMap((x) => (x.kind === "gallery" ? x.paths : []))], cx);
     // What sits under the list (an ask card, the working line) changes its height: stay on the newest.
     const below = `${this.asks.length}|${(this.addr && openCard(this.addr)?.id) ?? ""}|${st}|${this.focused}|${this.queue.length}|${this.files.length}|${Boolean(this.quote)}|${this.notes.length}`;
@@ -3244,6 +3478,7 @@ export default class Chat extends View {
               .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none()).child(label)));
         });
     return root
+      .when(this.dialog, (el) => el.child(this.dialogHead(t)))
       .when(this.finding, (el) => el.child(this.findBar(t, rows)))
       .child(body)
       .when(Boolean(this.error), (el) => el.child(div().flex_none().px(18).py(4).text_size(12).text_color(t.blocked).truncate().child(this.error)))

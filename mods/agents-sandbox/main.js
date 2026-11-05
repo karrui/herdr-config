@@ -181,6 +181,13 @@ export default class Agents extends View {
     run("terminal.peek", { terminal: addr });
   }
 
+  // A sub-agent the chat can show (Claude Code, Codex) opens as its chat, which switches to its
+  // terminal; anything else peeks its terminal.
+  open(k) {
+    if (!["claude-code", "codex"].includes(k.report?.app)) return this.peek(k.address);
+    openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { terminal: k.address, dialog: true } });
+  }
+
   // Live sub-agents of `addr`, depth first, each with the tree lines in front of it: terminals it
   // started (hc), then the helpers its CLI runs itself (Claude Code's Agent/Task runs), which its
   // chat lists in shared "chat.subagents" (mods/chat publishHelpers()).
@@ -214,7 +221,7 @@ export default class Agents extends View {
       .text_size(12.5)
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
-      .on_click(() => (k.helper ? this.openHelper(k.helper) : this.peek(k.address)))
+      .on_click(() => (k.helper ? this.openHelper(k.helper) : this.open(k)))
       // A Claude Code helper: what it runs on, on hover (its chat's helper rows say it too).
       .when(Boolean(k.helper?.spec), (el) => el.tooltip(k.helper.spec))
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()

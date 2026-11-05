@@ -441,7 +441,7 @@ function claudeStepOnly(name, input = {}) {
     case "AskUserQuestion": return null;
   }
   const mcp = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(name);
-  if (mcp) return { kind: "tool", line: `Used ${mcp[1]}: ${mcp[2]}`, doing: `${mcp[2].replace(/[_-]+/g, " ")} (${mcp[1]})` };
+  if (mcp) return { kind: "mcp", line: `Used ${mcp[1]}: ${mcp[2]}`, doing: `${mcp[2].replace(/[_-]+/g, " ")} (${mcp[1]})` };
   return { kind: "tool", line: `Used ${name}`, doing: input.description ? clip(input.description, 60) : `Using ${name}` };
 }
 
@@ -457,11 +457,13 @@ function codexStep(name, args) {
   }
   if (name === "exec") {
     // Code mode: a script that runs commands (tools.exec_command({cmd: "..."})) and edits files
-    // (tools.apply_patch("..."), its patch a JS string literal). Its calls, in order, as parts.
+    // (tools.apply_patch("..."), its patch a JS string literal), or calls MCP tools. Its calls stay in order.
     const src = String(a.input ?? args ?? "");
     const parts = [];
-    for (const m of src.matchAll(/exec_command\(\{\s*cmd:\s*"((?:[^"\\]|\\.)*)"|apply_patch\(\s*("(?:[^"\\]|\\.)*")\s*\)/g)) {
+    // shortcut: recognizes literal tool calls; use execution events if Codex starts dispatching MCP tools dynamically.
+    for (const m of src.matchAll(/exec_command\(\{\s*cmd:\s*"((?:[^"\\]|\\.)*)"|apply_patch\(\s*("(?:[^"\\]|\\.)*")\s*\)|\btools\.(mcp__[A-Za-z0-9_]+)\s*\(/g)) {
       if (m[1] !== undefined) { const c = m[1].replace(/\\"/g, '"'); parts.push({ kind: "run", line: `Ran ${clip(c, 80)}`, count: 1, cmd: c }); continue; }
+      if (m[3]) { parts.push({ ...claudeStepOnly(m[3]), count: 1 }); continue; }
       let patch = null;
       try { patch = JSON.parse(m[2]); } catch {}
       const diffs = patch ? patchDiffs(patch) : [];
@@ -469,9 +471,10 @@ function codexStep(name, args) {
     }
     if (!parts.length) return { kind: "run", line: "Ran a script", doing: "Running a script" };
     const last = parts[parts.length - 1];
-    const doing = last.kind === "edit" ? `Editing ${last.diffs.map((d) => base(d.file)).slice(0, 3).join(", ")}` : `Running ${cmdWords(last.cmd)}`;
+    const doing = last.kind === "edit" ? `Editing ${last.diffs.map((d) => base(d.file)).slice(0, 3).join(", ")}` : last.doing ?? `Running ${cmdWords(last.cmd)}`;
     return { ...parts[0], line: parts.map((p) => p.line).join("\n"), doing, count: parts.reduce((n, p) => n + p.count, 0), parts: parts.length > 1 ? parts : null };
   }
+  if (name.startsWith("mcp__")) return claudeStepOnly(name, a);
   if (name === "apply_patch") {
     const files = [...String(a.input ?? args ?? "").matchAll(/\*\*\* (?:Update|Add|Delete) File: (.+)/g)].map((m) => short(m[1]));
     return { kind: "edit", line: files.length ? `Edited ${files.join(", ")}` : "Edited files", doing: files.length ? `Editing ${files.map(base).slice(0, 3).join(", ")}` : "Editing files", count: Math.max(1, files.length),
@@ -1081,7 +1084,10 @@ export function records(stdout) {
 function codeModeOutput(parts) {
   return parts.map((p) => String(p?.text ?? "")).filter((t) => !/^Script completed\b/.test(t)).map((t) => {
     const j = parse(t.trim());
-    if (j && typeof j === "object") return "output" in j ? `${String(j.output ?? "").replace(/\n+$/, "")}${j.exit_code ? `\n(exit ${j.exit_code})` : ""}` : "";
+    if (j && typeof j === "object") {
+      if ("output" in j) return `${String(j.output ?? "").replace(/\n+$/, "")}${j.exit_code ? `\n(exit ${j.exit_code})` : ""}`;
+      return Array.isArray(j.content) ? j.content.map((c) => c?.type === "text" ? c.text : "").filter(Boolean).join("\n") : "";
+    }
     return t.trim();
   }).filter(Boolean).join("\n");
 }
@@ -1115,8 +1121,9 @@ export function resultText(line, id) {
 // and helpers, then the rest; the two named keep the order they came in. Edits count files.
 const SAY = { run: ["ran a command", "ran # commands"], edit: ["edited a file", "edited # files"], read: ["read a file", "read # files"],
   search: ["searched", "searched # times"], web: ["looked on the web", "looked on the web # times"], agent: ["asked a helper", "asked # helpers"],
-  plan: ["updated its plan", "updated its plan"], tool: ["used a tool", "used # tools"] };
+  plan: ["updated its plan", "updated its plan"], mcp: ["used an MCP tool", "used # MCP tools"], tool: ["used a tool", "used # tools"] };
 export function summary(steps) {
+  if (steps.length === 1 && steps[0].kind === "mcp") return steps[0].line;
   const n = {}, first = {}, files = new Set();
   let blind = 0;
   steps.forEach((s, i) => {
@@ -1126,7 +1133,7 @@ export function summary(steps) {
     // (An edit that names no file, a notebook's, counts as one.)
     if (k === "edit") { if (s.files?.length) s.files.forEach((f) => files.add(f)); else blind += s.count ?? 1; }
   });
-  const rank = (k) => (k === "run" || k === "edit" ? 0 : k === "plan" || k === "tool" ? 2 : 1);
+  const rank = (k) => (k === "run" || k === "edit" ? 0 : k === "plan" || k === "tool" || k === "mcp" ? 2 : 1);
   const named = Object.keys(n).sort((a, b) => rank(a) - rank(b) || first[a] - first[b]).slice(0, 2).sort((a, b) => first[a] - first[b]);
   const words = named.map((k) => { const c = k === "edit" ? files.size + blind : n[k]; return c === 1 ? SAY[k][0] : SAY[k][1].replace("#", c); });
   const rest = Object.keys(n).filter((k) => !named.includes(k)).reduce((a, k) => a + n[k], 0);

@@ -117,3 +117,74 @@ test('tab bar renders while branch statistics are still loading', () => {
   });
   view.render({});
 });
+
+test('chat renders never reclaim keyboard focus from a dialog over the selected pane', () => {
+  const stop = new Error('focus handling finished');
+  const { Chat } = load('mods/chat/main.js', ['Chat'], {
+    focused: () => ({ pane: 'chat-pane' }),
+    shared: () => { throw stop; },
+  });
+  for (const wasFocused of [false, true]) {
+    let focusCalls = 0;
+    const timers = [];
+    const view = Object.assign(Object.create(Chat.prototype), {
+      addr: 't1', phase: 'ready', wasFocused, hadBox: true, focused: false,
+      myPane: () => 'chat-pane', box: { focus: () => focusCalls++ },
+    });
+    // A dialog owns the keyboard, while focused().pane still identifies the pane beneath it.
+    const cx = { timer: { after: (_delay, fn) => timers.push(fn) } };
+    for (let i = 0; i < 3; i++) {
+      assert.throws(() => view.draw(cx), (error) => error === stop);
+      while (timers.length) timers.shift()(cx);
+    }
+    assert.equal(focusCalls, 0, `previously selected: ${wasFocused}`);
+  }
+});
+
+test('Codex names MCP tools inside code-mode scripts and direct calls', () => {
+  const { codexStep } = load('mods/chat/log.js', ['codexStep'], {});
+  for (const [name, args] of [
+    ['exec', 'const result = await tools.mcp__linear__get_issue({ id: "DEVX-42" }); text(result);'],
+    ['mcp__linear__get_issue', '{"id":"DEVX-42"}'],
+  ]) {
+    const step = codexStep(name, args);
+    assert.equal(step.kind, 'mcp');
+    assert.equal(step.line, 'Used linear: get_issue');
+    assert.equal(step.doing, 'get issue (linear)');
+  }
+  const mixed = codexStep('exec', 'await tools.exec_command({cmd: "git status"}); await tools.mcp__linear__get_issue({id: "DEVX-42"});');
+  assert.equal(mixed.parts.length, 2);
+  assert.equal(mixed.parts[0].kind, 'run');
+  assert.equal(mixed.parts[1].line, 'Used linear: get_issue');
+  assert.equal(mixed.doing, 'get issue (linear)');
+});
+
+test('space sandbox shields include agents parked behind chat panes', () => {
+  const { Spaces } = load('mods/space-folders/main.js', ['Spaces'], { exec() {} });
+  for (const sandboxed of [false, true]) {
+    const parked = { address: 't1', state: 'live', labels: { 'herdr.chat': 'chat-pane', ...(sandboxed ? { 'herdr.sandbox': '1' } : {}) } };
+    const agent = { address: 't1', space: 'space-1', status: 'working' };
+    const view = Object.assign(Object.create(Spaces.prototype), { now: { terminals: [parked], agents: [agent] } });
+    const facts = view.facts({ id: 'space-1', machine: null });
+    assert.equal(facts.sandboxed, sandboxed);
+    assert.equal(facts.lead, agent);
+  }
+});
+
+test('MCP summaries name single calls and count mixed calls', () => {
+  const { summary, codexStep, claudeStep } = load('mods/chat/log.js', ['summary', 'codexStep', 'claudeStep'], {});
+  const issue = codexStep('mcp__linear__get_issue', {});
+  assert.equal(summary([issue]), 'Used linear: get_issue');
+  assert.equal(summary([issue, issue]), 'Used 2 MCP tools');
+  assert.equal(summary([{ kind: 'run' }, issue]), 'Ran a command and used an MCP tool');
+  assert.equal(claudeStep('mcp__linear__get_issue', {}).line, issue.line);
+});
+
+test('expanded code-mode MCP calls display their returned text', () => {
+  const { resultText } = load('mods/chat/log.js', ['resultText'], {});
+  const line = JSON.stringify({ payload: { output: [
+    { text: 'Script completed\nOutput:' },
+    { text: JSON.stringify({ content: [{ type: 'text', text: 'DEVX-42: Fix the chat panel' }] }) },
+  ] } });
+  assert.equal(resultText(line, 'call-1'), 'DEVX-42: Fix the chat panel');
+});

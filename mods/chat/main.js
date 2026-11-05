@@ -284,7 +284,6 @@ export default class Chat extends View {
       const got = await attach.fromClipboard().catch(() => []);
       if (got.length) { this.addFiles(got); this.saveSoon(cx); cx.notify(); }
     }));
-    this.wasFocused = false;
     // Up/Down/Tab/Escape reach the textarea first, which keeps them. While the "/" list shows
     // (chat_slash) or the box is empty or showing a recalled message (chat_recall), these
     // bindings turn them into this chat's own actions instead (on_action in composer()).
@@ -427,7 +426,8 @@ export default class Chat extends View {
           continue;
         }
         if (focused()?.pane !== this.myPane()) continue;
-        if (c === "find") this.openFind(cx);
+        if (c === "focus" && !this.transcript) this.box.focus();
+        else if (c === "find") this.openFind(cx);
         cx.notify();
       }
     });
@@ -788,8 +788,6 @@ export default class Chat extends View {
   follow_to(addr) {
     this.addr = addr;
     this.flag();
-    // The box comes back once the new agent's conversation shows: give it the keyboard again.
-    this.wasFocused = false;
     this.machine = addr.includes("/") ? addr.split("/")[0] : null;
     this.path = null;
     this.dfltFor = null;
@@ -3304,24 +3302,8 @@ export default class Chat extends View {
   }
 
   draw(cx) {
-    // The pane getting focus (opened, clicked, gone to) puts the keyboard in the message box.
     const mine = this.myPane();
-    const paneFocused = Boolean(mine && focused()?.pane === mine);
-    // Herdr settles pane focus a moment later, so ask again after it (as the help mod does).
-    // The box also comes back after a notice (opening, restarting): it gets the keyboard then too.
-    const showsBox = Boolean(this.addr) && this.phase === "ready";
-    // Focus moves only outside render: from a timer callback right after it.
-    if (paneFocused && showsBox && (!this.wasFocused || !this.hadBox)) { cx.timer.after(0, () => this.box.focus()); cx.timer.after(600, () => this.box.focus()); }
-    // The pane focused again (a command, a click on its header) can leave the box without the
-    // keyboard: give it back, unless the person just pressed something inside the chat.
-    else if (paneFocused && showsBox && this.focused === false && Date.now() - (this.press?.at ?? 0) > 1500
-      && Date.now() - (this.refocusAt ?? 0) > 1000) {
-      this.refocusAt = Date.now();
-      cx.timer.after(0, () => this.box.focus());
-    }
-    this.wasFocused = paneFocused;
-    this.hadBox = showsBox;
-    this.paneFocused = paneFocused;
+    this.paneFocused = Boolean(mine && focused()?.pane === mine);
     // A tab's Restart agent (mods/menu-hooks): shared "chat.restarting" = { terminal, at }.
     const rs = shared("chat.restarting");
     if (rs && rs.terminal === this.addr && rs.at !== this.restartingAt && Date.now() - rs.at < 5000) {

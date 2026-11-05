@@ -950,9 +950,10 @@ export default class Spaces extends View {
   // its most urgent agent, its working sub-agents, and whether one runs in the sandbox.
   facts(w) {
     const id = localId(w);
-    const mine = this.now.terminals.filter((x) => x.labels?.["herdr.space"] === id);
-    const addresses = new Set(mine.map((x) => x.address));
     const agents = this.now.agents.filter((a) => a.space === w.id);
+    const parked = new Set(agents.map((a) => a.address));
+    const mine = this.now.terminals.filter((x) => x.labels?.["herdr.space"] === id || parked.has(x.address));
+    const addresses = new Set(mine.map((x) => x.address));
     const lead = agents.reduce((m, a) => (!m || (RANK[a.status] ?? 0) > (RANK[m.status] ?? 0) ? a : m), null);
     const subs = this.now.terminals.filter((x) => addresses.has(x.parent) && x.status === "working").length;
     const sandboxed = mine.some((x) => x.labels?.["herdr.sandbox"]);

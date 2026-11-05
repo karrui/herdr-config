@@ -1203,9 +1203,10 @@ export default class Chat extends View {
     const w = slash.typing(v);
     if (!w || !this.cmds.length) return [];
     const codexSkill = (c) => c.skill && this.kind === "codex";
-    const pool = this.cmds.filter((c) => (w.sigil === "$" ? codexSkill(c) : !codexSkill(c)));
+    // Past the message's start, only skills: a command runs only as the whole message.
+    const pool = this.cmds.filter((c) => (w.sigil === "$" ? codexSkill(c) : !codexSkill(c) && (!w.inline || c.skill)));
     return slash.match(pool, w.word).map((c) => ({ ...c, label: w.sigil + c.name, state: c.skill ? "Skill" : null,
-      insert: w.sigil === "$" ? v.replace(/\$[\w:.-]*$/, `$${c.name} `) : `/${c.name} ` }));
+      insert: w.sigil === "$" ? v.replace(/\$[\w:.-]*$/, `$${c.name} `) : w.inline ? v.replace(/\/[\w:.-]*$/, `/${c.name} `) : `/${c.name} ` }));
   }
 
   pick(c, cx) {
@@ -1266,6 +1267,16 @@ export default class Chat extends View {
   }
 
   // Matched words in bold, outside code (for the message's markdown).
+  // The skills a sent message names (/name anywhere, $name for Codex), and the command it starts
+  // with, set as code so they stand out as the CLI shows them. Only names the agent has.
+  skillMark(text) {
+    if (!this.cmds?.length) return text;
+    const skills = new Set(this.cmds.filter((c) => c.skill).map((c) => c.name));
+    const all = new Set(this.cmds.map((c) => c.name));
+    return String(text).split(/(```[\s\S]*?```|`[^`\n]*`)/).map((part, i) => (i % 2 ? part
+      : part.replace(/(^|\s)([/$])([\w:.-]*\w)/g, (m, sp, sig, name) => ((i === 0 && !sp && sig === "/" ? all : skills).has(name) ? `${sp}\`${sig}${name}\`` : m)))).join("");
+  }
+
   findMark(text) {
     const q = this.findQuery();
     if (!q || /[*_`\[\]\\]/.test(q)) return text;
@@ -2135,7 +2146,7 @@ export default class Chat extends View {
     const bubble = (text, faded) => h_flex().w_full().justify_end().child(
       div().max_w(most).px(14).py(9).rounded(16).bg(t.raised)
         .text_color(t.foreground).when(faded, (el) => el.opacity(0.55))
-        .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(typed(text)) || " ").selectable(true)));
+        .child(TextView.markdown(`${pre}chat-md-${x.id}`, this.findMark(this.skillMark(typed(text))) || " ").selectable(true)));
     const theirs = (text) => h_flex().w_full().justify_start().child(
       div().w_full().text_color(t.foreground)
         .child(x.clip ? this.clipped(t.background, x.clip, div().id(`${pre}fold-in-${x.id}`).flex_none()

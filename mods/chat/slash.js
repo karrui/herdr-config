@@ -70,11 +70,14 @@ export async function commands(kind, machine, cwd) {
   return [...list, ...mine.filter((c) => !seen.has(c.name) && seen.add(c.name))];
 }
 
-// What is being typed for the list: "/word" when the whole message is one command so far, or
-// "$word" at its end (Codex takes a skill anywhere in a message). { sigil, word } or null.
+// What is being typed for the list: "/word" when the whole message is one command so far,
+// "/word" at its end (inline: a skill, which Claude Code takes anywhere in a message), or "$word"
+// at its end (Codex's skills). { sigil, word, inline? } or null.
 export function typing(text) {
   const m = /^\/([\w:.-]*)$/.exec(text);
   if (m) return { sigil: "/", word: m[1] };
+  const s = /\s\/([\w:.-]*)$/.exec(text);
+  if (s) return { sigil: "/", word: s[1], inline: true };
   const d = /(?:^|\s)\$([\w:.-]*)$/.exec(text);
   return d ? { sigil: "$", word: d[1] } : null;
 }

@@ -1229,7 +1229,8 @@ export class Live {
   }
 
   // Is the streaming reply in the log now? Codex's by its message id. Claude Code's lines carry
-  // no id the log has: a reply logged since it began, with the same words so far.
+  // no id the log has: a reply of this turn with the same words so far. (Not by time: with
+  // thinking on, Claude Code shows a reply's lines only after the log has it, seconds later.)
   logged(items, text) {
     const t = this.tail, a = norm(text);
     for (let i = items.length - 1; i >= 0 && i >= items.length - 80; i--) {
@@ -1237,7 +1238,7 @@ export class Live {
       if (x.kind !== "agent") continue;
       if (x.mid !== undefined) { if (x.mid === t.id) return true; continue; }
       const b = norm(x.text), n = Math.min(a.length, b.length, 200);
-      if ((x.at ?? 0) >= t.start - 3000 && n > 0 && a.slice(0, n) === b.slice(0, n)) return true;
+      if (n > 0 && a.slice(0, n) === b.slice(0, n)) return true;
     }
     return false;
   }
@@ -1267,7 +1268,7 @@ export class Live {
       const t = this.tail;
       const text = t?.whole && t.start >= since ? streamed(t.parts.join("")) : "";
       // (A turn the log already ended, stopped too, streams no more.)
-      if (text && !turn.some((x) => x.kind === "turnend" && (x.at ?? 0) >= t.start) && !this.logged(items, text)) add.push({ kind: "agent", id: `live:${t.id}`, text, at: t.start, live: true });
+      if (text && !turn.some((x) => x.kind === "turnend" && (x.at ?? 0) >= t.start) && !this.logged(turn, text)) add.push({ kind: "agent", id: `live:${t.id}`, text, at: t.start, live: true });
       if (this.retry && this.retry.at >= since) add.push({ kind: "error", id: "live:retry", text: this.retry.text, retry: true });
       if (this.plan?.steps.length && this.plan.at >= since) {
         const p = { steps: this.plan.steps, text: this.plan.steps.map((s) => s.text).join("\n") };

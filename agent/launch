@@ -54,9 +54,13 @@ case "$program" in
   # comes trusted for this run instead of asking. Herdr's sandbox is what confines it, as Codex
   # can't start its own inside it: that is off unless the arguments ask for one (a fork or
   # resume from the chat or the Resume menu wouldn't load otherwise).
+  # A helper another agent started (its terminal has a parent) comes trusted too: that agent
+  # already works in its folder, and nobody is there to answer the question.
   codex)
     trust=()
-    if [ ${#wrap[@]} -gt 0 ]; then
+    helper=""
+    [ -n "${HC_TERMINAL_ID:-}" ] && [ -n "$(hc get "$HC_TERMINAL_ID" --json 2>/dev/null | jq -r '.parent // empty' 2>/dev/null)" ] && helper=1
+    if [ ${#wrap[@]} -gt 0 ] || [ -n "$helper" ]; then
       cwd="$PWD" prev="" own=""
       for a in "$@"; do
         case "$prev" in -C|--cd) cwd="$a" ;; -c|--config) case "$a" in sandbox_mode=*) own=1 ;; esac ;; esac
@@ -64,7 +68,7 @@ case "$program" in
         prev="$a"
       done
       trust=(-c "projects={$(jq -n --arg d "$(cd "$cwd" 2>/dev/null && pwd -P || printf %s "$cwd")" '$d')={trust_level=\"trusted\"}}")
-      [ -n "$own" ] || set -- "$@" --sandbox danger-full-access
+      [ ${#wrap[@]} -eq 0 ] || [ -n "$own" ] || set -- "$@" --sandbox danger-full-access
     fi
     exec ${wrap[@]+"${wrap[@]}"} "$dir/codex-live" codex -c "developer_instructions=$(jq -Rs . < "$dir/instructions.md")" ${trust[@]+"${trust[@]}"} "$@" ;;
   *) exec ${wrap[@]+"${wrap[@]}"} "$program" "$@" ;;

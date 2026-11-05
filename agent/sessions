@@ -20,11 +20,14 @@ jq=/usr/bin/jq
     done
   done
   # Codex keeps every session by date; the first line names its folder and where it came
-  # from: "cli" is its own TUI (codex exec runs and sub-agents are left out).
-  live=$(lsof -c codex -Fn 2>/dev/null | sed -n 's|^n.*/rollout-.*\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)\.jsonl$|\1|p')
+  # from: "cli" is its own TUI, "vscode" one run on an app-server (Herdr's codex-live, the
+  # editor extension). codex exec runs ("exec") and sub-agents ({"subagent": …}) are left out.
+  # Running ones are open in codex, or in the tap that follows a codex-live one.
+  taps=$(pgrep -f codex-tap.py | paste -sd, -)
+  live=$({ lsof -c codex -Fn 2>/dev/null; [ -n "$taps" ] && lsof -p "$taps" -Fn 2>/dev/null; } | sed -n 's|^n.*/rollout-.*\([0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}\)\.jsonl$|\1|p')
   for f in $(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -300); do
     IFS= read -r meta < "$f" || continue
-    [[ $meta == *'"source":"cli"'* ]] || continue
+    [[ $meta == *'"source":"cli"'* || $meta == *'"source":"vscode"'* ]] || continue
     for d in "$@"; do
       [[ $meta == *"\"cwd\":\"$d\""* ]] || continue
       id=$($jq -r '.payload.id' <<<"$meta")

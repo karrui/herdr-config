@@ -7,7 +7,7 @@ What you get:
 
 - **Sandboxed agents.** Claude Code and Codex start inside a macOS sandbox that can't read your home folder or write outside the project, except for paths you allow.
 - **Worktree spaces.** A new space can be its own git worktree, with your repo's setup run before the agent starts and its teardown run before the space closes.
-- **A Changes panel with modes.** Last Turn, Uncommitted, Unstaged, Staged, a single commit, or the whole branch.
+- **Native diff reviews.** The Review bar opens worktree, branch and commit diffs in the side panel, with reviewed-file marks and split diffs.
 - **Linear and GitHub at a glance.** The branch's Linear ticket in a panel, and each space's pull request and CI state in the sidebar.
 - **A usage footer.** Context, 5-hour and weekly usage for the focused agent, and what the sandbox blocked.
 
@@ -15,10 +15,10 @@ It only works on macOS, because the sandbox uses `sandbox-exec`.
 
 ## What it looks like
 
-![A worktree space with its agent and the Changes panel](docs/workspace.png)
+![A worktree space with its agent](docs/workspace.png)
 
 Spaces grouped in sidebar folders, each row with its agent and pull request, and the agents list below.
-On the right, the Changes panel in Branch mode shows what this branch changed against `origin/main`.
+This older screenshot includes the previous Changes panel; the Review bar now opens the native review in that side panel.
 The footer has the agent's context and usage, and the sandbox state.
 
 ![Codex answering a question from another agent](docs/codex.png)
@@ -44,6 +44,7 @@ In the Agents list, each agent's helpers sit under it, named by their task: Code
 - The Herdr app, started at least once (it creates `~/.config/herdr-app`).
 - `jq`.
 - `claude` and/or `codex`.
+- [jin.review](https://github.com/JinJieBeWater/pulls.review/tree/multi-repo), for the native review pane: `bun add --global jin.review@0.3.4-fork.4` (put `~/.bun/bin` on your PATH).
 - Optional: `gh`, signed in with `gh auth login`, for pull requests in the sidebar.
 - Optional: a Linear personal API key, for the Linear panel.
 - Optional: Google Chrome, for the shared browser agents can drive.
@@ -146,17 +147,13 @@ Closing its last tab with `cmd-w` can't wait for the teardown, so the teardown r
 It also deletes the worktree's local branch, unless you uncheck **Delete branch**; it warns when the branch has commits that aren't pushed anywhere.
 The branch on GitHub stays.
 
-### The Changes panel
+### Reviewing changes
 
-The dropdown at the top picks what the panel compares:
+The Review bar at the top right replaces the Changes panel. Click a count to review the branch's commits, uncommitted files, or commits to push or pull. Branch and uncommitted buttons show lines added and removed in both Chat and Terminal view; worktree totals include new files and leave your staging index unchanged. Its logo opens a menu for picking a branch or commit. Counts use your existing remote-tracking refs; fetch when you want them updated.
 
-- **Last Turn**: what the focused agent changed since it last started working.
-- **Uncommitted**, **Unstaged**, **Staged**: the working tree against `HEAD`, the working tree against what's staged, or what's staged against `HEAD`.
-- **Committed**: one commit, picked from this branch's commits (or the latest 30).
-- **Branch**: everything on this branch since it left `origin`'s default branch, uncommitted work included.
+A review opens in the same right-hand panel as Linear, Files and Artifacts. Click its active count again to close it. Mark files reviewed as you read, switch between unified and split diffs, or step through commits. Each tab keeps its selected diff; switching tabs never shows another tab's review. The bar follows the agent's current folder, including when its terminal is parked behind a chat pane.
 
-Last Turn only knows turns that started while the panel was running, so it starts tracking the first time you open the panel.
-The Changes button in the tab bar shows the branch's lines added and removed.
+The native bar and review come from [herdr-t3](https://github.com/JinJieBeWater/herdr-t3#pullsreview), with their source commit recorded in each mod's `SOURCE` file. They use the local `jin.review` daemon, started on first review. Opening a diff does not start an AI run, and the Code review button is omitted. Reviews currently support local repositories only.
 
 ### Linear
 
@@ -294,9 +291,9 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `mods/usage`, `footer-sandbox` | The Usage popup, and the sidebar footer that opens it. |
 | `mods/insights` | Token usage by model and day from the agents' session logs, opened from the Usage popup. From [GaganSD/coding-agent-toolkit](https://github.com/GaganSD/coding-agent-toolkit/tree/main/herdr-insights) (MIT) at 9718f5f, unchanged; its `runtime.json` (this machine's Node path) stays out of git. |
 | `mods/space-folders` | The sidebar: folders, worktree spaces, pull requests, close-time teardown. |
-| `mods/changes-sandbox` | The Changes panel with modes. |
+| `mods/pulls-review`, `mods/review` | The Review bar and native diff review pane, from herdr-t3. |
 | `mods/linear` | The Linear panel, its right-click menu and dialogs. |
-| `mods/tabs-sandbox` | The tab bar, with the Changes, Linear and containers buttons. |
+| `mods/tabs-sandbox` | The tab bar, with Linear and container controls. |
 | `mods/worktree-hooks`, `worktree-setup`, `resources` | The worktree dialogs, the setup editor and a worktree's containers. |
 | `mods/menu-hooks` | Right-click menus, including Restart agent and a sub-agent's Open chat, Show terminal and Stop agent. |
 | `mods/resume`, `agent/sessions` | Resume a session: parked agents and past sessions in a space's folders. |

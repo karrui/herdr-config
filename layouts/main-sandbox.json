@@ -76,15 +76,27 @@
       "type": "column",
       "children": [
         {
-          "id": "tabs",
-          "type": "block",
-          "content": {
-            "mod": "tabs-sandbox"
-          },
+          "id": "tabs-row",
+          "type": "row",
           "size": {
             "px": 42
           },
-          "window_drag": true
+          "window_drag": true,
+          "background": "chrome",
+          "resizable": false,
+          "children": [
+            {
+              "id": "tabs",
+              "type": "block",
+              "content": { "mod": "tabs-sandbox" }
+            },
+            {
+              "id": "review-bar",
+              "type": "block",
+              "size": { "px": 0 },
+              "content": { "mod": "pulls-review", "props": { "block": "review-bar" } }
+            }
+          ]
         },
         {
           "id": "work-body",
@@ -135,11 +147,12 @@
                       }
                     },
                     {
-                      "id": "changes",
+                      "id": "review",
                       "type": "block",
-                      "content": {
-                        "mod": "changes-sandbox"
-                      }
+                      "content": { "mod": "review", "props": { "sidebar": true } },
+                      "background": "background",
+                      "border": { "width": 1, "color": "border" },
+                      "radius": 10
                     },
                     {
                       "id": "linear",

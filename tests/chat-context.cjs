@@ -212,7 +212,7 @@ test('Codex session discovery skips the approval reviewer even when it is open f
   }
 });
 
-test('tab bar renders while branch statistics are still loading', () => {
+test('tab bar renders while resources and tickets are still loading', () => {
   let element;
   element = new Proxy({}, { get: (_obj, name) => {
     if (name === 'child') return (value) => {
@@ -228,8 +228,8 @@ test('tab bar renders while branch statistics are still loading', () => {
     div: () => element, h_flex: () => element, svg: () => element,
   });
   const view = Object.assign(Object.create(Tabs.prototype), {
-    resources: {}, branch: {}, ticket: {}, spaceFolder: () => ({ id: 'new-folder' }),
-    countResources() {}, countBranch() {}, findLinear() {}, syncPanel() {}, linearPlace: () => null,
+    resources: {}, ticket: {}, spaceFolder: () => ({ id: 'new-folder' }),
+    countResources() {}, findLinear() {}, syncPanel() {}, linearPlace: () => null,
   });
   view.render({});
 });

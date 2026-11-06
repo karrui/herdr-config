@@ -5,17 +5,6 @@ import { spaces, panes, run, openOverlay, theme, window, shared, layout, setting
 import { KEY_CHANGED, LINKS, linearLocation, readKey, findTicket } from "./linear-resolve.js";
 import { chatAgents, tabStatus } from "./parked.js";
 
-// The branch to compare against: origin's default branch, else the usual names.
-// ponytail: same lookup as changes-sandbox's Branch mode; mods can't import each other.
-async function baseBranch(git) {
-  const head = await git(["rev-parse", "--abbrev-ref", "origin/HEAD"]);
-  const names = [head.code === 0 ? head.stdout.trim() : null, "origin/main", "origin/master", "main", "master"].filter(Boolean);
-  for (const name of names) if ((await git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`])).code === 0) return name;
-  return null;
-}
-// Reads write nothing under .git, like the Changes panel's.
-const READ = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.autoRefreshIndex=false"];
-
 function find(node, id) {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
@@ -31,11 +20,10 @@ export default class Tabs extends View {
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     // Each answer is kept for the place it's about, so switching back to a space shows the
     // last one at once while it's asked again: containers this space's worktree setup
-    // started (mods/resources) and the branch's lines changed, per folder; the Linear
-    // ticket, per terminal and branch.
-    this.resources = {}; this.branch = {}; this.ticket = {};
+    // started (mods/resources), per folder; the Linear ticket, per terminal and branch.
+    this.resources = {}; this.ticket = {};
     this.asked = {}; this.asking = {};
-    cx.timer.every(15000, (cx) => { if (window()?.active) { this.countResources(cx, true); this.countBranch(cx, true); } });
+    cx.timer.every(15000, (cx) => { if (window()?.active) this.countResources(cx, true); });
     cx.timer.every(300000, (cx) => { if (window()?.active) this.findLinear(cx, true); });
     // "tabs-sandbox.close" in keys.json (cmd-w).
     cx.spawn(async (cx) => {
@@ -113,20 +101,6 @@ export default class Tabs extends View {
     });
   }
 
-  // Asked again when its agents' status changes, and every 15 seconds while the window
-  // is in front. Tracked files only, like `git diff`.
-  countBranch(cx, force = false) {
-    const at = this.spaceFolder();
-    if (!at) return;
-    this.look(`branch|${at.id}`, at.space.status, force, cx, async () => {
-      const git = (args) => execFile("git", [...READ, ...args], { cwd: at.folder, on: at.on });
-      const base = await baseBranch(git);
-      const mb = base && await git(["merge-base", base, "HEAD"]);
-      const r = mb?.code === 0 && await git(["diff", mb.stdout.trim(), "--shortstat"]);
-      this.branch[at.id] = r?.code === 0 ? { add: +(/(\d+) insertion/.exec(r.stdout)?.[1] ?? 0), del: +(/(\d+) deletion/.exec(r.stdout)?.[1] ?? 0) } : null;
-    });
-  }
-
   // Asked again when the popup acted, and every 15 seconds while the window is in front.
   countResources(cx, force = false) {
     const at = this.spaceFolder();
@@ -182,7 +156,6 @@ export default class Tabs extends View {
     const t = theme();
     const space = spaces().find(p => p.active);
     this.countResources(cx);
-    this.countBranch(cx);
     this.findLinear(cx);
     const place = this.spaceFolder(), res = place && !place.on ? this.resources[place.id] : null;
     const shown = space?.tabs ?? [];
@@ -217,7 +190,7 @@ export default class Tabs extends View {
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
     // Linear and Artifacts aren't Herdr's panels, so the welcome's choice never lists them.
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "linear", "artifacts"];
+    const enabled = [...(shared("workspace.panels") ?? ["files"]).filter(id => id !== "changes"), "review", "linear", "artifacts"];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon, tip, menu) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -245,12 +218,6 @@ export default class Tabs extends View {
           .child(div().size(6).rounded(3).bg(res.running ? t.ansi2 : t.dim))
           .child(String(res.running))))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
-      .when(enabled.includes("changes"), el => {
-        // The branch's lines added and removed, once known for this space; just the icon otherwise.
-        const stats = place ? this.branch[place.id] : null;
-        const label = stats && h_flex().gap(4).child(div().text_color(t.ansi2).child(`+${stats.add}`)).child(div().text_color(t.ansi1).child(`−${stats.del}`));
-        return el.child(panelButton("changes", label, "mods/changes/changes.svg", "Changes on this branch"));
-      })
       .child((() => {
         // The ticket's id once found for this branch; just the icon otherwise.
         const lp = this.linearPlace(), found = lp ? this.ticket[lp.id] : null, issue = found?.issue ?? null;

@@ -26,6 +26,9 @@ export function chatAgents() {
     let status = STATES.includes(k.status) ? k.status : "idle";
     // Done means finished while nobody looked; looking at its chat makes it idle, as Herdr does.
     if (status === "done" && (now === pane || (seen[e.terminal] ?? -1) >= (k.turn ?? 0))) status = "idle";
+    const children = shared("chat.subagents")?.[k.address]?.list ?? [];
+    if (children.some(h => h.status === "waiting")) status = "blocked";
+    else if (status === "idle" && children.some(h => ["running", "starting", "pending"].includes(h.status))) status = "working";
     const w = where.get(p.tab);
     out.push({
       address: e.terminal, pane, space: w?.s.id ?? null, space_name: w?.s.name ?? "", tab: p.tab,

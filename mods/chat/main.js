@@ -23,6 +23,9 @@ import { agents, panes, terminals, spaces, inRender } from "./live.js";
 import * as fs from "fs/promises";
 import { FIND, LOG, EVENTS, MAIN_ROLLOUT, Conversation, Live, records, eventLines, resultText, summary, excerpt, names } from "./log.js";
 import { words } from "./asks.js";
+import { childrenOf, active, settled, handoffText } from "./state.js";
+import { sessionIO } from "./transport.js";
+import { remoteRun } from "./launch.js";
 import { AskCards } from "./cards.js";
 import * as strips from "./strips.js";
 import { red, green, amber, toast, toastWho, plainError } from "./ui.js";
@@ -168,10 +171,6 @@ function howAnswered(ask, text, where) {
 // An answer to a waiting hook (ask-hook.sh prints it as Claude's decision), the one way every
 // copy of a card delivers. First how it went (the hook's end/<id>), for the ask's other copies:
 // they read it once the request is gone.
-async function answerAsk(dir, id, text, how) {
-  if (how) await writeTextFile(`${dir}/end/${id}`, `${how}\n`, null).catch(() => {});
-  await writeTextFile(`${dir}/ans/${id}.json`, text, null).catch(() => {});
-}
 // The person's words keep the line breaks they typed: markdown joins single lines, so each one
 // becomes a hard break (outside code fences, which keep theirs).
 const typed = (text) => String(text).split(/(```[\s\S]*?(?:```|$))/).map((part, i) => (i % 2 ? part : part.replace(/([^\n])\n(?!\n)/g, "$1  \n"))).join("");
@@ -205,7 +204,7 @@ export default class Chat extends View {
     const P = props();
     this.origin = P?.terminal ?? null;
     this.addr = this.origin;
-    this.machine = this.addr?.includes("/") ? this.addr.split("/")[0] : null;
+    this.machine = P?.transcript?.machine ?? (this.addr?.includes("/") ? this.addr.split("/")[0] : null);
     this.phase = "finding";
     this.conv = null;
     this.path = null;
@@ -382,10 +381,10 @@ export default class Chat extends View {
       this.anchor = null; this.pinned = true; this.stick = true;
       cx.notify();
     });
-    if (this.addr && !this.machine) cx.spawn(async (cx) => this.watchAsks(cx));
+    if (this.addr || this.transcript?.owner) cx.spawn(async (cx) => this.watchAsks(cx));
     // What the agent shows as it happens, beside its log (log.js Live).
     this.live = new Live();
-    if (!this.transcript) cx.spawn(async (cx) => this.watchEvents(cx));
+    if (this.addr || this.transcript?.owner) cx.spawn(async (cx) => this.watchEvents(cx));
     // Keys (keys.json "mod:chat") for this chat.
     // At most 5 s per wait (one pending nextCommand), so a reload's old build ends at its next
     // cx use instead of staying in memory.
@@ -450,8 +449,8 @@ export default class Chat extends View {
     this.box.release();
     this.findBox.release();
     this.scroll.release();
-    if (!this.addr || this.machine) return;
-    await exec("sh", ["-c", 'rm -f "$1/open/$2"; for f in "$1/req/$2".*.json; do [ -f "$f" ] && : > "$1/ans/${f##*/}"; done; true', "x", this.askDir, this.addr]);
+    if (!this.addr || !this.spool) return;
+    await exec("sh", ["-c", 'rm -f "$1/open/$2"; for f in "$1/req/$2".*.json; do [ -f "$f" ] && : > "$1/ans/${f##*/}"; done; true', "x", this.askDir, this.localAddr], { on: this.machine });
   }
 
   // ---- drafts -----------------------------------------------------------------------------
@@ -503,25 +502,38 @@ export default class Chat extends View {
     return `${this.spool}/chat-asks`;
   }
 
-  // The folder for the agent's asks and live events: its broker spool when sandboxed, else
-  // Herdr's data folder (the hooks' $HERDR_HC_SPOOL rule).
+  get eventTerminal() { return this.transcript?.owner ?? this.addr; }
+  get localAddr() { return this.eventTerminal?.split("/").pop(); }
+
   get spool() {
-    const box = terminals().find((x) => x.address === this.addr)?.labels?.["herdr.sandbox"];
+    if (this.machine) return this.machinePaths?.spool ?? null;
+    const box = terminals().find(x => x.address === this.eventTerminal)?.labels?.["herdr.sandbox"];
     return box ? `${appHome()}/sandbox/broker/${box}` : `${appHome()}/data`;
+  }
+
+  async ensurePaths() {
+    if (!this.machine || this.machinePaths) return;
+    const box = terminals().find(x => x.address === this.eventTerminal)?.labels?.["herdr.sandbox"] ?? "";
+    this.machinePaths = await sessionIO("paths", [box], this.machine);
   }
 
   // The hook's flag: this chat is showing. Touched every few seconds; stale after 15. From the
   // moment the chat knows its agent (not only once its conversation shows): an agent started
   // from here may ask in its first seconds, and without the flag the hook leaves it to the CLI.
   async flag() {
-    if (this.machine || !this.addr || this.phase === "ended") return;
-    await exec("sh", ["-c", 'mkdir -p "$1/open" "$1/req" "$1/ans" && touch "$1/open/$2"', "x", this.askDir, this.addr]);
+    if (!this.eventTerminal || this.phase === "ended") return;
+    await this.ensurePaths();
+    await exec("sh", ["-c", 'mkdir -p "$1/open" "$1/req" "$1/ans" && touch "$1/open/$2"', "x", this.askDir, this.localAddr], { on: this.machine });
   }
 
   async watchAsks(cx) {
-    await exec("sh", ["-c", 'mkdir -p "$1/open" "$1/req" "$1/ans"', "x", this.askDir]).catch(() => {});
     for (;;) {
-      await this.readAsks(cx);
+      try { await this.ensurePaths(); break; } catch { await cx.sleep(4000); }
+    }
+    await exec("sh", ["-c", 'mkdir -p "$1/open" "$1/req" "$1/ans"', "x", this.askDir], { on: this.machine }).catch(() => {});
+    for (;;) {
+      try { await this.readAsks(cx); } catch { /* The same request can recover after reconnect. */ }
+      if (this.machine) { await cx.sleep(1500); continue; }
       // One watch at a time, as for the log.
       this.askWatch ??= watchFolder(`${this.askDir}/req`).finally(() => { this.askWatch = null; });
       await Promise.race([this.askWatch, cx.sleep(5000)]);
@@ -531,21 +543,23 @@ export default class Chat extends View {
   async readAsks(cx) {
     // Each request is named <terminal>.<time>.<hook pid>: one whose hook was killed (Claude or
     // Codex stopped it) is gone, so drop its file.
-    const r = await exec("sh", ["-c", 'cd "$1/req" 2>/dev/null || exit 0; for f in "$2".*.json; do [ -f "$f" ] || continue; p=${f%.json}; p=${p##*.}; if kill -0 "$p" 2>/dev/null; then echo "$f"; else rm -f "$f"; fi; done; true', "x", this.askDir, this.addr]);
+    const r = await exec("sh", ["-c", 'cd "$1/req" 2>/dev/null || exit 0; for f in "$2".*.json; do [ -f "$f" ] || continue; p=${f%.json}; p=${p##*.}; if kill -0 "$p" 2>/dev/null; then echo "$f"; else rm -f "$f"; fi; done; true', "x", this.askDir, this.localAddr], { on: this.machine });
+    if (r.code !== 0) throw new Error(r.stderr || "Could not read agent requests");
     const ids = r.stdout.split("\n").filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -5));
     const kept = this.asks.filter((a) => ids.includes(a.id));
     // Gone without an answer from here: the hook says how (data/chat-asks/end/<id>: answered
     // or declined in the terminal, the agent stopped), else Claude stopped waiting on it.
     for (const a of this.asks.filter((a) => !ids.includes(a.id))) {
-      const how = (await readTextFile(`${this.askDir}/end/${a.id}`).catch(() => null))?.trim();
+      const how = (await readTextFile(`${this.askDir}/end/${a.id}`, { on: this.machine }).catch(() => null))?.trim();
       this.askEnded(a, how || "No longer waiting");
     }
     let added = false;
     for (const id of ids) {
       if (kept.some((a) => a.id === id)) continue;
-      const text = await readTextFile(`${this.askDir}/req/${id}.json`).catch(() => null);
+      const text = await readTextFile(`${this.askDir}/req/${id}.json`, { on: this.machine }).catch(() => null);
       let req = null;
       try { req = JSON.parse(text ?? ""); } catch {}
+      if (this.transcript && (this.kind === "claude" ? req?.agent_id !== this.transcript.session : req?.session_id && req.session_id !== this.own())) continue;
       // Unreadable here: it can only be allowed in the terminal.
       const w = req ? words(req) : { kind: "permission", title: "Claude asks for something the chat can't read", detail: "", unread: true };
       kept.push({ id, req, words: w });
@@ -589,11 +603,18 @@ export default class Chat extends View {
 
   // The card's answer goes to the waiting hook; it prints it as Claude's decision.
   reply(ask, text, cx) {
-    this.asks = this.asks.filter((a) => a !== ask);
+    if (ask.sending) return;
+    ask.sending = true;
     const how = howAnswered(ask, text, "in the chat");
-    if (how) this.askEnded(ask, how);
-    cx.notify();
-    cx.spawn(async () => answerAsk(this.askDir, ask.id, text, how));
+    cx.spawn(async cx => {
+      try {
+        await sessionIO("answer", [this.askDir, ask.id, JSON.stringify(ask.req), text, how ?? ""], this.machine);
+        this.asks = this.asks.filter(a => a.id !== ask.id);
+        if (how) this.askEnded(ask, how);
+      } catch (e) {
+        this.error = `Answer not delivered: ${e.message ?? e}`;
+      } finally { ask.sending = false; cx.notify(); }
+    });
   }
 
   // The cards waiting in this chat, each with its moment: an ask, or the agent's start screen.
@@ -624,7 +645,7 @@ export default class Chat extends View {
   }
 
   async log(args) {
-    const r = await exec("sh", ["-c", this.transcript ? `SIDE=1\n${LOG}` : LOG, "log", ...args], { on: this.machine });
+    const r = await exec("sh", ["-c", this.transcript && this.transcript.side !== false ? `SIDE=1\n${LOG}` : LOG, "log", ...args], { on: this.machine });
     if (!this.machine && args[0] !== "results" && r.stdout.includes('"type":"input_image"')) r.stdout = await attach.logImages(args[1], r.stdout);
     return r;
   }
@@ -718,6 +739,7 @@ export default class Chat extends View {
     try { t = JSON.parse(r.stdout || "null"); } catch {}
     // Gone for good (removed after a restart from here), or unreachable for now (another
     // machine offline: try again later, don't call it ended).
+    if (t) t.address = this.addr;
     const gone = /not_found|no terminal/.test(`${r.stdout}\n${r.stderr}`);
     if (!gone && (!t || t.error)) return;
     // Restarted in its terminal (a tab's Restart agent): its shell shows for a moment between
@@ -753,6 +775,11 @@ export default class Chat extends View {
     // first): one taken for unsupported then is found now.
     if (this.phase === "unsupported") this.phase = "finding";
     this.t = t;
+    try { this.forkSource = t.labels?.["herdr.chat.fork"] ? JSON.parse(t.labels["herdr.chat.fork"]) : null; } catch { this.forkSource = null; }
+    const handoff = t.labels?.["herdr.chat.handoff"];
+    if (handoff && this.handoffFile !== handoff) {
+      try { this.handoff = JSON.parse(await readTextFile(handoff, { on: this.machine })); this.handoffFile = handoff; } catch {}
+    }
     this.argv = agent.own(t.foreground?.argv ?? t.argv ?? null);
     const pid = t.foreground?.pid;
     if (!pid) { if (this.phase !== "ready") this.set("none", cx); return; }
@@ -766,8 +793,8 @@ export default class Chat extends View {
     let path = f.stdout.trim().split("\n").pop() ?? "";
     // Codex whose processes hold no rollout open: the one its tap joined (log.js Live), the
     // newest that is the conversation itself.
-    if (!path && kind === "codex" && !this.machine && this.live.rollouts.length) {
-      const joined = this.live.rollouts.map((r) => r.path.replace(/^(\$HOME|~)(?=\/)/, home())).reverse();
+    if (!path && kind === "codex" && this.live.rollouts.length) {
+      const joined = this.live.rollouts.map((r) => r.path.replace(/^(\$HOME|~)(?=\/)/, this.machinePaths?.home ?? home())).reverse();
       path = (await exec("sh", ["-c", MAIN_ROLLOUT, "x", ...joined]).catch(() => null))?.stdout.trim() ?? "";
     }
     // Not in its session yet (no report, no turn): perhaps on its own start screen, which
@@ -775,7 +802,7 @@ export default class Chat extends View {
     if (!path && (starting(t) || (kind === "codex" && !(t.turn > 0)))) path = "pending";
     if (path === "pending") {
       // Before the first turn there may be no log yet: keep the composer available.
-      if (this.phase !== "ready") { this.kind = kind; this.conv = new Conversation(kind, { side: Boolean(this.transcript) }); this.start = 0; this.set("ready", cx); }
+      if (this.phase !== "ready") { this.kind = kind; this.conv = new Conversation(kind, { side: Boolean(this.transcript && this.transcript.side !== false) }); this.start = 0; this.set("ready", cx); }
       return;
     }
     if (!path) { if (this.phase !== "ready") this.set("none", cx); return; }
@@ -794,6 +821,8 @@ export default class Chat extends View {
     this.machine = addr.includes("/") ? addr.split("/")[0] : null;
     this.path = null;
     this.dfltFor = null;
+    this.machinePaths = null;
+    this.discovered = [];
     this.reset();
     this.phase = "finding";
   }
@@ -805,7 +834,7 @@ export default class Chat extends View {
   }
 
   rebuild() {
-    this.conv = new Conversation(this.kind, { side: Boolean(this.transcript) });
+    this.conv = new Conversation(this.kind, { side: Boolean(this.transcript && this.transcript.side !== false) });
     this.conv.feed(this.records);
     // A log read from its start (a new agent's first message makes it) may already hold
     // messages sent from here.
@@ -940,6 +969,7 @@ export default class Chat extends View {
         if (k && (starting(k) || openCard(this.addr))) { await this.screens.tick(this.addr, k); cx.notify(); }
         this.alerts(cx);
         this.drainQueue(cx);
+        await this.refreshChildren();
         this.publishHelpers();
         // Dragged to the top with the scrollbar: no wheel said so.
         if (this.start && (this.range?.start ?? 9) <= 1) this.loadEarlier(cx);
@@ -966,6 +996,7 @@ export default class Chat extends View {
   // The session (Claude Code: its log's name) or thread (Codex: the id its rollout ends in)
   // whose live events count (log.js Live).
   own() {
+    if (this.transcript?.session) return this.transcript.session;
     const f = String(this.path ?? "");
     if (!f.endsWith(".jsonl")) return null;
     if (this.kind === "codex") return /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i.exec(f)?.[1] ?? null;
@@ -974,30 +1005,53 @@ export default class Chat extends View {
 
   // Follows the agent's live events file (log.js EVENTS): what's new as it's written, at most
   // 64 KB at a time, and no more often than every 150 ms (a reply streams in many pieces). Another
-  // agent, or another session in it, starts over from the file's start. Only here: a hook on
-  // another machine writes there.
+  // agent, or another session in it, starts over from the file's start. Remote reads run on
+  // the agent's machine, where its hooks and tap write the same journal.
   async watchEvents(cx) {
     for (;;) {
-      if (!this.addr || this.machine) { await cx.sleep(4000); continue; }
-      const file = `${this.spool}/chat-events/${this.addr}.jsonl`, own = this.own();
-      if (file !== this.evFile || own !== this.live.own) {
-        this.live = new Live(own);
-        this.evFile = file;
-        this.evOff = 0;
-        cx.notify();
-      }
       let more = false;
       try {
-        const got = eventLines((await exec("sh", ["-c", EVENTS, "events", file, String(this.evOff), "65536"])).stdout);
+        await this.ensurePaths();
+        if (!this.eventTerminal || !this.spool) { await cx.sleep(2000); continue; }
+        const file = `${this.spool}/chat-events/${this.localAddr}.jsonl`, own = this.own();
+        if (file !== this.evFile || own !== this.live.own) {
+          this.live = new Live(own, this.kind === "claude" && this.transcript?.session ? { agent: this.transcript.session, parentSession: this.transcript.parentSession } : {});
+          this.evFile = file;
+          this.evOff = 0;
+          await this.restoreEvents(file);
+          cx.notify();
+        }
+        const result = await exec("sh", ["-c", EVENTS, "events", file, String(this.evOff), "65536"], { on: this.machine });
+        if (result.code !== 0) throw new Error(result.stderr || "Agent event stream unavailable");
+        const got = eventLines(result.stdout);
+        const unavailable = this.remoteError || this.producerGone;
+        this.remoteError = false;
         if (got && file === this.evFile) {
+          const reset = got.next < this.evOff;
           this.evOff = got.next;
           more = got.more;
-          if (this.live.feed(got.lines)) { if (this.pinned) this.stick = true; cx.notify(); }
+          const changed = this.live.feed(got.lines);
+          this.producerGone = got.producer === false;
+          if (reset || this.live.gap) { await this.restoreEvents(file); this.live.gap = false; }
+          if (changed || unavailable !== Boolean(this.producerGone)) { this.publishHelpers(); if (changed && this.pinned) this.stick = true; cx.notify(); }
         }
-      } catch {}
-      await cx.sleep(more ? 30 : 150);
-      if (!more) await this.eventsChanged(cx, file);
+        if (!more && !this.machine) await this.eventsChanged(cx, file);
+      } catch {
+        this.remoteError = true;
+        this.publishHelpers();
+        cx.notify();
+      }
+      await cx.sleep(more ? 30 : this.machine ? 1000 : 150);
     }
+  }
+
+  async restoreEvents(file) {
+    const text = await readTextFile(file.replace(/\.jsonl$/, ".state.json"), { on: this.machine }).catch(() => null);
+    if (!text) return;
+    try {
+      const events = Object.values(JSON.parse(text).events ?? {}).sort((a, b) => a.seq - b.seq);
+      for (const e of events) this.live.apply(e);
+    } catch { /* The provider log remains available when its snapshot cannot be read. */ }
   }
 
   // Until the agent's events file changes, or a few seconds pass (the folder holds every agent's).
@@ -1594,7 +1648,13 @@ export default class Chat extends View {
     const folder = this.t?.foreground?.cwd ?? this.t?.cwd ?? undefined;
     // Through agent/launch, as the + menu starts agents: sandboxed when this one is.
     const box = Boolean(this.t?.labels?.["herdr.sandbox"]);
-    run("tab.new", { space: space?.id, folder, argv: [`${appHome()}/agent/launch`, ...(box ? ["--sandbox"] : []), ...agent.forkArgv(this.kind, this.argv, session)] });
+    let argv = [`${appHome()}/agent/launch`, ...(box ? ["--sandbox"] : []), ...agent.forkArgv(this.kind, this.argv, session)];
+    if (this.machine) {
+      if (!this.machinePaths) return;
+      argv = remoteRun(argv, this.machinePaths.app, this.machinePaths.platform);
+    }
+    const source = JSON.stringify({ path: this.path, kind: this.kind, title: agent.NAMES[this.kind], owner: this.addr });
+    run("tab.new", { space: space?.id, folder, argv: ["sh", "-c", 'hc label "$HC_TERMINAL_ID" "herdr.chat.fork=$1" chat.start=1 >/dev/null 2>&1; shift; exec "$@"', "fork", source, ...argv] });
   }
 
   // ---- model button and picker -----------------------------------------------------------------
@@ -1728,7 +1788,12 @@ export default class Chat extends View {
     cx.spawn(async (cx) => {
       try {
         const t = JSON.parse((await hc(["get", this.addr, "--json"])).stdout);
+        t.address = this.addr;
         const built = agent.argvFor(pick, { agent: this.kind, argv: agent.own(t.foreground?.argv ?? []), session: agent.sessionOf(this.kind, this.path) });
+        if (!built.resume && this.path) built.handoff = {
+          source: { path: this.path, kind: this.kind, title: agent.NAMES[this.kind], owner: this.addr },
+          text: handoffText(this.conv?.items ?? [], this.path, t.foreground?.cwd ?? t.cwd),
+        };
         this.swapping = true;
         const next = await agent.restart(t, built, mine);
         this.follow_to(next);
@@ -1827,7 +1892,7 @@ export default class Chat extends View {
       }
       // Cut by a steer, all of it folds; else what came before its last reply.
       let fin = steer ? span.length : -1;
-      if (!steer) for (let k = span.length - 1; k >= 0; k--) if (span[k].kind === "agent") { fin = k; break; }
+      if (!steer) for (let k = span.length - 1; k >= 0; k--) if (span[k].kind === "agent" && (!span[k].phase || ["final_answer", "final"].includes(span[k].phase))) { fin = k; break; }
       const fold = !(working && last) && span.slice(0, Math.max(0, fin)).some(folds);
       if (card) { if (fold && !span.includes(latest)) span.splice(fin++, 0, card); else span.push(card); }
       if (!fold) { out.push(...span); span = []; return; }
@@ -1857,7 +1922,10 @@ export default class Chat extends View {
     const out = [];
     // The rows from `from` on are one message's block (spaced()).
     const block = (from, blk) => { for (let k = from; k < out.length; k++) out[k] = { ...out[k], blk }; };
-    if (this.start === 0) out.push({ kind: "top", id: "top" });
+    if (this.start === 0) {
+      out.push({ kind: "top", id: "top" });
+      if (this.transcript?.prompt && !this.conv?.items.some(x => x.kind === "user" && x.text === this.transcript.prompt)) out.push({ kind: "user", id: "delegation", text: this.transcript.prompt });
+    }
     else if (this.start) out.push({ kind: "loading", id: "loading" });
     const working = this.status() === "working";
     // With what the agent shows as it happens after the log's last record (log.js Live.over()).
@@ -2626,13 +2694,15 @@ export default class Chat extends View {
   statusLine(t, st) {
     // A card asks (in the timeline, where it appeared): nothing under the conversation repeats it.
     if (this.asks.length || (this.addr && openCard(this.addr))) return null;
+    const liveOwner = !this.transcript || terminals().some(k => k.address === this.eventTerminal && k.state === "live");
+    if (liveOwner && (this.remoteError || this.producerGone || this.live?.connection === "disconnected")) return div().flex_none().px(26).py(6).text_size(12).text_color(t.muted).child("Agent connection unavailable · Reconnecting");
     if (st === "working") {
       // What it is doing, in plain words, for how long, and Stop. The line has the composer box's
       // edges (same width and padding), so Stop's right edge is the box's.
       const secs = Math.max(0, Math.floor((Date.now() - (this.workingSince ?? Date.now())) / 1000));
       const report = terminals().find((x) => x.address === this.addr)?.report?.msg;
       const doing = this.stopping ? "Stopping…" : this.live?.compacting(this.conv, true) ? "Compacting conversation"
-        : this.conv?.doing ?? (typeof report === "string" && report.trim() && !/^answer:/i.test(report) ? report.trim() : "Working");
+        : this.live?.activity ?? this.conv?.doing ?? (typeof report === "string" && report.trim() && !/^answer:/i.test(report) ? report.trim() : "Working");
       // Only waiting (hc wait, a sleep, a monitor, a helper it waits on): calm, no spinner; a
       // message wakes it (or comes in at once).
       const waiting = this.waitingNow() && !this.stopping;
@@ -2668,19 +2738,37 @@ export default class Chat extends View {
   // their parent is this agent) count when they report working or blocked. Idle or finished
   // helpers, and programs that report nothing, don't count.
   helpers() {
-    // Only the CLI's own subagents (Claude Code's Agent/Task runs, Codex's spawned agents), from
-    // its log. Agents it started with hc are terminals Herdr already lists under it in the
-    // Agents sidebar, so they aren't repeated here.
-    // What each runs on: "Sonnet 5.5 · High". What its own log shows (exact: a Claude Code agent
-    // type can have its own model, and its effort isn't always the session's), else what the
-    // call named, else the session's.
-    const c = this.current();
-    return (this.conv?.running?.() ?? []).map((h) => {
-      const own = this.helperRuns(h.id);
-      const model = own?.model ?? h.model ?? (this.kind === "codex" ? c?.model : null);
-      const spec = [agent.modelName(model), agent.levelName(own?.effort ?? h.effort ?? c?.effort)].filter(Boolean).join(" · ");
-      return { id: h.id, label: h.desc, at: h.at, spec };
-    });
+    const rows = childrenOf(this.conv, this.live, this.discovered ?? []).filter(h => this.kind !== "claude" || h.terminal || this.conv?.helpers.has(h.call) || this.discovered?.some(d => d.id === h.id));
+    return rows.map(h => ({ ...h, label: h.label || h.desc || "Subagent",
+      status: (this.remoteError || this.producerGone || this.live?.connection === "disconnected") && active(h.status) ? "unavailable" : h.status,
+      spec: [agent.modelName(h.model), agent.levelName(h.effort)].filter(Boolean).join(" · ") }));
+  }
+
+  async refreshChildren() {
+    if (!this.path || Date.now() - (this.childrenAt ?? 0) < 5000) return;
+    this.childrenAt = Date.now();
+    const key = `lineage:${this.machine ?? "local"}:${this.kind}:${this.own()}`;
+    if (this.childrenKey !== key) {
+      this.childrenKey = key;
+      try { this.discovered = JSON.parse(localStorage.getItem(key) ?? "[]"); } catch { this.discovered = []; }
+    }
+    const found = await sessionIO("children", [this.transcript?.rootPath ?? this.path, this.kind, JSON.stringify([...this.live.children.keys()])], this.machine);
+    const all = new Map((this.discovered ?? []).map(h => [h.id, h]));
+    for (const h of found) if (this.kind !== "claude" || this.conv?.helpers.has(h.call) || all.has(h.id)) all.set(h.id, { ...all.get(h.id), ...h });
+    for (const k of terminals().filter(k => k.parent === this.addr)) {
+      const kind = KINDS[k.report?.app ?? k.status?.app ?? k.agent];
+      if (!kind) continue;
+      const old = all.get(k.address) ?? {};
+      const h = { ...old, id: k.address, terminal: k.address, provider: kind, label: k.name || k.title || k.address,
+        status: k.state !== "live" ? (k.exit_code ? "failed" : "completed") : ({ working: "running", blocked: "waiting", done: "completed", idle: "idle" }[k.status] ?? "unavailable") };
+      if (!h.path && k.foreground?.pid) {
+        const r = await exec("sh", ["-c", FIND, "child", kind, String(k.foreground.pid)], { on: this.machine });
+        if (r.stdout.trim().endsWith(".jsonl")) h.path = r.stdout.trim();
+      }
+      all.set(h.id, h);
+    }
+    this.discovered = [...all.values()].slice(-128);
+    try { localStorage.setItem(key, JSON.stringify(childrenOf(this.conv, this.live, this.discovered).slice(-128))); } catch {}
   }
 
   // Monitors and background commands it left running, until their last notice (log.js bg): for
@@ -2688,24 +2776,6 @@ export default class Chat extends View {
   jobs() {
     const old = Date.now() - 3 * 3600000;
     return (this.conv?.bg ?? []).filter((j) => !j.at || j.at > old).map((j) => ({ id: j.id, label: j.label, at: j.at, cmd: j.cmd, job: j.kind ?? "job" }));
-  }
-
-  // A Claude Code helper's model and effort from its own log (subagents/, found as openHelper()
-  // finds it): its first reply's, once it has one (other lines name the models of Claude Code's
-  // own side requests). { model, effort }. Looked up once a helper, again every 10 s until there.
-  helperRuns(id) {
-    this.helperModels ??= new Map();
-    const got = this.helperModels.get(id);
-    if (got?.model) return got;
-    if (this.kind !== "claude" || !this.path || (got && Date.now() - got.at < 10000)) return null;
-    this.helperModels.set(id, { at: Date.now() });
-    const dir = `${this.path.replace(/\.jsonl$/, "")}/subagents`;
-    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && grep -m1 -F \'"type":"assistant"\' "${f%.meta.json}.jsonl" | grep -o -e \'"model":"claude-[^"]*"\' -e \'"perTurnEffort":"[^"]*"\'', "x", dir, `"toolUseId":"${id}"`], { on: this.machine })
-      .then((r) => {
-        const model = /"model":"([^"]+)"/.exec(r.stdout ?? "")?.[1], effort = /"perTurnEffort":"([^"]+)"/.exec(r.stdout ?? "")?.[1] ?? null;
-        if (model) this.helperModels.set(id, { model, effort });
-      }).catch(() => {});
-    return null;
   }
 
   // A code block's Run: Claude Code's ! commands, typed into it as you would ("! cmd"), so each
@@ -2726,8 +2796,8 @@ export default class Chat extends View {
   publishHelpers() {
     if (this.transcript || !this.addr) return;
     const all = shared("chat.subagents") ?? {};
-    const list = this.kind === "claude" && this.path ? this.helpers().map((h) => ({ id: h.id, label: h.label, at: h.at ?? null, spec: h.spec || null })) : [];
-    const mine = list.length ? { log: this.path, machine: this.machine, list } : null;
+    const list = this.helpers().map(h => ({ ...h, path: h.path ?? null }));
+    const mine = this.path ? { log: this.path, kind: this.kind, machine: this.machine, list, owner: this.addr, session: this.own(), calls: [...this.conv?.helpers.keys() ?? []], spool: this.spool, connection: this.remoteError || this.producerGone ? "unavailable" : this.live?.connection } : null;
     if (JSON.stringify(mine) === JSON.stringify(all[this.addr] ?? null)) return;
     const next = { ...all };
     if (mine) next[this.addr] = mine; else delete next[this.addr];
@@ -2735,13 +2805,16 @@ export default class Chat extends View {
   }
 
   openHelper(h) {
-    if (!this.path || this.kind !== "claude" || !h.id) return;
-    const dir = `${this.path.replace(/\.jsonl$/, "")}/subagents`;
-    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && printf %s "${f%.meta.json}.jsonl"', "x", dir, `"toolUseId":"${h.id}"`], { on: this.machine })
-      .then((r) => {
-        if (!r.stdout) { toast({ title: "No conversation for this helper", body: "Claude Code hasn't written its log yet.", level: "info" }); return; }
-        openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: r.stdout, kind: "claude", title: h.label, spec: h.spec || null } } });
-      }).catch(() => {});
+    if (h.terminal && terminals().some(k => k.address === h.terminal && k.state === "live")) {
+      openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { terminal: h.terminal, dialog: true,
+        parent: { title: this.t?.name || "Parent conversation", terminal: this.addr } } });
+      return;
+    }
+    if (!h.path) { toast({ title: "Conversation unavailable", body: "The provider has not reported this subagent's transcript yet.", level: "info" }); return; }
+    openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: h.path,
+      kind: h.provider ?? this.kind, title: h.label, spec: h.spec || null, machine: this.machine,
+      owner: this.eventTerminal, session: h.id, rootPath: this.transcript?.rootPath ?? this.path, parentSession: this.transcript?.parentSession ?? this.own(), prompt: h.prompt,
+      parent: { title: this.transcript?.title || this.t?.name || this.t?.title || "Parent conversation" } } } });
   }
 
   // Only waiting: its current call is itself a wait (hc wait, a sleep, a monitor, wait_agent, a
@@ -2754,9 +2827,10 @@ export default class Chat extends View {
   // (a spinner, its name, how long). Four rows, then "+N more" opens the rest.
   background(t, st) {
     const now = Date.now();
-    const helpers = this.helpers(), jobs = this.jobs();
-    if (!helpers.length && !jobs.length) return null;
-    const shown = [...helpers, ...jobs];
+    const all = this.helpers();
+    const helpers = all.filter(h => !settled(h.status)), previous = all.filter(h => settled(h.status)), jobs = this.jobs();
+    if (!helpers.length && !jobs.length && !previous.length) return null;
+    const shown = [...helpers, ...jobs, ...(this.previousOpen ? previous : [])];
     const open = this.helpersOpen || shown.length <= 5;
     const list = open ? shown : shown.slice(0, 4);
     const ago = (at) => {
@@ -2769,10 +2843,12 @@ export default class Chat extends View {
     const row = (h, i) => h_flex().id(`helper-${i}`).w_full().h(24).px(6).gap(8).items_center().text_size(12).rounded(6)
       .when(!h.job, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.openHelper(h); }))
       .when(Boolean(h.job && h.cmd), (el) => el.tooltip(h.cmd.length > 300 ? `${h.cmd.slice(0, 299)}…` : h.cmd))
-      .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
+      .child(h.status === "waiting" ? div().size(8).mx(2).flex_none().rounded(4).bg(t.blocked)
+        : active(h.status ?? "running") ? svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)
+        : div().w(12).flex_none().text_color(h.status === "failed" ? t.blocked : t.muted).child(h.status === "completed" ? "✓" : h.status === "failed" ? "!" : settled(h.status) ? "–" : "?"))
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(h.label))
       .when(Boolean(h.spec || h.job), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(h.spec || (h.job === "monitor" ? "Monitor" : "In background"))))
-      .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(ago(h.at)));
+      .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(h.status === "waiting" ? "Needs you" : h.status === "unavailable" ? "Unavailable" : settled(h.status) ? h.status : ago(h.at)));
     // A card docked on the box's top edge (as Manus shows its running work), so the helpers read
     // apart from the agent's own working line above: a count that folds it, then a row each.
     const shut = this.helpersShut;
@@ -2781,10 +2857,12 @@ export default class Chat extends View {
         .child(h_flex().id("helpers-head").h(24).px(6).gap(6).items_center().rounded(6).cursor_pointer().text_size(12).text_color(t.muted)
           .hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { cx.stop_propagation(); this.helpersShut = !shut; cx.notify(); })
-          .child(div().flex_1().child(`${[[helpers.length, "helper"], [jobs.filter((j) => j.job === "monitor").length, "monitor"], [jobs.filter((j) => j.job !== "monitor").length, "background command"]]
-            .filter(([n]) => n).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ")} running`))
+          .child(div().flex_1().child(`${[[helpers.filter(h => active(h.status)).length, "agent"], [jobs.filter((j) => j.job === "monitor").length, "monitor"], [jobs.filter((j) => j.job !== "monitor").length, "background command"]]
+            .filter(([n]) => n).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ") || `${all.length} subagent${all.length === 1 ? "" : "s"}`} ${helpers.some(h => active(h.status)) || jobs.length ? "running" : ""}`))
           .child(svg(`mods/chat/chevron-${shut ? "up" : "down"}.svg`).size(12).flex_none()))
         .when(!shut, (el) => el.children(list.map(row))
+          .when(previous.length > 0, el => el.child(div().id("previous-agents").h(26).px(6).flex().items_center().cursor_pointer().text_color(t.muted).hover(s => s.text_color(t.foreground))
+            .on_click((_e, cx) => { this.previousOpen = !this.previousOpen; cx.notify(); }).child(`Previous agents · ${previous.length}`)))
           .when(!open, (el) => el.child(h_flex().id("helpers-more").h(22).px(6).gap(6).items_center().rounded(6).cursor_pointer()
             .text_size(12).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => { cx.stop_propagation(); this.helpersOpen = true; cx.notify(); })
@@ -3188,19 +3266,24 @@ export default class Chat extends View {
     // Sized to its words, never cut: a narrow chat drops "· 1M" first.
     const model = String(c?.label ?? agent.modelName(c?.model) ?? "");
     const pick = [(this.width ?? 600) < 460 ? model.replace(/\s*·?\s*1M$/, "") : model, agent.levelName(c?.effort), c?.fast ? "Fast" : null].filter(Boolean).join(" · ") || agent.NAMES[this.kind] || "Agent";
+    const reported = this.live?.permission;
+    const nativePolicy = ({ dangerFullAccess: "full", readOnly: "read-only", workspaceWrite: "auto" })[reported?.sandbox?.type ?? reported?.sandbox];
+    const permission = reported?.mode ?? nativePolicy ?? c?.perm;
+    const permissionLabel = ({ full: "Full access", bypassPermissions: "Full access", manual: "Ask", default: "Ask", auto: "Auto", acceptEdits: "Accept edits", plan: "Plan", "read-only": "Read only" })[permission] ?? permission;
     return h_flex().id("chat-agent-pick").h(ROUND).pl(8).pr(5).gap(4).flex_none().items_center().rounded(6)
       .text_size(12).font_medium().text_color(t.muted)
+      .tooltip(`${pick}${permissionLabel ? ` · ${permissionLabel}${reported?.confirmed && (reported.mode || nativePolicy) ? " (reported by agent)" : " (requested; not confirmed)"}` : ""}`)
       .cursor_pointer().hover((x) => x.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", (e) => { this.pickAt = e.position; })
       .on_click((_e, cx) => { cx.stop_propagation(); this.openPicker(this.pickAt, cx); })
-      .child(div().flex_none().whitespace_nowrap().child(pick))
+      .child(div().flex_none().whitespace_nowrap().child(`${pick}${this.width >= 650 && permissionLabel ? ` · ${permissionLabel}` : ""}`))
       .child(svg("mods/workspace-chrome/chevron-down.svg").size(12).flex_none());
   }
 
   composer(t, st) {
     if (this.transcript) return div().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(8)
       .child(h_flex().w_full().h(36).px(12).gap(8).items_center().rounded(10).border_1().border_color(t.border).text_size(12.5).text_color(t.dim)
-        .child(div().flex_1().min_w(0).truncate().child(`${this.transcript.title} · a helper's conversation, read-only`))
+        .child(div().flex_1().min_w(0).truncate().child(`${this.transcript.title} · ${this.transcript.relationship === "handoff" ? "previous conversation" : this.transcript.relationship === "fork" ? "source conversation" : "subagent conversation"}, read-only`))
         // What it runs on, where the box's model button sits: its log's, else its row's.
         .when(Boolean(this.conv?.meta?.model || this.transcript.spec), (el) => el.child(div().flex_none().text_color(t.muted)
           .child(this.conv?.meta?.model ? [agent.modelName(this.conv.meta.model), agent.levelName(this.conv.meta.effort)].filter(Boolean).join(" · ") : this.transcript.spec)))
@@ -3547,6 +3630,17 @@ export default class Chat extends View {
         });
     return root
       .when(this.dialog, (el) => el.child(this.dialogHead(t)))
+      .when(Boolean(this.handoff?.source?.path), el => el.child(h_flex().h(32).px(26).gap(6).items_center().text_size(12).text_color(t.muted)
+        .child(div().child("Continued from a previous agent"))
+        .child(this.button("handoff-source", "View conversation", null, "secondary", t, () => openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640,
+          props: { transcript: { ...this.handoff.source, machine: this.machine, side: false, relationship: "handoff", parent: { title: "Current conversation" } } } })))))
+      .when(Boolean(this.forkSource?.path), el => el.child(h_flex().h(32).px(26).gap(6).items_center().text_size(12).text_color(t.muted)
+        .child(div().child("Forked from a previous conversation"))
+        .child(this.button("fork-source", "View source", null, "secondary", t, () => openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640,
+          props: { transcript: { ...this.forkSource, machine: this.machine, side: false, relationship: "fork", parent: { title: "Forked conversation" } } } })))))
+      .when(Boolean(this.transcript?.parent || props()?.parent), el => el.child(h_flex().h(32).px(26).gap(6).items_center().text_size(12).text_color(t.muted)
+        .child(div().child(`${this.transcript?.relationship === "handoff" ? "Previous agent" : this.transcript?.relationship === "fork" ? "Source for" : "Subagent of"} · ${(this.transcript?.parent ?? props()?.parent).title}`))
+        .child(this.button("parent-back", "Back to parent", null, "secondary", t, () => closeOverlay(props()?.overlay)))))
       .when(this.finding, (el) => el.child(this.findBar(t, rows)))
       .child(body)
       .when(Boolean(this.error), (el) => el.child(div().flex_none().px(18).py(4).text_size(12).text_color(t.blocked).truncate().child(this.error)))

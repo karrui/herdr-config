@@ -4,7 +4,7 @@
 // Restarting goes through restart.sh: the same agent resumes its conversation; another gets a
 // handoff. The new agent starts parked behind this chat (core label herdr.chat).
 
-import { exec, appHome } from "herdr";
+import { exec, appHome, readTextFile } from "herdr";
 
 export const NAMES = { claude: "Claude Code", codex: "Codex" };
 
@@ -297,11 +297,14 @@ export function sessionOf(kind, path) {
 // Restarts the agent `t` (hc get's record) with `argv`, parked behind chat pane `pane`.
 // Resolves with the new agent's address.
 export async function restart(t, built, pane) {
-  const env = `HERDR_RESTART_CHAT="$1"${built.resume ? " HERDR_RESTART_RESUME=1" : ""}`;
-  const r = await exec("sh", ["-c", `${env} bash "$2" "$3" "$4"`, "x", pane, `${appHome()}/mods/chat/restart.sh`, t.address, JSON.stringify(built.argv)]);
+  const slash = t.address.indexOf("/");
+  const machine = slash < 0 ? null : t.address.slice(0, slash), address = t.address.slice(slash + 1);
+  const script = await readTextFile(`${appHome()}/mods/chat/restart.sh`);
+  if (!script) throw new Error("The restart script is missing.");
+  const r = await exec("bash", ["-c", `export HERDR_RESTART_CHAT="$1"; shift\n${built.resume ? "export HERDR_RESTART_RESUME=1\n" : ""}${script}`, "restart", pane, address, JSON.stringify(built.argv), JSON.stringify(built.handoff ?? null)], { on: machine });
   const addr = r.stdout.trim().split("\n").pop();
   if (r.code !== 0 || !addr) throw new Error(r.stderr.trim() || "The agent didn't restart.");
-  return addr;
+  return machine ? `${machine}/${addr}` : addr;
 }
 
 // A copy of the conversation in a new tab beside this one, through the CLI's own fork.

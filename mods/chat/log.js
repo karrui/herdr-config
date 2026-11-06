@@ -5,6 +5,8 @@
 // guessing by folder or time, so two agents in one folder never get mixed up.
 
 import { home } from "herdr";
+import { providerEvents } from "./adapters.js";
+import { applyEvent } from "./state.js";
 
 // Internal reviewers and helpers can hold rollouts under the same process tree.
 const MAIN = `[ -f "$f" ] && ! head -c 2000 "$f" | grep -Eq '"source"[[:space:]]*:[[:space:]]*\\{[[:space:]]*"subagent"'`;
@@ -949,11 +951,12 @@ export class Conversation {
           const prev = this.replies.get(id);
           if (prev && this.items[this.items.length - 1] === prev) {
             prev.text += "\n\n" + said;
+            prev.mids = [...new Set([...(prev.mids ?? []), m.id, l.uuid].filter(Boolean))];
             const pics = pictures(prev.text);
             if (pics.length) prev.paths = pics;
           }
           else {
-            const item = { kind: "agent", id: `a${off}`, text: said, at: time(l.timestamp) };
+            const item = { kind: "agent", id: `a${off}`, mid: m.id ?? l.uuid, mids: [m.id, l.uuid].filter(Boolean), text: said, at: time(l.timestamp) };
             const pics = pictures(said);
             if (pics.length) item.paths = pics;
             this.replies.set(id, item);
@@ -977,7 +980,7 @@ export class Conversation {
             this.planned(off, b.input.todos.map((x) => ({ text: String(x?.content ?? ""), status: x?.status, active: x?.activeForm })));
           } else {
             // What it was asked to run on (none named: its agent's default or the session's).
-            if (b.name === "Agent" || b.name === "Task") this.helpers.set(String(b.id), { desc: String(b.input?.description ?? "a helper"), model: b.input?.model ?? null, effort: b.input?.effort ?? null, done: false, at: time(l.timestamp) });
+            if (b.name === "Agent" || b.name === "Task") this.helpers.set(String(b.id), { desc: String(b.input?.description ?? "a helper"), model: b.input?.model ?? null, effort: b.input?.effort ?? null, done: false, prompt: b.input?.prompt, at: time(l.timestamp) });
             this.step(String(b.id), off, claudeStep(String(b.name ?? ""), b.input ?? {}), b.name === "Agent" || b.name === "Task" ? String(b.id) : null);
             // When a job or monitor it left running began (the panel says how long).
             const job = this.bg[this.bg.length - 1];
@@ -1014,13 +1017,13 @@ export class Conversation {
       } else if (p.type === "message" && p.role === "assistant") {
         const words = this.agentText((Array.isArray(p.content) ? p.content : []).filter((it) => it?.type === "output_text" && it.text?.trim()).map((it) => it.text.trim()).join("\n\n"));
         // (mid: the message's id, which its live words carry too: Live.logged().)
-        if (words) this.push({ kind: "agent", id: `a${off}`, text: words, at: time(l.timestamp), mid: p.id });
+        if (words) this.push({ kind: "agent", id: `a${off}`, text: words, at: time(l.timestamp), mid: p.id, phase: p.phase });
       } else if (p.type === "reasoning") {
         // Its reasoning's summary ("**Heading**", words under it at times): shown as Claude
         // Code's thinking is, and its gist on the working line.
         const parts = (Array.isArray(p.summary) ? p.summary : []).map((s) => String(s?.text ?? "").trim()).filter(Boolean);
         if (!parts.length) return;
-        this.push({ kind: "thought", id: `th${off}`, text: parts.join("\n\n"), at: time(l.timestamp) });
+        this.push({ kind: "thought", id: `th${off}`, text: parts.join("\n\n"), mid: p.id, at: time(l.timestamp) });
         if (!this.open.size) this.doing = gist(parts[parts.length - 1]);
       } else if ((p.type === "function_call" || p.type === "custom_tool_call" || p.type === "local_shell_call") && p.name !== "wait" && p.name !== "sleep") {
         const cid = String(p.call_id ?? p.id ?? `c${off}`);
@@ -1043,7 +1046,7 @@ export class Conversation {
         this.script = p.name === "exec" ? cid : null;
         if (this.script) st.script = cid;
         // Codex's helpers count as running until its turn ends (its log says no more).
-        if (st?.spawn) this.helpers.set(cid, { desc: st.spawn, model: st.model, effort: st.effort, done: false, untilTurn: true });
+        if (st?.spawn) this.helpers.set(cid, { desc: st.spawn, model: st.model, effort: st.effort, done: false, uncertain: true, at: time(l.timestamp) });
         this.step(cid, off, st, st?.spawn ? cid : null);
         if (ARTIFACT.test(JSON.stringify(p.arguments ?? p.input ?? p.action ?? ""))) this.push({ kind: "artifact", id: `art${off}`, at: time(l.timestamp) });
       }
@@ -1088,7 +1091,6 @@ export class Conversation {
     } else if (p.type === "task_complete" || p.type === "turn_aborted") {
       this.compacting = false;
       this.mid = false;
-      for (const h of this.helpers.values()) if (h.untilTurn) h.done = true;
       this.open.clear();
       this.waits.clear();
       this.waiting = false;
@@ -1187,14 +1189,14 @@ export function summary(steps) {
 
 // ---- live events ------------------------------------------------------------------------------
 // What the agent shows as it happens, from Claude Code's hooks (event-hook.sh, which has the
-// contract) and Codex's app-server (codex-tap.py): one JSON line each in
+// contract) and Codex's app-server (codex-tap.mjs): one JSON line each in
 // chat-events/<terminal>.jsonl. The log stays the record. These fill in only what it can't say
 // yet (compacting, a reply as it streams, an error that ended the turn, a reconnect), after its
 // last record, and each goes once the log says the same or the turn is over.
 
 // Reads the events file from byte <from>, at most <cap> bytes of it: "E <size> <from> <more>
 // <emptied>", then the bytes. A file shorter than <from> was emptied: read from its start. One
-// read to its end past 256 KB is emptied (its writers do that at 1 MB only when no chat reads).
+// The writer rotates the journal; readers never truncate a shared stream.
 export const EVENTS = String.raw`
 f="$1"; o="$2"; cap="$3"
 [ -f "$f" ] || { echo "E 0 0 0 0"; exit 0; }
@@ -1202,10 +1204,13 @@ s=$(wc -c < "$f" | tr -d ' ')
 [ "$s" -lt "$o" ] && o=0
 n=$((s - o)); more=0
 [ "$n" -gt "$cap" ] && { n="$cap"; more=1; }
-cut=0; [ "$more" = 0 ] && [ "$s" -gt 262144 ] && cut=1
-echo "E $s $o $more $cut"
+cut=0; producer="?"; c=$(printf '%s' "$f" | sed 's/\.jsonl$/.cursor.json/')
+if [ -f "$c" ]; then
+  pid=$(sed -n 's/.*"producerPid":\([0-9]*\).*/\1/p' "$c")
+  case "$pid" in ""|0|*[!0-9]*) ;; *) if kill -0 "$pid" 2>/dev/null; then producer=1; else producer=0; fi ;; esac
+fi
+echo "E $s $o $more $cut $producer"
 [ "$n" -gt 0 ] && tail -c +$((o + 1)) "$f" | head -c "$n"
-[ "$cut" = 1 ] && : > "$f"
 true`;
 
 // The first of these Codex rollouts that is a conversation, not a helper's or Codex's reviewer's
@@ -1228,31 +1233,24 @@ function bytes(s) {
 // being written waits for the next read; one longer than a read (never, by the contract) is skipped.
 export function eventLines(stdout) {
   const nl = stdout.indexOf("\n");
-  const [tag, , from, more, cut] = (nl < 0 ? stdout : stdout.slice(0, nl)).trim().split(" ");
+  const [tag, , from, more, cut, producer] = (nl < 0 ? stdout : stdout.slice(0, nl)).trim().split(" ");
   if (tag !== "E") return null;
   const data = nl < 0 ? "" : stdout.slice(nl + 1);
   let end = data.lastIndexOf("\n") + 1;
   if (!end && more === "1") end = data.length;
-  return { lines: data.slice(0, end).split("\n").filter(Boolean), next: cut === "1" ? 0 : Number(from) + bytes(data.slice(0, end)), more: more === "1" };
+  return { lines: data.slice(0, end).split("\n").filter(Boolean), next: cut === "1" ? 0 : Number(from) + bytes(data.slice(0, end)), more: more === "1", producer: producer === "1" ? true : producer === "0" ? false : null };
 }
 
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 // A reply streaming in, as the chat shows it: without Herdr's tag lines (reactions, no-reply),
 // which sit on lines of their own (Conversation.agentText()), half-written ones too.
 const streamed = (text) => String(text).split("\n").filter((l) => !/^\s*<(hc\b|\/?no-reply\b)/.test(l)).join("\n").trim();
-// Codex's plan steps' states in the checklist's words (Conversation.planned()).
-const STEP = { inProgress: "in_progress", in_progress: "in_progress", completed: "completed", pending: "pending" };
-// Codex's reconnect ("Reconnecting... 2/5") as Claude Code's retry row says one.
-function retryWords(msg) {
-  const m = /(\d+)\s*\/\s*(\d+)/.exec(String(msg ?? ""));
-  return `Retrying${m ? ` ${m[1]}/${m[2]}` : ""} · ${/network/i.test(String(msg)) ? "Waiting for the network" : "Connection dropped"}`;
-}
-
 export class Live {
-  constructor(own = null) {
+  constructor(own = null, scope = {}) {
     // The session (Claude Code) or thread (Codex) the log is: only its events count. Others are
     // a helper's, Codex's reviewer's, or an earlier agent's at this address.
     this.own = own;
+    this.scope = scope;
     // When the latest turn began or ended (events' t): what streamed before it is over.
     this.turnAt = 0;
     // The reply streaming in: { id, start, parts, whole } (whole: seen from its start).
@@ -1267,79 +1265,52 @@ export class Live {
     this.denied = new Map();
     // Codex rollouts its tap joined, newest last: [{ path, t }] (main.js locate()).
     this.rollouts = [];
+    this.children = new Map();
+    this.openItems = new Map();
+    this.messages = new Map();
+    this.endedTurns = new Set();
+    this.cursors = new Map();
+    this.connection = "connected";
   }
 
-  // New lines of the file. Hooks run async, so they go in by when they ran. True when something
-  // the chat shows may have changed.
   feed(lines) {
-    const evs = lines.map(parse).filter((e) => e && typeof e === "object").sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0));
+    const events = lines.map(parse).filter(e => e && typeof e === "object")
+      .sort((a, b) => a.epoch && a.epoch === b.epoch ? a.seq - b.seq : (Number(a.t) || 0) - (Number(b.t) || 0));
     let changed = false;
-    for (const e of evs) changed = this.apply(e) || changed;
+    for (const e of events) {
+      if (e.epoch && Number.isInteger(e.seq)) {
+        const previous = this.cursors.get(e.epoch) ?? 0;
+        if (e.seq <= previous) continue;
+        if (previous && e.seq > previous + 1) this.gap = true;
+        this.cursors.set(e.epoch, e.seq);
+      }
+      changed = this.apply(e) || changed;
+    }
     return changed;
   }
 
-  apply(e) {
-    if (e.src === "codex" && e.ev === "joined") {
-      if (e.rollout) this.rollouts = [...this.rollouts.filter((r) => r.path !== e.rollout), { path: String(e.rollout), t: e.t }].slice(-20);
-      return false;
+  apply(raw) {
+    if (this.scope.agent && raw.src === "claude-hook" && raw.sid === this.scope.parentSession) {
+      if (raw.agent === this.scope.agent) raw = { ...raw, sid: this.own, agent: null,
+        ev: raw.ev === "SubagentStop" ? "Stop" : raw.ev === "SubagentStart" ? "UserPromptSubmit" : raw.ev };
+      else if (raw.ev?.startsWith("Subagent")) raw = { ...raw, sid: this.own };
+      else return false;
     }
-    if (!this.own || (e.src === "claude-hook" ? e.sid !== this.own || e.agent : e.thread !== this.own)) return false;
-    const t = Number(e.t) || 0;
-    switch (`${e.src}:${e.ev}`) {
-      case "claude-hook:UserPromptSubmit": this.turn(t); this.error = null; return true;
-      case "claude-hook:Stop": case "codex:turn/started": case "codex:turn/completed": this.turn(t); return true;
-      case "claude-hook:StopFailure":
-        this.turn(t);
-        this.error = { at: t, text: whole(String(e.text || e.details || `API error: ${e.error ?? "unknown"}`)) };
-        return true;
-      case "claude-hook:PreCompact": this.compact = { at: t }; return true;
-      case "claude-hook:PostCompact": if (this.compact && this.compact.at <= t) this.compact = null; return true;
-      // Whole lines of the reply by their index (a long one comes only at the end, with final).
-      case "claude-hook:MessageDisplay": return this.stream(String(e.msg), t, e.i, String(e.delta ?? ""));
-      case "claude-hook:PermissionDenied":
-        if (!e.id) return false;
-        this.denied.set(String(e.id), String(e.reason ?? ""));
-        if (this.denied.size > 200) this.denied.delete(this.denied.keys().next().value);
-        return true;
-      // Anything Codex does next: it got past a reconnect.
-      case "codex:item/started":
-        this.retry = null;
-        if (e.type === "contextCompaction") this.compact = { at: t };
-        else if (e.type === "agentMessage") this.stream(String(e.item), t, 0, "");
-        return true;
-      case "codex:item/completed":
-        this.retry = null;
-        if (e.type === "contextCompaction") this.compact = null;
-        return true;
-      case "codex:item/agentMessage/delta": this.retry = null; return this.stream(String(e.item), t, null, String(e.delta ?? ""));
-      case "codex:turn/plan/updated":
-        this.plan = { at: t, steps: (Array.isArray(e.plan) ? e.plan : []).map((s) => ({ text: String(s?.step ?? ""), status: STEP[s?.status] ?? "pending" })) };
-        return true;
-      // A reconnect (the turn goes on); an error that ends the turn is in the log (task_complete).
-      case "codex:error": if (!e.retry) return false; this.retry = { at: t, text: retryWords(e.error) }; return true;
-    }
-    return false;
+    let changed = false;
+    for (const e of providerEvents(raw)) changed = applyEvent(this, e) || changed;
+    return changed;
   }
 
-  // A turn began or ended: what streamed in the last one is done.
-  turn(t) {
-    if (t < this.turnAt) return;
-    this.turnAt = t;
-    this.tail = this.retry = this.plan = null;
-    if (this.compact && this.compact.at < t) this.compact = null;
-  }
-
-  // A piece of the reply streaming in: at index i (Claude Code's lines), else after the rest
-  // (Codex's deltas; its item's start is index 0). One whose start was missed (the file read
-  // from the middle, or Codex's tap joining late) isn't shown.
-  stream(id, t, i, delta) {
-    if (t < this.turnAt) return false;
-    if (this.tail?.id !== id) {
-      if (this.tail && t < this.tail.start) return false;
-      this.tail = { id, start: t, parts: [], whole: false };
-    }
-    if (Number.isInteger(i)) this.tail.parts[i] = delta; else this.tail.parts.push(delta);
-    if (i === 0) this.tail.whole = true;
+  stream(id, at, index, delta) {
+    if (at < this.turnAt || (this.turnId && this.endedTurns.has(this.turnId))) return false;
+    let item = this.messages.get(id);
+    if (item?.done || item?.discarded) return false;
+    if (!item) item = { id, start: at, parts: [], whole: false };
+    if (Number.isInteger(index)) item.parts[index] = delta; else item.parts.push(delta);
+    if (index === 0) item.whole = true;
+    this.messages.set(id, item);
+    if (this.messages.size > 32) this.messages.delete(this.messages.keys().next().value);
+    this.tail = item;
     return true;
   }
 
@@ -1351,14 +1322,16 @@ export class Live {
   // Is the streaming reply in the log now? Codex's by its message id. Claude Code's lines carry
   // no id the log has: a reply of this turn with the same words so far. (Not by time: with
   // thinking on, Claude Code shows a reply's lines only after the log has it, seconds later.)
-  logged(items, text) {
-    const t = this.tail, a = norm(text);
+  logged(items, text, tail = this.tail) {
     for (let i = items.length - 1; i >= 0 && i >= items.length - 80; i--) {
       const x = items[i];
       if (x.kind !== "agent") continue;
-      if (x.mid !== undefined) { if (x.mid === t.id) return true; continue; }
-      const b = norm(x.text), n = Math.min(a.length, b.length, 200);
-      if (n > 0 && a.slice(0, n) === b.slice(0, n)) return true;
+      if (x.mid != null || x.mids?.length) {
+        if (x.mid === tail.id || x.mids?.includes(tail.id)) return true;
+        continue;
+      }
+      // Older records lack identity: only a complete, equal reply can settle a live row.
+      if (tail.done && norm(x.text) === norm(text) && (x.at ?? 0) >= tail.start - 2000) return true;
     }
     return false;
   }
@@ -1384,18 +1357,23 @@ export class Live {
     }
     if (this.denied.size) items = items.map((x) => (x.kind === "tools" && x.steps.some((s) => this.denied.has(s.id))
       ? { ...x, steps: x.steps.map((s) => (this.denied.has(s.id) ? { ...s, denied: true } : s)) } : x));
+    for (const t of this.messages.values()) {
+      if (t.discarded) continue;
+      const text = t.whole && t.start >= since ? streamed(t.parts.join("")) : "";
+      if (text && (working || t.done) && !this.logged(turn, text, t)) add.push({ kind: "agent", id: `live:${t.id}`, mid: t.id, phase: t.phase, text, at: t.start, live: !t.done });
+    }
+    const thought = this.thought;
+    if (working && thought?.parts.some(Boolean) && !turn.some(x => x.kind === "thought" && (x.mid === thought.id || norm(x.text) === norm(thought.parts.join("\n\n"))))) {
+      add.push({ kind: "thought", id: `live:${thought.id}`, mid: thought.id, text: thought.parts.join("\n\n"), at: thought.start, live: !thought.done });
+    }
     if (working) {
-      const t = this.tail;
-      const text = t?.whole && t.start >= since ? streamed(t.parts.join("")) : "";
-      // (A turn the log already ended, stopped too, streams no more.)
-      if (text && !turn.some((x) => x.kind === "turnend" && (x.at ?? 0) >= t.start) && !this.logged(turn, text)) add.push({ kind: "agent", id: `live:${t.id}`, text, at: t.start, live: true });
-      if (this.retry && this.retry.at >= since) add.push({ kind: "error", id: "live:retry", text: this.retry.text, retry: true });
+      if (this.retry && this.retry.at >= since) add.push({ kind: "error", id: "live:retry", at: this.retry.at, text: this.retry.text, retry: true });
       if (this.plan?.steps.length && this.plan.at >= since) {
         const p = { steps: this.plan.steps, text: this.plan.steps.map((s) => s.text).join("\n") };
         if (conv.plan && turn.includes(conv.plan)) items = items.map((x) => (x === conv.plan ? { ...x, ...p } : x));
-        else add.push({ kind: "plan", id: "live:plan", ...p });
+        else add.push({ kind: "plan", id: "live:plan", at: this.plan.at, ...p });
       }
     }
-    return add.length ? [...items, ...add] : items;
+    return add.length ? [...items, ...add.sort((a, b) => (a.at ?? 0) - (b.at ?? 0))] : items;
   }
 }

@@ -3,8 +3,9 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, notify } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, notify, readTextFile } from "herdr";
 import { chatAgents, sweep } from "./parked.js";
+import { projectChildren } from "./state.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -101,6 +102,7 @@ export default class Agents extends View {
     // An agent in Chat mode is parked behind its chat pane: when that pane goes another way than
     // cmd-w or a tab's × (a space closed, the pane closed), the agent ends with it (parked.js).
     cx.timer.every(3000, () => sweep());
+    cx.timer.every(3000, cx => cx.spawn(async () => this.refreshHelpers()));
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
@@ -108,6 +110,28 @@ export default class Agents extends View {
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
+  }
+
+  async refreshHelpers() {
+    if (this.refreshingHelpers) return;
+    this.refreshingHelpers = true;
+    try {
+      const all = shared("chat.subagents") ?? {}, snapshots = [];
+      for (const [addr, entry] of Object.entries(all)) {
+        if (!entry.spool || !entry.session || !terminals().some(k => k.address === addr && k.state === "live")) continue;
+        try {
+          const file = `${entry.spool}/chat-events/${addr.split("/").pop()}.state.json`;
+          const snapshot = JSON.parse(await readTextFile(file, { on: entry.machine }));
+          snapshots.push({ addr, session: entry.session, events: Object.values(snapshot.events ?? {}) });
+        } catch { /* Keep last-known lineage while the machine is unavailable. */ }
+      }
+      const latest = shared("chat.subagents") ?? {}, next = { ...latest };
+      for (const { addr, session, events } of snapshots) {
+        const entry = latest[addr];
+        if (entry?.session === session) next[addr] = { ...entry, list: projectChildren(events, session, entry.list, entry.calls) };
+      }
+      if (JSON.stringify(latest) !== JSON.stringify(next)) setShared("chat.subagents", next);
+    } finally { this.refreshingHelpers = false; }
   }
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
@@ -195,11 +219,19 @@ export default class Agents extends View {
   // (<session>/subagents/agent-<id>.jsonl, the one whose .meta.json names the call that
   // started it), as the chat's helper rows open it (mods/chat openHelper()).
   openHelper(h) {
+    if (h.path) {
+      openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: {
+        path: h.path, kind: h.provider ?? h.kind ?? "claude", title: h.label, spec: h.spec,
+        machine: h.machine, owner: h.owner, session: h.id, rootPath: h.log, parentSession: h.parentSession, prompt: h.prompt,
+        parent: { title: h.parentTitle ?? "Parent conversation" } } } });
+      return;
+    }
+    if (h.kind === "codex") { notify({ title: "Conversation unavailable", body: "Codex has not reported this subagent's transcript yet.", level: "info" }); return; }
     const dir = `${h.log.replace(/\.jsonl$/, "")}/subagents`;
-    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && printf %s "${f%.meta.json}.jsonl"', "x", dir, `"toolUseId":"${h.id}"`], { on: h.machine ?? undefined })
-      .then((r) => {
-        if (!r.stdout) { notify({ title: "No conversation for this helper", body: "Claude Code hasn't written its log yet.", level: "info" }); return; }
-        openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: r.stdout, kind: "claude", title: h.label, spec: h.spec || null } } });
+    exec("sh", ["-c", 'f=$(grep -lF -e "$2" "$1"/*.meta.json 2>/dev/null | head -1); [ -n "$f" ] && printf %s "${f%.meta.json}.jsonl"', "x", dir, `"toolUseId":"${h.call ?? h.id}"`], { on: h.machine ?? undefined })
+      .then(r => {
+        if (!r.stdout) { notify({ title: "Conversation unavailable", body: "The provider hasn't written its transcript yet.", level: "info" }); return; }
+        this.openHelper({ ...h, path: r.stdout.trim(), provider: "claude" });
       }).catch(() => {});
   }
 
@@ -217,17 +249,21 @@ export default class Agents extends View {
   // Live sub-agents of `addr`, depth first, each with the tree lines in front of it: terminals it
   // started (hc), then the helpers its CLI runs itself (Claude Code's Agent/Task runs), which its
   // chat lists in shared "chat.subagents" (mods/chat publishHelpers()).
-  tree(all, addr, lead = []) {
+  tree(all, addr, lead = [], seen = new Set()) {
+    if (seen.has(addr)) return [];
+    seen = new Set([...seen, addr]);
     const own = shared("chat.subagents")?.[addr];
-    // Claude Code's own helpers (only its chat lists them): its logo, as its terminals have.
-    const helpers = (own?.list ?? []).map((h) => ({ address: `helper:${h.id}`, name: h.label, status: "working", state: "live", program: { icon: "icons/claude.svg", tint: false },
-      helper: { ...h, log: own.log, machine: own.machine } }));
-    const kids = [...all.filter((k) => k.parent === addr && k.state === "live"), ...helpers];
+    const helpers = (own?.list ?? []).filter(h => !h.terminal && !["completed", "failed", "interrupted", "cancelled", "stopped"].includes(h.status))
+      .map(h => ({ address: `helper:${addr}:${h.id}`, name: h.label,
+        status: ({ running: "working", starting: "working", waiting: "blocked", unavailable: "idle" }[h.status] ?? "idle"),
+        state: "live", program: { icon: `icons/${h.provider ?? own.kind ?? "claude"}.svg`, tint: false },
+        helper: { ...h, log: own.log, machine: own.machine, kind: own.kind, owner: own.owner, parentSession: own.session } }));
+    const kids = [...all.filter(k => k.parent === addr && k.state === "live"), ...helpers];
     return kids.flatMap((k, i) => {
       const last = i === kids.length - 1;
       return [
         { t: k, lines: [...lead, last ? "└" : "├"] },
-        ...this.tree(all, k.address, [...lead, last ? "" : "│"]),
+        ...this.tree(all, k.address, [...lead, last ? "" : "│"], seen),
       ];
     });
   }

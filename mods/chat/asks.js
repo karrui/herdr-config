@@ -62,7 +62,7 @@ export function words(req) {
     case "Glob": case "Grep": return { kind: "permission", title: `Search for ${clip(v.pattern, 80)}`, ...lines(v.path) };
     case "WebFetch": return { kind: "permission", title: `Fetch ${clip(host(v.url), 100)}`, ...lines(v.url, v.prompt) };
     case "WebSearch": return { kind: "permission", title: `Search the web: ${clip(v.query, 100)}`, detail: "", cut: false };
-    // Codex's, from mods/chat/codex-tap.py (its commands come as Bash, its questions as
+    // Codex's, from mods/chat/codex-tap.mjs (its commands come as Bash, its questions as
     // AskUserQuestion): file changes as one patch, and a request for more access.
     case "apply_patch": {
       const files = Array.isArray(v.files) ? v.files : [];

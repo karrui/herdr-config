@@ -2,6 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
 import { theme, spaces, panes, terminals, focused, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, exec as execFile, notify, appHome } from "herdr";
+import { remoteRun } from "./launch.js";
 
 // Claude Code and Codex start as a chat: their tab's pane header (pane-sandbox) swaps the new
 // terminal for the chat once it shows, from this label. Terminal there shows the CLI again.
@@ -45,6 +46,13 @@ export default class NewMenu extends View {
     cx.spawn(async cx => {
       try {
         this.agents = await knownAgents({ on: machine });
+        if (machine) {
+          const result = await execFile("sh", ["-c", 'app="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"; printf "%s\\n" "$app"; uname -s; for c in claude codex; do command -v "$c" >/dev/null 2>&1 && printf "%s\\n" "$c"; done; [ -x "$app/agent/launch" ] && echo runtime; true'], { on: machine });
+          if (result.code !== 0) throw new Error(result.stderr);
+          const [app, platform, ...installed] = result.stdout.trim().split("\n");
+          this.agents = this.agents.map(a => /^(claude|codex)(-|$)/.test(a.key ?? "") && a.run.some(x => /\/agent\/launch$/.test(x))
+            ? { ...a, run: remoteRun(a.run, app, platform), installed: installed.includes(a.key.startsWith("claude") ? "claude" : "codex") && installed.includes("runtime") } : a);
+        }
         setShared(KNOWN, { ...shared(KNOWN), [where]: this.agents });
       }
       catch { this.failed = true; }

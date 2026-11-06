@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs Codex with its TUI on a private app-server, so a second client (mods/chat/codex-tap.py)
+# Runs Codex with its TUI on a private app-server, so a second client (mods/chat/codex-tap.mjs)
 # can give the chat live events and Codex's approvals as cards. The TUI stays the agent in the
 # terminal: hc send, read and wait, and Herdr's status, work as before. agent/launch runs this
 # inside the sandbox when the agent is sandboxed, so the server and its tools are confined too.
@@ -86,8 +86,8 @@ done
 real="$(readlink "$sock")" || real="$sock"
 
 tap=""
-if command -v python3 >/dev/null; then
-  python3 "$here/../mods/chat/codex-tap.py" "$real" "$d" "$t" "$srv" </dev/null >/dev/null 2>&1 &
+if command -v node >/dev/null; then
+  node "$here/../mods/chat/codex-tap.mjs" "$real" "$d" "$t" "$srv" </dev/null >/dev/null 2>&1 &
   tap=$!
 fi
 # Stopped from outside (Ctrl+C, agent-restart, the terminal closing): the TUI gets the signal

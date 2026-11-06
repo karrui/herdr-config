@@ -230,8 +230,8 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
   An API error that ended a Claude Code turn shows as the turn's error, and a call its auto mode refused is marked denied.
   Codex's reconnects show as a retry row ("Retrying 2/5"), its plan updates as it goes, and a question card answered in the chat or its terminal leaves a closing line.
   For Claude Code, `agent/launch` adds an async hook (`mods/chat/event-hook.sh`).
-  Codex runs through `agent/codex-live`, which keeps its TUI in the terminal on a private app-server that `mods/chat/codex-tap.py` also joins.
-  Both write to `chat-events/<terminal>.jsonl` next to the cards' files, and `event-hook.sh` describes the events.
+  Codex runs through `agent/codex-live`, which keeps its TUI in the terminal on a private app-server that `mods/chat/codex-tap.mjs` also joins.
+  Both write to `chat-events/<terminal>.jsonl` next to the cards' files; `session.mjs` normalizes hooks and persists lifecycle snapshots.
 - The model picker restarts the agent through `agent/launch`, in the sandbox when it was. A change of effort alone needs no restart: Claude Code switches it in place for that session only.
 - Artifacts are small Herdr panels agents publish with `herdr-artifact`, shown in the Artifacts panel (the tab bar's grid button) and as cards in the chat.
   Herdr runs them outside the sandbox, so one a sandboxed agent made only runs once you've read its code and approved it; a new version asks again.
@@ -252,15 +252,38 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
   A skill or command named in a message you sent is marked, as the CLI marks it.
 - Above the box, the agent's helpers at work, one row each with what they run on ("Opus 5.5 · Extra high", from the helper's own log) and for how long; click one to read its conversation.
   Monitors and commands left running in the background are listed there too until they end, with their command on hover.
+- Codex and Claude observations feed the same JavaScript lifecycle reducer. A parent's final answer does not finish its children.
+  Finished children stay under **Previous agents**; child views show their delegation and a parent breadcrumb, including nested Claude helpers.
+  Replayed events are deduplicated by producer and sequence, completed replies reconcile by native identity, and a disconnected producer shows as unavailable.
+- Provider changes preserve an attributed, bounded handoff and a link to the original transcript. Resumes and forks keep their separate meanings.
+  The composer distinguishes reported permissions from requested settings in its tooltip.
 
 cmd-w on a tab in Chat parks its agent, as for a terminal; the tab's × ends it.
 
 Agents that other agents start show under them in the Agents list.
-Claude Code's own helpers carry its logo and read their model and effort on hover.
+Codex and Claude Code's own helpers carry their provider's logo and show reported model and effort.
 One started with `hc`, such as a Codex reviewer, is named by its task and shows its model and effort on hover too.
 Click it to open its chat in a dialog, with Chat | Terminal (the terminal opens in a peek); right-click it to open its chat or terminal, or to stop it.
 An agent in Herdr is told to start another CLI agent this way, as a real agent through `agent/launch`, rather than headless (`codex exec`, `claude -p`), so it can be watched, followed up with `hc send`, and stopped.
-Shepherdr's tasks, assistants, voice and other machines aren't included.
+Shepherdr's tasks, assistants and voice aren't included.
+
+### Remote chat agents
+
+Transcript lookup, live events, questions, approval responses, native child navigation, forks and provider restarts run on the agent's machine.
+Local and remote terminal addresses remain distinct. A failed connection preserves pending cards and last-known history; it does not turn running work into a success.
+The state model, session reader and Codex tap are JavaScript with no npm dependencies. The existing Linux desktop file picker remains a separate OS helper.
+
+Install Node and jq alongside the CLIs on the remote host, and copy the runtime files from this checkout (replace `YOUR_HOST` with its SSH destination):
+
+```sh
+ssh YOUR_HOST 'mkdir -p ~/.config/herdr-app/agent ~/.config/herdr-app/mods/chat'
+rsync -ab agent/ YOUR_HOST:.config/herdr-app/agent/
+rsync -ab mods/chat/{session.mjs,codex-tap.mjs,event-hook.sh,ask-hook.sh,restart.sh} YOUR_HOST:.config/herdr-app/mods/chat/
+```
+
+The + menu resolves the launcher in the remote user's home. On Linux it uses the CLI's own configured sandbox and approval policy, without the macOS seatbelt override.
+Start a new agent after updating runtime files to enable new hook registrations and the JavaScript tap. Existing conversations remain readable.
+Remote readers are sent with each request, so the remote host does not need the native UI mods.
 
 ## Updating
 

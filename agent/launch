@@ -34,8 +34,9 @@ case "$program" in
     # streams, API errors) as live events for the chat. Async, so Claude never waits on it.
     hook="$(jq -nc --arg c "sh '$dir/../mods/chat/ask-hook.sh'" --arg e "sh '$dir/../mods/chat/event-hook.sh'" '{hooks: (
       {PermissionRequest: [{hooks: [{type: "command", command: $c, timeout: 1800}]}]}
-      + ([("PreCompact", "PostCompact", "MessageDisplay", "StopFailure", "PostToolUseFailure", "PermissionDenied", "Stop", "UserPromptSubmit")
-          | {(.): [{hooks: [{type: "command", command: $e, async: true}]}]}] | add))}')"
+      + ([("PreCompact", "PostCompact", "MessageDisplay", "StopFailure", "PostToolUseFailure", "PermissionDenied", "Stop", "UserPromptSubmit", "SessionEnd", "SubagentStart", "SubagentStop")
+          | {(.): [{hooks: [{type: "command", command: $e, async: true}]}]}] | add)
+      + {PostToolUse: [{matcher: "SubagentHandback", hooks: [{type: "command", command: $e, async: true}]}]})}')"
     args=() merged=""
     while [ $# -gt 0 ]; do
       if [ "$1" = --settings ] && [ $# -gt 1 ]; then

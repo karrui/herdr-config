@@ -118,40 +118,40 @@ export async function textFile(text) {
 // LOG omits base64 from messages. Read those images once from their original byte offsets
 // and cache them beside other attachments, so the existing thumbnail and viewer path works.
 const LOG_IMAGES = String.raw`
-import base64, hashlib, json, os, sys
-file, dest, *offsets = sys.argv[1:]
-out = {}
-exts = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "image/bmp": "bmp", "image/tiff": "tiff"}
-with open(file, "rb") as source:
-    for offset in offsets:
-        source.seek(int(offset))
-        try:
-            content = json.loads(source.readline()).get("payload", {}).get("content", [])
-        except (ValueError, TypeError):
-            continue
-        for i, item in enumerate(content):
-            if not isinstance(item, dict) or item.get("type") != "input_image":
-                continue
-            url = item.get("image_url", "")
-            if not isinstance(url, str) or not url.startswith("data:image/") or "," not in url:
-                continue
-            head, encoded = url.split(",", 1)
-            ext = exts.get(head[5:].split(";")[0])
-            if not ext or not head.endswith(";base64"):
-                continue
-            try:
-                data = base64.b64decode(encoded, validate=True)
-            except ValueError:
-                continue
-            os.makedirs(dest, exist_ok=True)
-            path = os.path.join(dest, hashlib.sha256(data).hexdigest() + "." + ext)
-            if not os.path.exists(path):
-                temp = path + "." + str(os.getpid()) + ".tmp"
-                with open(temp, "wb") as target:
-                    target.write(data)
-                os.replace(temp, path)
-            out.setdefault(offset, {})[str(i)] = path
-print(json.dumps(out))
+const fs = await import("node:fs");
+const { createHash } = await import("node:crypto");
+const [file, dest, ...offsets] = process.argv.slice(1), out = {};
+const exts = {"image/png":"png", "image/jpeg":"jpg", "image/gif":"gif", "image/webp":"webp", "image/bmp":"bmp", "image/tiff":"tiff"};
+const fd = fs.openSync(file, "r");
+try {
+  for (const offset of offsets) {
+    let at = Number(offset), chunks = [], record;
+    for (;;) {
+      const buffer = Buffer.alloc(65536), size = fs.readSync(fd, buffer, 0, buffer.length, at);
+      if (!size) break;
+      const end = buffer.subarray(0, size).indexOf(10);
+      chunks.push(buffer.subarray(0, end < 0 ? size : end));
+      if (end >= 0) break;
+      at += size;
+    }
+    try { record = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { continue; }
+    for (const [i, item] of (record.payload?.content ?? []).entries()) {
+      if (item?.type !== "input_image" || typeof item.image_url !== "string") continue;
+      const match = /^data:(image\/[a-z]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(item.image_url);
+      if (!match || !exts[match[1]] || match[2].length % 4) continue;
+      const data = Buffer.from(match[2], "base64");
+      if (data.toString("base64") !== match[2]) continue;
+      fs.mkdirSync(dest, { recursive: true });
+      const name = dest + "/" + createHash("sha256").update(data).digest("hex") + "." + exts[match[1]];
+      if (!fs.existsSync(name)) {
+        const temp = name + "." + process.pid + ".tmp";
+        fs.writeFileSync(temp, data, { mode: 0o600 }); fs.renameSync(temp, name);
+      }
+      (out[offset] ??= {})[i] = name;
+    }
+  }
+} finally { fs.closeSync(fd); }
+console.log(JSON.stringify(out));
 `;
 
 export async function logImages(file, stdout) {
@@ -165,7 +165,7 @@ export async function logImages(file, stdout) {
   });
   if (!entries.length) return stdout;
   try {
-    const r = await exec("python3", ["-c", LOG_IMAGES, file, `${DIR}/log-images`, ...entries.map((e) => e.off)]);
+    const r = await exec("node", ["--input-type=module", "-e", LOG_IMAGES, "--", file, `${DIR}/log-images`, ...entries.map((e) => e.off)]);
     if (r.code !== 0) return stdout;
     const paths = JSON.parse(r.stdout);
     for (const { index, off, record } of entries) {

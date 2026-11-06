@@ -53,7 +53,7 @@ status() {
 # no result there yet means.
 how() {
   sleep 0.5
-  r=$(python3 "$(dirname "$0")/ask-end.py" "$req" 2>/dev/null)
+  r=$(node "$(dirname "$0")/session.mjs" ask-end "$req" 2>/dev/null)
   case "${r:-$1}" in
     declined) echo "Declined or interrupted in the terminal" ;;
     *) echo "Answered in the terminal" ;;

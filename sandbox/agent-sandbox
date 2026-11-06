@@ -131,6 +131,12 @@ for v in $(compgen -e | grep '^AWS_' || true); do scrub+=(-u "$v"); done
 broker=$!
 HERDR_SANDBOX="$file" HERDR_HC_SPOOL="$spool" PATH="$dir/bin:$PATH" env "${scrub[@]}" sandbox-exec -f "$profile" "$@" || status=$?
 kill "$broker" 2>/dev/null || true
+# Preserve child lineage after the per-run broker spool goes away.
+if [ -f "$spool/chat-events/$term.state.json" ]; then
+  mkdir -p "$dir/../data/chat-events" &&
+    cp "$spool/chat-events/$term.state.json" "$dir/../data/chat-events/$term.state.json.tmp" &&
+    mv "$dir/../data/chat-events/$term.state.json.tmp" "$dir/../data/chat-events/$term.state.json" || true
+fi
 rm -rf "$spool"
 # Only our own label: another run may have taken the terminal since.
 if [ "$term" != none ] && [ "$(hc get "$term" --json 2>/dev/null | jq -r '.labels["herdr.sandbox"] // empty')" = "$file" ]; then

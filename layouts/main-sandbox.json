@@ -89,12 +89,6 @@
               "id": "tabs",
               "type": "block",
               "content": { "mod": "tabs-sandbox" }
-            },
-            {
-              "id": "review-bar",
-              "type": "block",
-              "size": { "px": 0 },
-              "content": { "mod": "pulls-review", "props": { "block": "review-bar" } }
             }
           ]
         },
@@ -147,12 +141,17 @@
                       }
                     },
                     {
-                      "id": "review",
+                      "id": "changes",
                       "type": "block",
-                      "content": { "mod": "review", "props": { "sidebar": true } },
+                      "content": { "mod": "changes-sandbox" },
                       "background": "background",
                       "border": { "width": 1, "color": "border" },
                       "radius": 10
+                    },
+                    {
+                      "id": "graph",
+                      "type": "block",
+                      "content": { "mod": "git-graph" }
                     },
                     {
                       "id": "linear",
@@ -160,6 +159,11 @@
                       "content": {
                         "mod": "linear"
                       }
+                    },
+                    {
+                      "id": "subagents",
+                      "type": "block",
+                      "content": { "mod": "chat", "props": { "view": "subagents" } }
                     },
                     {
                       "id": "artifacts",

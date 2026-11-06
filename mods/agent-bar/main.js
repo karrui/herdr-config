@@ -134,7 +134,10 @@ export default class AgentBar extends View {
       this.error = null;
       cx.notify();
       cx.spawn(async cx => {
-        const r = await execFile(`${SANDBOX_DIR}/agent-restart`, [address, on ? "on" : "off"]).catch(e => ({ code: 1, stderr: String(e) }));
+        const slash = address.indexOf("/");
+        const r = await (slash < 0 ? execFile(`${SANDBOX_DIR}/agent-restart`, [address, on ? "on" : "off"])
+          : execFile("sh", ["-c", 'exec "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/sandbox/agent-restart" "$1" "$2"', "restart", address.slice(slash + 1), on ? "on" : "off"], { on: address.slice(0, slash) }))
+          .catch(e => ({ code: 1, stderr: String(e) }));
         this.busy = false;
         if (r.code === 0) return closeOverlay(overlay);
         this.error = r.stderr.trim() || "Restarting failed.";

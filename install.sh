@@ -28,5 +28,4 @@ else
   echo "Open Herdr and press cmd-shift-l until it shows the main-sandbox layout."
 fi
 command -v gh >/dev/null || echo "Optional: install gh and run gh auth login, for pull requests in the sidebar."
-command -v jin.review >/dev/null || echo "For native reviews: bun add --global jin.review@0.3.4-fork.4, then put ~/.bun/bin on your PATH."
 echo "Next: the Claude Code status line, in README.md."

@@ -1,0 +1,7 @@
+Repository: https://github.com/rabeeh-ta/herdr-git-graph
+Commit: 4a9cd1ef79915234a56ba0031945b0b82973585c
+Path: mods/git-graph
+License: MIT (icons: ISC)
+
+Local change: follow the parked terminal's live folder when a chat pane is focused.
+Integrated into main-sandbox's side panel and tabs-sandbox's toolbar.

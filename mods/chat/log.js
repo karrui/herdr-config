@@ -47,6 +47,7 @@ true`;
 export const LOG = String.raw`
 mode="$1"; f="$2"
 [ -f "$f" ] || { echo "missing"; exit 0; }
+floor="$FLOOR"; [ -n "$floor" ] || floor=0
 s=$(wc -c < "$f" | tr -d ' ')
 X='
 BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true" : "\"isSidechain\":false" }
@@ -114,7 +115,7 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
     # Reasoning only when it says something: most is encrypted, its summary empty.
     if (index(head, "\"type\":\"message\"") || index(head, "_call\"") || (index(head, "\"type\":\"reasoning\"") && index(line, "\"summary\":[{"))) keep = 1
   } else if (index(head, "\"type\":\"event_msg\"")) {
-    if (index(head, "\"task_complete\"") || index(head, "\"turn_aborted\"") || index(head, "\"token_count\"") || index(head, "\"task_started\"") || index(head, "\"ContextCompaction\"")) keep = 1
+    if (index(head, "\"task_complete\"") || index(head, "\"turn_aborted\"") || index(head, "\"token_count\"") || index(head, "\"task_started\"") || index(head, "\"ContextCompaction\"") || (index(head, "\"AgentMessage\"") && index(line, "\"delivery\":\"async\"") && index(line, "\"questions\":["))) keep = 1
   } else if (index(head, "\"type\":\"turn_context\"") || index(head, "\"type\":\"queue-operation\"")) {
     keep = 1
   }
@@ -142,6 +143,7 @@ range() { tail -c +$(($1 + 1)) "$f" | head -c $(($2 - $1)) | LC_ALL=C awk -v bas
 case "$mode" in
 tail)
   o="$3"; [ "$s" -lt "$o" ] && o=0
+  [ "$o" -lt "$floor" ] && o="$floor"
   part=0
   if [ "$s" -gt "$o" ] && [ "$(tail -c +"$s" "$f" | head -c 1 | wc -l | tr -d ' ')" = 0 ]; then
     part=$(tail -c +$((o + 1)) "$f" | head -c $((s - o)) | LC_ALL=C awk 'END { print length($0) }')
@@ -159,16 +161,17 @@ page)
     fi
   fi
   a="$e"; b="$e"; n=0; c=1000000
-  while [ "$a" -gt 0 ] && [ "$n" -lt "$want" ]; do
-    lo=$((b - c)); [ "$lo" -lt 0 ] && lo=0
-    k=0; [ "$lo" -gt 0 ] && k=1
+  while [ "$a" -gt "$floor" ] && [ "$n" -lt "$want" ]; do
+    lo=$((b - c)); [ "$lo" -lt "$floor" ] && lo="$floor"
+    k=0; [ "$lo" -gt "$floor" ] && k=1
     r=$(range "$lo" "$b" "$k" 1 | tail -n 1)
     first=$(echo "$r" | cut -f2); m=$(echo "$r" | cut -f3)
-    if [ "$first" -ge "$b" ] && [ "$lo" -gt 0 ]; then c=$((c * 2)); continue; fi
+    if [ "$first" -ge "$b" ] && [ "$lo" -gt "$floor" ]; then c=$((c * 2)); continue; fi
     n=$((n + m)); a="$first"; b="$first"
     [ "$c" -lt 16000000 ] && c=$((c * 2))
   done
-  echo "P $a $e"
+  first="$a"; [ "$a" -le "$floor" ] && first=0
+  echo "P $first $e"
   [ "$e" -gt "$a" ] && range "$a" "$e" 0 0
   ;;
 results)
@@ -673,11 +676,34 @@ export class Conversation {
     if (this.questions.size > 20) this.questions.delete(this.questions.keys().next().value);
   }
 
+  askedAsync(id, questions, off, at) {
+    if (this.questions.has(id) || !Array.isArray(questions)) return;
+    const input = questions.map((q, i) => ({ question: q?.title, options: q?.options ?? [],
+      questionItemId: JSON.stringify(["request_user_input_async", id, i]) })).filter(q => typeof q.question === "string" && q.question.trim());
+    if (!input.length) return;
+    this.asked(id, { kind: "ask", id: `q${off}`, mid: id, call: id, async: true, questions: input, answers: {},
+      text: input.map(q => q.question).join("\n\n"), at });
+  }
+
+  answeredAsync(text, off, at) {
+    const match = /^\s*<send_user_message_question_reply>\s*([\s\S]*?)\s*<\/send_user_message_question_reply>\s*$/.exec(text);
+    const replies = match && parse(match[1]);
+    if (!Array.isArray(replies) || !replies.length || !replies.every(r => typeof r?.answer === "string" && typeof r.question === "string" && typeof r.questionItemId === "string")) return false;
+    for (const r of replies) {
+      const id = parse(r.questionItemId), q = Array.isArray(id) && id[0] === "request_user_input_async" ? this.questions.get(id[1]) : null;
+      if (!q?.async || !q.questions.some(item => item.questionItemId === r.questionItemId && item.question === r.question)) continue;
+      q.answers[r.questionItemId] = r.answer;
+      if (q.questions.every(item => item.questionItemId in q.answers)) q.closed = "answered";
+    }
+    this.user(`u${off}`, { text: replies.map(r => r.answer).join("\n\n"), replyTo: replies.map(r => r.question).join("\n\n"), at });
+    return true;
+  }
+
   done(id, off, failed = false) {
     const q = this.questions.get(id);
     // (Codex's log doesn't say whether its question got an answer: the chat's line for the
     // card does, main.js askEnded().)
-    if (q) q.closed ??= this.kind === "codex" ? "ended" : "dismissed";
+    if (q && (!q.async || failed)) q.closed ??= failed ? "dismissed" : this.kind === "codex" ? "ended" : "dismissed";
     const s = this.calls.get(id);
     if (s) { s.out = off; s.failed = failed; this.calls.delete(id); }
     this.waits.delete(id);
@@ -698,6 +724,7 @@ export class Conversation {
     // Only reactions: nothing to show, but the agent's turn before it is over (its actions and
     // pills stay while it answers, and its answer is a turn of its own).
     if (!u?.text && !u?.images && !u?.notes) { if (u?.reactions?.length) this.push({ kind: "mark", id }); return; }
+    this.limit = null;
     // A reply names the message it answers. An old blockquote reply counts when it matches an
     // earlier message's start; else it stays a quote.
     let text = u.text, replyTo = u.replyTo ?? null;
@@ -884,6 +911,7 @@ export class Conversation {
     if (l.type === "assistant" && l.isApiErrorMessage) {
       const err = (l.message?.content ?? []).filter((b) => b?.type === "text").map((b) => b.text).join("\n");
       if (err) this.failed(off, err);
+      this.limit = l.error === "rate_limit" ? { at: time(l.timestamp), text: err } : null;
       this.mid = false;
       return;
     }
@@ -932,6 +960,7 @@ export class Conversation {
       if (u) this.user(`u${off}`, { ...u, at: time(a.timestamp ?? l.timestamp) });
     } else if (l.type === "assistant") {
       const m = l.message ?? {};
+      if (m.model !== "<synthetic>") this.limit = null;
       const id = String(m.id ?? l.uuid);
       if (m.model && m.model !== "<synthetic>") {
         const u = m.usage ?? {};
@@ -1006,6 +1035,7 @@ export class Conversation {
           if (Array.isArray(kinds) && kinds.length === items.length) return kinds[i] === "user.text" ? it.text.trim() : "";
           return CODEX_INJECTED.test(it.text) ? "" : it.text.trim();
         }).filter(Boolean).join("\n\n");
+        if (this.answeredAsync(words, off, time(l.timestamp))) return;
         const images = items.filter((it) => it?.type === "input_image" || it?.type === "image");
         const paths = images.map((it) => it.image_url ?? it.path).filter((p) => typeof p === "string" && p.startsWith("/"));
         const text = words.split("\n").filter((line) => {
@@ -1027,6 +1057,11 @@ export class Conversation {
         if (!this.open.size) this.doing = gist(parts[parts.length - 1]);
       } else if ((p.type === "function_call" || p.type === "custom_tool_call" || p.type === "local_shell_call") && p.name !== "wait" && p.name !== "sleep") {
         const cid = String(p.call_id ?? p.id ?? `c${off}`);
+        if (p.name?.split(".").pop() === "request_user_input_async") {
+          const input = typeof p.arguments === "string" ? parse(p.arguments) : p.arguments;
+          this.askedAsync(cid, input?.questions, off, time(l.timestamp));
+          return;
+        }
         // Codex's own questions (Plan mode): answered in its terminal, shown here as asked.
         if (p.name === "request_user_input") {
           let a = p.arguments;
@@ -1065,6 +1100,8 @@ export class Conversation {
       // turns name who started them; older Codex named no one, so it counts only after one did).
       if (p.turn_attribution) this.attributed = true;
       else if (this.attributed) this.user(`u${off}`, { text: "/compact", at: time(l.timestamp) });
+    } else if (p.type === "item_completed" && p.item?.type === "AgentMessage" && p.item.delivery === "async") {
+      this.askedAsync(p.item.id, p.item.questions, off, time(l.timestamp));
     } else if (p.type === "item_completed" && p.item?.type === "McpToolCall") {
       const it = p.item;
       if (!it.id || !it.server || !it.tool) return;
@@ -1266,6 +1303,7 @@ export class Live {
     // Codex rollouts its tap joined, newest last: [{ path, t }] (main.js locate()).
     this.rollouts = [];
     this.children = new Map();
+    this.descendantEvents = new Map();
     this.openItems = new Map();
     this.messages = new Map();
     this.endedTurns = new Set();
@@ -1290,13 +1328,18 @@ export class Live {
   }
 
   apply(raw) {
+    let changed = false;
+    if (raw.src === "codex" && ["child", "joined"].includes(raw.ev)) {
+      const key = raw.ev === "joined" ? `joined:${raw.thread}` : `${raw.thread}:${raw.child}`, old = this.descendantEvents.get(key);
+      if (!old || (raw.t ?? 0) >= (old.t ?? 0)) { this.descendantEvents.set(key, { ...old, ...raw }); changed = true; }
+      if (this.descendantEvents.size > 512) this.descendantEvents.delete(this.descendantEvents.keys().next().value);
+    }
     if (this.scope.agent && raw.src === "claude-hook" && raw.sid === this.scope.parentSession) {
       if (raw.agent === this.scope.agent) raw = { ...raw, sid: this.own, agent: null,
         ev: raw.ev === "SubagentStop" ? "Stop" : raw.ev === "SubagentStart" ? "UserPromptSubmit" : raw.ev };
       else if (raw.ev?.startsWith("Subagent")) raw = { ...raw, sid: this.own };
       else return false;
     }
-    let changed = false;
     for (const e of providerEvents(raw)) changed = applyEvent(this, e) || changed;
     return changed;
   }
@@ -1325,7 +1368,7 @@ export class Live {
   logged(items, text, tail = this.tail) {
     for (let i = items.length - 1; i >= 0 && i >= items.length - 80; i--) {
       const x = items[i];
-      if (x.kind !== "agent") continue;
+      if (x.kind !== "agent" && !(x.kind === "ask" && x.async)) continue;
       if (x.mid != null || x.mids?.length) {
         if (x.mid === tail.id || x.mids?.includes(tail.id)) return true;
         continue;

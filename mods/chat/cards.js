@@ -54,7 +54,7 @@ export class AskCards {
       const ctls = [];
       // Always answerable here; only a request the chat couldn't read at all goes to the terminal.
       if (!w.unread) ctls.push({ id: `ask-allow-${id}`, label: w.kind === "plan" ? "Approve" : "Allow", look: "primary", fn: (cx) => this.host.reply(ask, allow(), cx) });
-      ctls.push({ id: `ask-deny-${id}`, label: w.kind === "plan" ? "Keep planning" : "Deny", look: "secondary",
+      ctls.push({ id: `ask-deny-${id}`, label: w.kind === "plan" ? "Keep planning" : ask.req?.elicitation ? "Cancel" : "Deny", look: "secondary",
         fn: (cx) => this.host.reply(ask, w.kind === "plan" ? deny("The person didn't approve this plan yet. Ask them what to change.") : deny(), cx) });
       out.push({ key: "actions", kind: "controls", align: "start", ctls });
     }
@@ -110,7 +110,7 @@ export class AskCards {
     if (ask.words.kind === "questions") {
       const q = this.state(ask);
       const open = ask.words.questions.filter((_, i) => !this.answerOf(ask, q, i));
-      if (open.length === 1) {
+      if (open.length === 1 && !open[0].strict) {
         const map = Object.fromEntries(ask.words.questions.map((qq, i) => [qq.text, this.answerOf(ask, q, i) || text]));
         this.drop(ask);
         this.host.reply(ask, answers(ask.req, map), cx);
@@ -166,6 +166,7 @@ export class AskCards {
 
   // "Other…": its box, made here (never in render), then the keyboard in it.
   openOther(ask, i, cx) {
+    if (ask.words.questions[i].strict) return;
     const q = this.state(ask);
     q.other[i] = q.other[i] ?? "";
     if (!ask.words.questions[i].multi) q.picks[i] = new Set();
@@ -199,16 +200,18 @@ export class AskCards {
       out.push({ key: `q${step}`, kind: "title", text: qq.text });
       if (qq.multi) out.push({ key: `multi${step}`, kind: "text", tone: "dim", gap: 2, text: "Pick any that apply." });
       qq.options.forEach((o, k) => out.push({ key: `q${step}-${k}`, kind: "option", gap: k ? 2 : 6, on: q.picks[step].has(k), multi: qq.multi,
-        label: o.name, desc: o.description, tag: o.recommended ? "Recommended" : null, fn: () => this.pick(ask, step, k) }));
-      out.push({ key: `q${step}-other`, kind: "option", gap: 2, on: q.other[step] !== null, multi: qq.multi, label: "Other…", fn: (cx) => this.openOther(ask, step, cx) });
+        label: qq.strict ? o.label : o.name, desc: o.description, tag: o.recommended ? "Recommended" : null, fn: () => this.pick(ask, step, k) }));
+      if (!qq.strict) out.push({ key: `q${step}-other`, kind: "option", gap: 2, on: q.other[step] !== null, multi: qq.multi, label: "Other…", fn: (cx) => this.openOther(ask, step, cx) });
       if (q.other[step] !== null) out.push({ key: `q${step}-box`, kind: "input", gap: 2, indent: 32, state: q.boxes[step] ?? null, placeholder: "Your answer" });
-      out.push({ key: `q${step}-chat`, kind: "option", gap: 2, label: "Chat about this", desc: "Or type your answer below.",
+      if (!qq.strict) out.push({ key: `q${step}-chat`, kind: "option", gap: 2, label: "Chat about this", desc: ask.req?.async ? "Or choose Other to write your answer." : "Or type your answer below.",
         fn: (cx) => { this.drop(ask); this.host.reply(ask, chatAbout(), cx); this.host.chatAbout(ask, cx); } });
       if (many && step < n - 1) out.push({ key: `next${step}`, kind: "controls", align: "end", gap: 4, ctls: [{ id: `q-next-${id}-${step}`, label: "Next", look: "plain", fn: () => this.go(ask, step + 1) }] });
     }
     if (!many || step === n) {
       const ready = this.done(ask, q);
-      out.push({ key: "submit", kind: "controls", align: "end", ctls: [{ id: `q-submit-${id}`, label: "Submit", look: "primary", disabled: !ready, fn: ready ? (cx) => this.submit(ask, cx) : null }] });
+      out.push({ key: "submit", kind: "controls", align: "end", ctls: [
+        ...(ask.req?.elicitation ? [{ id: `q-cancel-${id}`, label: "Cancel", look: "secondary", fn: (cx) => { this.drop(ask); this.host.reply(ask, deny(), cx); } }] : []),
+        { id: `q-submit-${id}`, label: "Submit", look: "primary", disabled: !ready, fn: ready ? (cx) => this.submit(ask, cx) : null }] });
     }
     return out;
   }

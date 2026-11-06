@@ -1,14 +1,14 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-// herdr's exec takes an argv list and never goes through a shell.
-import { exec as execFile, run, theme, props, closeOverlay, appHome, setShared } from "herdr";
+import { run, theme, props, closeOverlay, setShared } from "herdr";
+import { worktreeExec } from "./worktree-runtime.js";
+import { loginArgv } from "./shell.js";
 
 // A popup from the tab bar: the Docker containers and volumes this space's worktree
-// setup started (agent/worktree records them), with their state now. props: { folder }.
-const HOOKS = () => `${appHome()}/agent/worktree`;
+// setup started (agent/worktree records them). props: { folder, machine, pane }.
 // Through a login shell, so OrbStack's or Docker Desktop's docker is on PATH.
 const resources = (folder, action) =>
-  execFile("/bin/zsh", ["-lc", 'exec "$0" resources "$1" "$2"', HOOKS(), folder, action ?? ""]);
+  worktreeExec("resources", folder, [action ?? ""], props().machine);
 
 // "127.0.0.1:22734->5432/tcp, [::]:..." -> the host ports, once each.
 const hostPorts = (ports) => [...new Set([...(ports ?? "").matchAll(/:(\d+)->/g)].map((m) => m[1]))];
@@ -70,7 +70,7 @@ export default class Resources extends View {
             .children(hostPorts(c.ports).map((p) => div().flex_none().px(5).rounded(4).bg(t.raised).text_size(11).text_color(t.muted).child(`:${p}`)))
             .child(div().id(`logs-${c.id}`).flex_none().px(6).py(2).rounded(4).text_size(11.5).text_color(t.muted).cursor_pointer()
               .hover((s) => s.bg(t.raised).text_color(t.foreground)).child("Logs")
-              .on_click(() => { closeOverlay(props().overlay); run("pane.split", { direction: "down", argv: ["/bin/zsh", "-lc", 'exec docker logs -f --tail 200 "$0"', c.id] }); }))];
+              .on_click(() => { closeOverlay(props().overlay); run("pane.split", { direction: "down", pane: props().pane, argv: loginArgv("docker", ["logs", "-f", "--tail", "200", c.id]) }); }))];
         }))
         .when((d?.volumes.length ?? 0) > 0, (el) => el.child(div().px(8).pt(8).pb(2).text_size(11).text_color(t.dim)
           .child(`Volumes: ${d.volumes.join(", ")}`))))

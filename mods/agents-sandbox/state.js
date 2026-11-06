@@ -19,8 +19,8 @@ export function applyEvent(state, e) {
     // A handback delivers a report; only a stop/turn event establishes completion.
     const next = { ...old, id: e.child, provider: e.provider, parent: e.session, updated: e.at,
       at: old?.at ?? e.at, status: e.status ?? old?.status ?? "unavailable" };
-    if (e.ev === "SubagentStart") { delete next.delivery; delete next.result; }
-    for (const key of ["path", "call", "prompt", "label", "model", "effort", "result", "error", "delivery"]) if (e[key] != null) next[key] = e[key];
+    if (e.ev === "SubagentStart") { delete next.delivery; delete next.result; delete next.waitingReason; }
+    for (const key of ["path", "call", "prompt", "label", "model", "effort", "result", "error", "delivery", "waitingReason"]) if (e[key] != null) next[key] = e[key];
     state.children.set(e.child, next);
     return true;
   }
@@ -36,12 +36,15 @@ export function applyEvent(state, e) {
     state.turnState = e.status;
     state.activity = null;
     state.retry = state.compact = null;
-    if (changedTurn) { state.tail = null; state.thought = null; state.plan = null; state.openItems.clear(); state.error = null; }
+    if (changedTurn) { state.tail = null; state.thought = null; state.plan = null; state.openItems.clear(); state.error = null; state.limit = null; }
     if (settled(e.status)) {
       if (e.turn) state.endedTurns.add(e.turn);
       if (state.endedTurns.size > 128) state.endedTurns.delete(state.endedTurns.values().next().value);
       state.openItems.clear();
-      if (e.status === "failed") state.error = { at: e.at, text: String(e.error || e.details || e.text || "The agent's turn failed.") };
+      if (e.status === "failed") {
+        state.error = { at: e.at, text: String(e.text || e.details || e.error || "The agent's turn failed.") };
+        state.limit = e.error === "rate_limit" ? state.error : null;
+      }
     }
     return true;
   }
@@ -94,6 +97,7 @@ export function applyEvent(state, e) {
   }
   if (e.kind === "text") {
     if (e.turn && state.endedTurns.has(e.turn)) return false;
+    state.limit = null;
     if (e.type === "reasoning") {
       if (state.thought?.id === e.item && state.thought.done) return false;
       if (state.thought?.id !== e.item) state.thought = { id: e.item, start: e.at, parts: [], whole: false };
@@ -107,22 +111,35 @@ export function applyEvent(state, e) {
   return false;
 }
 
-// Saved calls provide prompts and legacy fallback; live child records supply their own lifecycle.
+// Saved calls provide prompts; timestamps choose the newest transcript or live lifecycle.
 export function childrenOf(conv, live, discovered = []) {
   const out = new Map();
   for (const [id, h] of conv?.helpers ?? []) out.set(id, { ...h, id, call: id, label: h.desc, status: h.done ? "completed" : h.uncertain ? "unavailable" : "running", provider: conv.kind });
   for (const child of [...discovered, ...(live?.children?.values() ?? [])]) {
     const old = out.get(child.call) ?? out.get(child.id);
     if (child.call && child.call !== child.id) out.delete(child.call);
-    out.set(child.id, { ...old, ...child, label: child.label || old?.label || "Subagent" });
+    const merged = old?.updated > (child.updated ?? 0) ? { ...child, ...old } : { ...old, ...child };
+    if (old?.children || child.children) merged.children = childrenOf(null, null, [...(old?.children ?? []), ...(child.children ?? [])]);
+    out.set(child.id, { ...merged, id: child.id, label: merged.label || old?.label || "Subagent" });
   }
   return [...out.values()].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
 }
 
 export function projectChildren(events, session, previous = [], calls = null) {
-  const state = { own: session, children: new Map(previous.map(h => [h.id, h])) };
-  for (const raw of events) for (const e of providerEvents(raw)) if (e.kind === "child") applyEvent(state, e);
-  return childrenOf(null, state).filter(h => !calls || h.provider !== "claude" || calls.includes(h.call) || previous.some(p => p.id === h.id));
+  if (!session) return previous;
+  const observed = events.flatMap(providerEvents), observations = observed.filter(e => e.kind === "child");
+  const parents = new Map(observed.filter(e => e.kind === "session" && e.parent).map(e => [e.session, e.parent]));
+  let remaining = 128;
+  const project = (own, saved, calls, ancestors) => {
+    if (!own || ancestors.has(own) || remaining-- <= 0) return [];
+    // Thread metadata owns parentage; messaging a sibling must not adopt it.
+    saved = saved.filter(h => !parents.has(h.id) || parents.get(h.id) === own);
+    const state = { own, children: new Map(saved.map(h => [h.id, h])) }, seen = new Set([...ancestors, own]);
+    for (const e of observations) if (!seen.has(e.child) && (!parents.has(e.child) || parents.get(e.child) === own)) applyEvent(state, e);
+    return childrenOf(null, state).filter(h => !seen.has(h.id) && (!calls || h.provider !== "claude" || calls.includes(h.call) || saved.some(p => p.id === h.id)))
+      .map(h => h.provider === "codex" && !h.terminal ? { ...h, children: project(h.id, h.children ?? [], null, seen) } : h);
+  };
+  return project(session, previous, calls, new Set());
 }
 
 export function handoffText(items, source, folder) {

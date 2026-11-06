@@ -13,9 +13,12 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, HoverCard } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, knownAgents, appHome, readTextFile, agents, terminals, notify } from "herdr";
+import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, appHome, readTextFile, agents, terminals, notify } from "herdr";
 import { chatAgents } from "./parked.js";
 import { freshWorktree } from "./fresh-worktree.js";
+import { availableAgents } from "./launch.js";
+import { loginExec } from "./shell.js";
+import { worktreeArgv } from "./worktree-runtime.js";
 
 // A machine's folders live in a file in its home, so every screen showing its
 // spaces shows the same folders: { list: [{ id, name, folded }], of: { spaceId:
@@ -89,16 +92,17 @@ const collects = (f, path) => Boolean(path) && (f.match ?? "").split(",").some((
 
 // Where a space goes: where it was dragged (or "" for out of every folder), else
 // the first folder whose rules take the folder it works in.
-function folderOf(s, { list, of }, ps) {
+function folderOf(s, { list, of }, ps, git) {
   const id = of[localId(s)];
   if (id !== undefined) return list.some((f) => f.id === id) ? id : null;
-  return list.find((f) => collects(f, place(s, ps)))?.id ?? null;
+  const main = git?.repo ? JSON.parse(git.repo)[1].replace(/\/\.git$/, "") : null;
+  return list.find((f) => collects(f, place(s, ps)) || collects(f, main))?.id ?? null;
 }
 
 // The folder on this computer that takes in another machine: the first whose
 // rules match its name ("vm-*") or the folder one of its spaces works in.
 function machineFolder(m, rows, ps) {
-  return folders(null).list.find((f) => collects(f, m) || rows.some((r) => collects(f, place(r.w, ps))))?.id ?? null;
+  return folders(null).list.find((f) => collects(f, m) || rows.some((r) => collects(f, place(r.w, ps)) || (r.g?.repo && collects(f, JSON.parse(r.g.repo)[1].replace(/\/\.git$/, "")))))?.id ?? null;
 }
 
 function saveFolders(machine, data) {
@@ -124,7 +128,9 @@ const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 // `ps`: panes(), read once by the caller (each read copies every pane).
 function place(s, ps) {
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
-  return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
+  const chats = new Set(ps.filter((p) => tabs.has(p.tab) && p.mod === "chat").map((p) => p.pane));
+  const terminal = chats.size && terminals().find((t) => t.state === "live" && chats.has(t.labels?.["herdr.chat"]));
+  return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || terminal?.foreground?.cwd || terminal?.cwd || s.folder;
 }
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
@@ -139,6 +145,7 @@ const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b
 // A branch's GitHub PR, for the chip on its row: merged, closed, or open and its checks'
 // state. gh from a login shell, where it's installed and signed in.
 const PR_EVERY = 60000;
+const PR_CHECKS = 'query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}';
 const FAILED = new Set(["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"]);
 function prState(pr) {
   if (pr.state === "MERGED") return "merged";
@@ -435,13 +442,21 @@ export default class Spaces extends View {
     this.spacePRs = found;
     for (const [k, { place, how }] of asks) {
       const [on, cwd] = JSON.parse(place);
-      const fields = ["--json", "number,url,title,state,isDraft,statusCheckRollup"];
+      const fields = ["--json", "number,url,title,state,isDraft"];
       const args = how[0] === "--head" ? ["pr", "list", ...how, "--state", "all", "--limit", "1", ...fields] : ["pr", "view", ...how, ...fields];
-      const r = await exec("/bin/zsh", ["-lc", 'exec gh "$@"', "gh", ...args], { cwd, on }).catch(() => null);
+      const r = await loginExec("gh", args, { cwd, on }).catch(() => null);
       // gh missing, signed out or offline: keep what showed, try again next round.
       if (r?.code !== 0) continue;
       try {
         const out = JSON.parse(r.stdout), pr = Array.isArray(out) ? out[0] : out;
+        if (pr?.state === "OPEN" && !pr.isDraft) {
+          // The aggregate is readable with status access even when individual check runs aren't.
+          const checks = await loginExec("gh", ["api", "graphql", "-F", "owner={owner}", "-F", "repo={repo}", "-F", `number=${pr.number}`, "-f", `query=${PR_CHECKS}`], { cwd, on }).catch(() => null);
+          try {
+            const state = checks?.code === 0 && JSON.parse(checks.stdout).data?.repository?.pullRequest?.commits?.nodes?.[0]?.commit?.statusCheckRollup?.state;
+            if (state) pr.statusCheckRollup = [{ state }];
+          } catch {}
+        }
         this.prs[k] = { at: Date.now(), pr: pr ? { number: pr.number, url: pr.url, title: pr.title, state: prState(pr) } : null };
       } catch {}
       cx.notify();
@@ -552,7 +567,7 @@ export default class Spaces extends View {
     if (!s || (id && !f.list.some((x) => x.id === id))) return;
     const of = { ...f.of };
     if (id) of[localId(s)] = id;
-    else if (folderOf(s, f, panes())) of[localId(s)] = "";
+    else if (folderOf(s, f, panes(), this.git[where(s, panes())])) of[localId(s)] = "";
     else delete of[localId(s)];
     saveFolders(machine, { ...f, of });
   }
@@ -599,7 +614,7 @@ export default class Spaces extends View {
     const f = folders(machine), { list } = f, ps = panes();
     let parent = null;
     const placed = rows.map((r) => {
-      if (!r.tree) parent = folderOf(r.w, f, ps);
+      if (!r.tree) parent = folderOf(r.w, f, ps, r.g);
       return { ...r, folder: parent, nested };
     });
     // A space is active while it has an agent, idle or not; a worktree goes
@@ -608,10 +623,10 @@ export default class Spaces extends View {
     const spacesOf = (rows) => {
       const groups = [];
       for (const r of rows) r.tree && groups.length ? groups.at(-1).push(r) : groups.push([r]);
-      return groups.map((g) => ({ busy: g.some(agentIn), shown: g.some((r) => r.w.active), draw: (away) => g.flatMap((r) => draw(r, away)) }));
+      return groups.map((g) => ({ busy: Boolean(machine) || g.some(agentIn), shown: g.some((r) => r.w.active), draw: (away) => g.flatMap((r) => draw(r, away)) }));
     };
     // Chat agents keep their folder active even though their terminals are parked.
-    const open = (r) => agentIn(r) || this.now.terminals.some((x) => x.labels?.["herdr.space"] === localId(r.w));
+    const open = (r) => Boolean(r.w.machine) || agentIn(r) || this.now.terminals.some((x) => x.labels?.["herdr.space"] === localId(r.w));
     const folderItems = list.map((f, n) => {
       const inside = placed.filter((r) => r.folder === f.id);
       const visitors = guests.filter((g) => g.folder === f.id);
@@ -716,9 +731,9 @@ export default class Spaces extends View {
       .child(h_flex().px(8).pt(6).pb(8).gap(6).items_center().children([null, ...Object.keys(MARK)].map(swatch)))
       .child(item("folder-space", "New space here", () => newSpaceIn(machine, id)))
       .child(item("folder-edit", "Edit folder…", () => openOverlay({ mod: "space-folders", kind: "dialog", width: 460, props: { edit: id, machine } })))
-      // The setup and teardown of the repo it starts spaces in (mods/worktree-setup); this computer only.
-      .when(!machine && Boolean(path), (el) => el.child(item("folder-worktree", "Edit worktree setup…", () => openOverlay({
-        mod: "worktree-setup", kind: "window", key: `worktree-setup:${path}`, width: 640, height: 620, props: { folder: path.replace(/^~(?=\/|$)/, home()) } }))))
+      .when(Boolean(path), (el) => el.child(item("folder-worktree", "Edit worktree setup…", () => openOverlay({
+        mod: "worktree-setup", kind: "window", key: `worktree-setup:${machine ?? ""}:${path}`, width: 640, height: 620,
+        props: { folder: machine ? path : path.replace(/^~(?=\/|$)/, home()), machine } }))))
       .child(item("folder-delete", "Delete folder", () => {
         const f = folders(machine);
         saveFolders(machine, { list: f.list.filter((x) => x.id !== id), of: Object.fromEntries(Object.entries(f.of).filter(([, v]) => v !== id)) });
@@ -749,7 +764,7 @@ export default class Spaces extends View {
       const path = raw ? await expand(machine, raw).catch(() => null) : null;
       const git = (args) => (path ? execFile("git", ["-C", path, ...args], { on: machine }).catch(() => null) : null);
       const [agents, top, base] = await Promise.all([
-        knownAgents({ on: machine }).catch(() => []),
+        availableAgents(machine).catch(() => []),
         git(["rev-parse", "--show-toplevel"]),
         // Worktrees start from the remote's default branch, not whatever is checked out.
         git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]),
@@ -766,8 +781,7 @@ export default class Spaces extends View {
   startSpace(argv, name, cx) {
     const { id, machine, overlay, path, repo } = this.launching;
     const open = (folder, fresh) => {
-      // The setup script is on this computer only.
-      const cmd = fresh && !machine ? [`${appHome()}/agent/worktree`, "start", folder, ...(argv ? ["--", ...argv] : [])] : argv;
+      const cmd = fresh ? worktreeArgv("start", folder, argv ? ["--", ...argv] : [], machine) : argv;
       setShared(LAUNCH, { mode: this.mode, sandbox: this.sandbox });
       expectSpace(machine, id, 60000);
       closeOverlay(overlay);
@@ -1061,19 +1075,21 @@ export default class Spaces extends View {
   // cmd-w): the repo's teardown runs, and the worktree goes when that loses nothing
   // uncommitted (agent/worktree closed). Only Herdr's own, under ~/.herdr/worktrees, here.
   watchClosed(cx) {
-    // While this computer's layout can't be read, spaces() can look empty.
-    if (machines().find((m) => m.name === null)?.layout !== "ready") return;
-    const sp = spaces(), ps = panes(), ids = new Set(sp.map((s) => s.id)), now = {};
+    // A disconnected machine can look empty: retain its worktrees until its layout returns.
+    const ready = new Set(machines().filter((m) => m.layout === "ready").map((m) => m.name ?? null));
+    const sp = spaces(), ps = panes(), ids = new Set(sp.map((s) => s.id));
+    const now = Object.fromEntries(Object.entries(this.worktrees).filter(([, w]) => !ready.has(w.on ?? null)));
     for (const s of sp) {
-      if (s.machine) continue;
+      if (!ready.has(s.machine ?? null)) continue;
       const g = this.git[where(s, ps)];
-      if (g?.linked && g.top?.startsWith(`${home()}/.herdr/worktrees/`)) now[s.id] = { top: g.top };
+      const managed = g?.top && (s.machine ? /\/\.herdr\/worktrees\//.test(g.top) : g.top.startsWith(`${home()}/.herdr/worktrees/`));
+      if (g?.linked && managed) now[s.id] = { top: g.top, on: s.machine ?? null };
       // Not looked at yet (just moved): keep what it was.
       else if (g === undefined && this.worktrees[s.id]) now[s.id] = this.worktrees[s.id];
     }
-    const open = new Set(Object.values(now).map((w) => w.top));
+    const open = new Set(Object.values(now).map((w) => JSON.stringify([w.on ?? null, w.top])));
     for (const [id, w] of Object.entries(this.worktrees)) {
-      if (ids.has(id) || open.has(w.top)) continue;
+      if (!ready.has(w.on ?? null) || ids.has(id) || open.has(JSON.stringify([w.on ?? null, w.top]))) continue;
       if (!(id in (shared("worktree.teardown") ?? {}))) this.cleanUp(id, w, cx);
       // Closed by the Close dialog after its teardown: say so if the worktree stayed.
       else cx.spawn(async () => {
@@ -1130,6 +1146,12 @@ export default class Spaces extends View {
       await exec("sleep", ["3"]);
       if (spaces().some((s) => s.id === id) || id in (shared("worktree.teardown") ?? {})) return;
       notify({ title: `Tearing down worktree ${name}`, body: "Its space closed. Removing it after, if it's clean.", level: "info" });
+      if (w.on) {
+        setShared("worktree.teardown", { ...(shared("worktree.teardown") ?? {}), [id]: Date.now() });
+        const r = await hc(["run", "--bg", "--cwd", home(), "--", `${appHome()}/agent/worktree`, "remote", w.on, "cleanup", w.top, id]);
+        if (r.code !== 0) notify({ title: `Couldn't start teardown of ${name}`, body: r.stderr, level: "error" });
+        return;
+      }
       // ponytail: runs from here, so quitting Herdr mid-teardown stops it; hc run --bg if teardowns get long.
       const r = await exec("/bin/zsh", ["-lic", 'exec "$0" closed "$1"', `${appHome()}/agent/worktree`, w.top]).catch(() => ({ code: 1 }));
       if (r.code === 0) notify({ title: `Removed worktree ${name}`, body: "Teardown ran. Its branch is kept.", level: "info" });
@@ -1149,6 +1171,18 @@ export default class Spaces extends View {
       const next = {};
       for (const id of Object.keys(live)) {
         const log = await readTextFile(`${appHome()}/agent/logs/${id}.log`).catch(() => null);
+        const exit = await readTextFile(`${appHome()}/agent/logs/${id}.log.exit`).catch(() => null);
+        if (exit !== null && !["0", "3"].includes(exit.trim())) {
+          this.teardownErrors ??= {};
+          if (this.teardownErrors[id] !== live[id]) {
+            this.teardownErrors[id] = live[id];
+            notify({ title: "Worktree teardown failed", body: (log ?? "").trim().split("\n").pop() || `See agent/logs/${id}.log`, level: "error" });
+          }
+          // A failed hook leaves its space open and available for a retry.
+          const current = shared("worktree.teardown") ?? {};
+          if (ids.has(id) && current[id] === live[id]) setShared("worktree.teardown", Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)));
+          continue;
+        }
         next[id] = { line: (log ?? "").split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean).pop() ?? "" };
       }
       this.teardown = next;
@@ -1190,7 +1224,7 @@ export default class Spaces extends View {
     if (changed) setShared("space.colors", kept);
     // While a space in a folder is dragged, a place to drop it out of the folder.
     const dragged = this.pressed !== null ? spaces()[this.pressed] : null;
-    const leaving = Boolean(dragged && folderOf(dragged, folders(dragged.machine ?? null), panes()));
+    const leaving = Boolean(dragged && folderOf(dragged, folders(dragged.machine ?? null), panes(), this.git[where(dragged, panes())]));
     const button = (id, icon, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6)
       .hover(s => s.bg(t.hover).text_color(t.foreground)).on_click(action).child(svg(`mods/workspace-chrome/${icon}.svg`).size(14));
     this.now = { terminals: terminals(), agents: [...agents(), ...chatAgents()] };

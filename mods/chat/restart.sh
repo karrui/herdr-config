@@ -19,7 +19,7 @@ while IFS= read -r a; do cmd+=("$a"); done < <(jq -r '.[]' <<<"$argv")
 [ -x "$app/agent/launch" ] || { echo "Install Herdr's agent scripts on this machine before restarting an agent." >&2; exit 1; }
 key=$(basename "${cmd[0]}")
 wrap=("$app/agent/launch")
-if [ -n "$(get '.labels["herdr.sandbox"]')" ]; then
+if [ "${HERDR_RESTART_SANDBOX:-}" = on ] || { [ "${HERDR_RESTART_SANDBOX:-}" != off ] && [ -n "$(get '.labels["herdr.sandbox"]')" ]; }; then
   wrap+=(--sandbox)
   # Codex can't start its own sandbox inside Herdr's, which confines it instead (programs.json).
   if [ "$key" = codex ]; then

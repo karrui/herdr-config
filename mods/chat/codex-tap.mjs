@@ -5,7 +5,7 @@ import http from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { writeEvent, atomicWrite, alive } from "./session.mjs";
+import { writeEvent, atomicWrite, alive, elicitationResponse } from "./session.mjs";
 
 const clip = (text, n = 4000) => typeof text === "string" && text.length > n ? text.slice(0, n - 1) + "…" : text;
 const remove = file => { try { fs.unlinkSync(file); } catch (e) { if (e.code !== "ENOENT") throw e; } };
@@ -144,7 +144,9 @@ export class CodexTap {
         void this.join(id);
       }
     } else if (item.type === "subAgentActivity" && item.agentThreadId) {
-      this.child(item.agentThreadId, { parent, observedAt, status: ({ started: "running", interacted: "running", completed: "completed", interrupted: "interrupted" })[item.kind] });
+      if (item.kind !== "interacted") this.child(item.agentThreadId, {
+        parent: this.children.get(item.agentThreadId)?.parent ?? parent, observedAt,
+        status: ({ started: "running", completed: "completed", interrupted: "interrupted" })[item.kind] });
       void this.join(item.agentThreadId);
     }
   }
@@ -203,6 +205,20 @@ export class CodexTap {
     if (method === "item/commandExecution/requestApproval") return { tool_name: "Bash", cwd, tool_input: { command: p.command || p.reason || "a command", description: p.reason } };
     if (method === "item/fileChange/requestApproval") return { tool_name: "apply_patch", cwd, tool_input: { reason: p.reason, files: (this.changes.get(p.itemId) ?? []).map(c => ({ path: c.path, kind: c.kind?.type, diff: c.diff })) } };
     if (method === "item/permissions/requestApproval") return { tool_name: "request_permissions", cwd, tool_input: { reason: p.reason, permissions: p.permissions } };
+    if (method === "mcpServer/elicitation/request") {
+      const schema = p.requestedSchema, fields = Object.entries(schema?.properties ?? {}), [property, field] = fields[0] ?? [];
+      const choices = Array.isArray(field?.oneOf) ? field.oneOf.map(o => ({ label: o?.title, value: o?.const, description: o?.description }))
+        : Array.isArray(field?.enum) ? field.enum.map((value, i) => ({ label: field.enumNames?.[i] ?? value, value })) : null;
+      // shortcut: only a required single-choice form is answerable here; other MCP forms stay native.
+      if (["form", "openai/form", "openaiForm"].includes(p.mode) && schema?.type === "object" && fields.length === 1 && schema.required?.includes(property)
+        && field?.type === "string" && choices?.length && choices.every(o => typeof o.label === "string" && o.label && typeof o.value === "string" && o.value)) {
+        const question = [p.message, field.title, field.description].filter(Boolean).join("\n\n") || `Permission for ${p.serverName}`;
+        return { tool_name: "AskUserQuestion", cwd, elicitation: { property, question, values: choices.map(o => o.value) },
+          tool_input: { questions: [{ question, strict: true, options: choices }] } };
+      }
+      return { tool_name: "McpElicitation", cwd, elicitation: { unsupported: true },
+        tool_input: { message: p.message ?? p.title ?? "Permission required", detail: [p.description, p.url, "Answer this request in the terminal."].filter(Boolean).join("\n") } };
+    }
     if (method === "item/tool/requestUserInput" && p.questions?.length && !p.questions.some(q => q.isSecret)) return {
       tool_name: "AskUserQuestion", cwd, tool_input: { questions: p.questions.map(q => ({ question: q.question, header: q.header, multiSelect: false, options: q.options ?? [] })) } };
     return null;
@@ -219,18 +235,19 @@ export class CodexTap {
   answer(id, decision) {
     const request = this.pending.get(id);
     if (!request) return;
-    this.pending.delete(id);
-    remove(path.join(this.asks, "req", `${id}.json`)); remove(path.join(this.asks, "ans", `${id}.json`));
-    if (!decision) return;
-    const p = request.params, allow = decision.behavior === "allow", message = decision.message;
+    const p = request.params, allow = decision?.behavior === "allow", message = decision?.message;
     let result;
-    if (request.method === "item/tool/requestUserInput") {
+    if (request.method === "mcpServer/elicitation/request") result = elicitationResponse(this.words(request.method, p), decision);
+    else if (!decision) result = null;
+    else if (request.method === "item/tool/requestUserInput") {
       const values = decision.updatedInput?.answers ?? {};
       result = { answers: Object.fromEntries((p.questions ?? []).map(q => [q.id, { answers: [allow ? String(values[q.question] ?? "") : message].filter(Boolean) }])) };
     } else if (request.method === "item/permissions/requestApproval") result = allow ? { permissions: p.permissions ?? {}, scope: "turn" } : { permissions: {} };
     else result = { decision: allow ? "accept" : "decline" };
-    this.conn.send({ id: request.id, result });
-    if (!allow && message && message !== "The person declined this in the chat." && request.method !== "item/tool/requestUserInput") {
+    if (result) this.conn.send({ id: request.id, result });
+    this.pending.delete(id);
+    remove(path.join(this.asks, "req", `${id}.json`)); remove(path.join(this.asks, "ans", `${id}.json`));
+    if (!allow && message && message !== "The person declined this in the chat." && !["item/tool/requestUserInput", "mcpServer/elicitation/request"].includes(request.method)) {
       void this.call("turn/steer", { threadId: p.threadId, expectedTurnId: p.turnId, input: [{ type: "text", text: message, text_elements: [] }] }).catch(e => this.emit("error", { thread: p.threadId, error: e.message }));
     }
   }
@@ -239,8 +256,8 @@ export class CodexTap {
       const file = path.join(this.asks, "ans", `${id}.json`);
       try {
         const text = fs.readFileSync(file, "utf8");
-        let decision;
-        try { decision = JSON.parse(text).hookSpecificOutput?.decision; }
+        let decision = null;
+        try { if (text.trim()) decision = JSON.parse(text).hookSpecificOutput?.decision; }
         catch { if (Date.now() - fs.statSync(file).mtimeMs < 1000) continue; }
         this.answer(id, decision);
       } catch (e) { if (e.code !== "ENOENT") console.error(`codex-tap: ${e.message}`); }

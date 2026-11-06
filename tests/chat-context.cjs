@@ -212,7 +212,7 @@ test('Codex session discovery skips the approval reviewer even when it is open f
   }
 });
 
-test('tab bar renders while resources and tickets are still loading', () => {
+test('tab bar renders while resources, change counts and tickets are still loading', () => {
   let element;
   element = new Proxy({}, { get: (_obj, name) => {
     if (name === 'child') return (value) => {
@@ -225,10 +225,11 @@ test('tab bar renders while resources and tickets are still loading', () => {
   const { Tabs } = load('mods/tabs-sandbox/main.js', ['Tabs'], {
     theme: () => ({}), spaces: () => [{ active: true, tabs: [] }],
     chatAgents: () => [], layout: () => null, window: () => null, shared: () => null,
+    linearLocation: () => ({}),
     div: () => element, h_flex: () => element, svg: () => element,
   });
   const view = Object.assign(Object.create(Tabs.prototype), {
-    resources: {}, ticket: {}, spaceFolder: () => ({ id: 'new-folder' }),
+    resources: {}, ticket: {}, changes: {}, spaceFolder: () => ({ id: 'new-folder' }),
     countResources() {}, findLinear() {}, syncPanel() {}, linearPlace: () => null,
   });
   view.render({});
@@ -476,6 +477,70 @@ test('queued messages can move to a drop target without losing attachments or se
   assert.equal(sent, third, 'the reordered message goes first with its original attachments and quote');
 });
 
+test('Up edits the last queued message before history and preserves the message extras', () => {
+  const { Chat } = load('mods/chat/main.js', ['Chat']);
+  const file = { path: '/tmp/note.txt', name: 'note.txt' }, quote = { text: 'Quoted context' };
+  const first = { id: 'first', text: 'First queued message', files: [] }, last = { id: 'last', text: 'Last queued\nmessage', files: [file], quote };
+  let value = '', focused = false, saved = 0;
+  const cx = {};
+  const view = Object.assign(Object.create(Chat.prototype), {
+    queue: [first, last], files: [], quote: null, recall: -1,
+    conv: { items: [{ kind: 'user', text: 'Older sent message' }] }, pending: [],
+    box: { value: () => value, set_value: text => { value = text; }, focus: () => { focused = true; } },
+    saveSoon: context => { assert.equal(context, cx); saved++; },
+  });
+  assert.equal(view.recallStep(1, cx), true);
+  assert.equal(value, last.text); assert.equal(view.queue.length, 1); assert.equal(view.queue[0], first);
+  assert.equal(view.files[0], file); assert.equal(view.quote, quote); assert.ok(focused); assert.equal(saved, 1);
+  assert.equal(view.recall, -1, 'editing a queued message must not enter message history');
+  assert.equal(view.recallStep(1, cx), false, 'a repeated Up must not overwrite the active edit');
+  assert.equal(value, last.text); assert.equal(view.queue.length, 1);
+  value = ''; view.queue = [];
+  assert.equal(view.recallStep(1, cx), true); assert.equal(value, 'Older sent message');
+  assert.equal(view.recallStep(-1, cx), true); assert.equal(value, '');
+});
+
+test('Codex native child logs read only their own history across initial pages and tails', async t => {
+  const fs = require('node:fs');
+  const { spawnSync } = require('node:child_process');
+  const { operation } = await import('../mods/chat/session.mjs');
+  const folder = fs.mkdtempSync('/tmp/herdr-child-log-'); t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const file = `${folder}/child.jsonl`, stamp = '2026-11-06T09:17:05.544Z';
+  const data = [
+    { type: 'session_meta', payload: { id: 'child', subagent_history_start_ordinal: 5, base_instructions: { text: 'x'.repeat(70000) } } },
+    { type: 'session_meta', payload: { id: 'parent' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Parent security audit request' }] } },
+    { type: 'response_item', payload: { type: 'function_call_output', call_id: 'parent-tool', output: 'x'.repeat(1100000) } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Parent prose' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Actual child findings' }] } },
+  ].map(row => ({ timestamp: stamp, ...row }));
+  fs.writeFileSync(file, data.map(JSON.stringify).join('\n') + '\n');
+  const { start } = await operation('scope', [file]);
+  const { LOG, records, Conversation } = load('mods/chat/log.js', ['LOG', 'records', 'Conversation']);
+  for (const args of [['page', file, '999999999999999', '200'], ['tail', file, '0']]) {
+    const result = spawnSync('sh', ['-c', LOG, 'log', ...args], { env: { ...process.env, FLOOR: String(start) }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    if (args[0] === 'page') assert.match(result.stdout, /^P 0 /, 'the child boundary is the logical start, so paging never goes into its parent');
+    const conv = new Conversation('codex'); conv.feed(records(result.stdout).records);
+    assert.deepEqual(Array.from(conv.items, x => x.text).filter(Boolean), ['Actual child findings']);
+    assert.ok(!result.stdout.includes('Parent security audit request'));
+  }
+});
+
+test('native child scope resolves on the owning machine, retries initialization and caches the boundary', async () => {
+  const calls = []; let start = null;
+  const { Chat } = load('mods/chat/main.js', ['Chat'], { LOG: 'echo log',
+    sessionIO: async (...args) => { calls.push(['scope', ...args]); return { start }; },
+    exec: async (...args) => { calls.push(['exec', ...args]); return { stdout: 'log' }; },
+  });
+  const view = Object.assign(Object.create(Chat.prototype), { kind: 'codex', machine: 'vps', path: '/remote/child.jsonl', transcript: { session: 'child' } });
+  const args = ['page', view.path, '999999999999999', '200'];
+  await assert.rejects(view.log(args), /initializing/); assert.equal(calls.filter(c => c[0] === 'exec').length, 0);
+  start = 1234; await view.log(args); await view.log(args);
+  assert.equal(calls.filter(c => c[0] === 'scope').length, 2);
+  assert.equal(calls[1][3], 'vps'); assert.equal(calls[2][3].on, 'vps'); assert.match(calls[2][2][1], /^FLOOR=1234\nSIDE=1\n/);
+});
+
 test('Codex skill submissions dismiss completion without consuming the send Enter', async () => {
   for (const kind of ['codex', 'claude']) {
     const jobs = [];
@@ -483,7 +548,7 @@ test('Codex skill submissions dismiss completion without consuming the send Ente
     const { Chat } = load('mods/chat/main.js', ['Chat'], {
       openCard: () => null, slash: { opensMenu: () => null },
       attach: { deliver: async () => [] },
-      hc: async (args) => { sent = args[2]; view.pending = []; return { code: 0 }; },
+      sendInput: async (_address, text) => { sent = text; view.pending = []; return { code: 0 }; },
     });
     view = Object.assign(Object.create(Chat.prototype), {
       kind, addr: 'test', originKey: 'test', asks: [], replied: [],
@@ -497,13 +562,14 @@ test('Codex skill submissions dismiss completion without consuming the send Ente
 });
 
 test('queue drag handles move messages on drop, cancel outside, and retain keyboard reordering', () => {
-  const nodes = new Map();
+  const nodes = new Map(), previews = [];
   function element() {
     const node = { events: new Map() };
     let proxy;
     proxy = new Proxy({}, { get: (_target, name) => {
       if (name === 'id') return (id) => { nodes.set(id, node); return proxy; };
       if (name === 'when') return (condition, fn) => condition ? fn(proxy) : proxy;
+      if (name === 'child') return value => { if (typeof value === 'string') previews.push(value); return proxy; };
       if (name.startsWith('on_')) return (...args) => { node.events.set(`${name}:${typeof args[0] === 'string' ? args[0] : ''}`, args.at(-1)); return proxy; };
       return () => proxy;
     } });
@@ -511,12 +577,16 @@ test('queue drag handles move messages on drop, cancel outside, and retain keybo
   }
   const { Chat } = load('mods/chat/main.js', ['Chat'], { div: element, h_flex: element, v_flex: element, svg: element, openCard: () => null });
   const queue = [1, 2, 3].map((id) => ({ id, text: `Question ${id}`, files: [] }));
+  queue[1].text = 'Second steering message\nexample\r\nmore details';
   let saved = 0, sent = 0;
   const view = Object.assign(Object.create(Chat.prototype), {
     queue, phase: 'ready', asks: [], status: () => 'idle', saveSoon: () => saved++, deliver: () => sent++,
   });
   const cx = { notify() {}, stop_propagation() {} };
   view.queued({});
+  assert.ok(previews.includes('Second steering message example more details'), 'queued previews stay on one line when several messages are waiting');
+  assert.ok(!previews.some(text => /[\r\n]/.test(text)));
+  assert.equal(queue[1].text, 'Second steering message\nexample\r\nmore details', 'the full text is preserved for editing and sending');
   nodes.get('queued-grip-3').events.get('on_mouse_down:left')({}, cx);
   view.drainQueue(cx);
   assert.equal(sent, 0, 'automatic sending pauses during a drag');

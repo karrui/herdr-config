@@ -7,7 +7,7 @@ What you get:
 
 - **Sandboxed agents.** Claude Code and Codex start inside a macOS sandbox that can't read your home folder or write outside the project, except for paths you allow.
 - **Worktree spaces.** A new space can be its own git worktree, with your repo's setup run before the agent starts and its teardown run before the space closes.
-- **Native diff reviews.** The Review bar opens worktree, branch and commit diffs in the side panel, with reviewed-file marks and split diffs.
+- **Changes panel.** The original Git diff panel, with accurate added/deleted line counts, wrapped lines and an Open in… menu.
 - **Linear and GitHub at a glance.** The branch's Linear ticket in a panel, and each space's pull request and CI state in the sidebar.
 - **A usage footer.** Context, 5-hour and weekly usage for the focused agent, and what the sandbox blocked.
 
@@ -18,8 +18,12 @@ It only works on macOS, because the sandbox uses `sandbox-exec`.
 ![A worktree space with its agent](docs/workspace.png)
 
 Spaces grouped in sidebar folders, each row with its agent and pull request, and the agents list below.
-This older screenshot includes the previous Changes panel; the Review bar now opens the native review in that side panel.
+The Changes panel shows Git diffs in the right-hand sidebar.
 The footer has the agent's context and usage, and the sandbox state.
+It also detects HTTP/HTTPS servers in the current worktree every five seconds.
+Click **App :port** to open one, or choose a port from the menu when several are running.
+On a remote machine it uses Tailscale Serve, reusing an existing route or creating a private
+HTTPS route on the same port when clicked. An occupied Serve route is never overwritten.
 
 ![Codex answering a question from another agent](docs/codex.png)
 
@@ -44,7 +48,6 @@ In the Agents list, each agent's helpers sit under it, named by their task: Code
 - The Herdr app, started at least once (it creates `~/.config/herdr-app`).
 - `jq`.
 - `claude` and/or `codex`.
-- [jin.review](https://github.com/JinJieBeWater/pulls.review/tree/multi-repo), for the native review pane: `bun add --global jin.review@0.3.4-fork.4` (put `~/.bun/bin` on your PATH).
 - Optional: `gh`, signed in with `gh auth login`, for pull requests in the sidebar.
 - Optional: a Linear personal API key, for the Linear panel.
 - Optional: Google Chrome, for the shared browser agents can drive.
@@ -147,13 +150,20 @@ Closing its last tab with `cmd-w` can't wait for the teardown, so the teardown r
 It also deletes the worktree's local branch, unless you uncheck **Delete branch**; it warns when the branch has commits that aren't pushed anywhere.
 The branch on GitHub stays.
 
-### Reviewing changes
+### Changes
 
-The Review bar at the top right replaces the Changes panel. Click a count to review the branch's commits, uncommitted files, or commits to push or pull. Branch and uncommitted buttons show lines added and removed in both Chat and Terminal view; worktree totals include new files and leave your staging index unchanged. Its logo opens a menu for picking a branch or commit. Counts use your existing remote-tracking refs; fetch when you want them updated.
+The Changes button opens the original diff panel in the right-hand sidebar. Its menu selects Uncommitted, Unstaged, Staged, Committed, Branch or Last Turn. It follows the current terminal or chat's worktree, including remote spaces.
+The tab button also shows added and deleted lines for the current worktree's uncommitted changes, refreshed every ten seconds.
 
-A review opens in the same right-hand panel as Linear, Files and Artifacts. Click its active count again to close it. Mark files reviewed as you read, switch between unified and split diffs, or step through commits. Each tab keeps its selected diff; switching tabs never shows another tab's review. The bar follows the agent's current folder, including when its terminal is parked behind a chat pane.
+Added and deleted line counts come from Git, including new files before they are opened. Counts use a temporary index and leave the real staging index unchanged. Diff lines wrap to the panel width.
 
-The native bar and review come from [herdr-t3](https://github.com/JinJieBeWater/herdr-t3#pullsreview), with their source commit recorded in each mod's `SOURCE` file. They use the local `jin.review` daemon, started on first review. Opening a diff does not start an AI run, and the Code review button is omitted. Reviews currently support local repositories only.
+Right-click a file or its diff to open it in VS Code or reveal it in Finder. Right-click empty diff space to open the repository. These openers apply to local files. File links in chat use the system opener.
+
+### Git graph
+
+The graph icon beside the change counts opens [Git Graph](https://github.com/rabeeh-ta/herdr-git-graph) in the side panel. It follows the focused terminal or parked chat's worktree, including remote spaces, and shows commit lanes, branches, tags and uncommitted files. Click a commit for details and file diffs; right-click commits or labels for Git actions.
+
+The recipe's source revision is recorded in `mods/git-graph/SOURCE`. Run its checks with `node tests/git-graph.mjs` and `node --test tests/git-graph-location.cjs`. The recipe checks GitHub for newer releases daily; its update window can turn that check off.
 
 ### Linear
 
@@ -252,11 +262,17 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
   A skill or command named in a message you sent is marked, as the CLI marks it.
 - Above the box, the agent's helpers at work, one row each with what they run on ("Opus 5.5 · Extra high", from the helper's own log) and for how long; click one to read its conversation.
   Monitors and commands left running in the background are listed there too until they end, with their command on hover.
+  The block disappears once no work remains. **View all**, or the hierarchy icon in the tab bar, opens the **Subagents** sidebar for active agents and history; it follows the focused conversation.
 - Codex and Claude observations feed the same JavaScript lifecycle reducer. A parent's final answer does not finish its children.
-  Finished children stay under **Previous agents**; child views show their delegation and a parent breadcrumb, including nested Claude helpers.
+  Finished children stay under **Previous agents** in that panel; child views show their delegation and a parent breadcrumb, including nested Claude helpers.
+  Agents started through `hc` keep their provider, reported model/effort and transcript in that history too, including Codex agents started by Claude.
+  Descendants appear in expandable branches under their actual parent, including Claude → Codex → Codex helpers and remote agents. Active branches expand automatically; each child's conversation opens on its owning machine.
+  Codex child conversations begin at their recorded history boundary, excluding inherited parent context. Native child IDs reconcile with saved spawn calls so each helper appears once.
+  Claude quota failures show **Waiting · API limit** without a spinner; a handback is completed only when Claude also records that the turn ended.
   Replayed events are deduplicated by producer and sequence, completed replies reconcile by native identity, and a disconnected producer shows as unavailable.
 - Provider changes preserve an attributed, bounded handoff and a link to the original transcript. Resumes and forks keep their separate meanings.
   The composer distinguishes reported permissions from requested settings in its tooltip.
+  Codex's asynchronous questions use the existing question cards while the agent continues working; answers retain their native question IDs and reconnect from saved history.
 
 cmd-w on a tab in Chat parks its agent, as for a terminal; the tab's × ends it.
 
@@ -273,7 +289,17 @@ Transcript lookup, live events, questions, approval responses, native child navi
 Local and remote terminal addresses remain distinct. A failed connection preserves pending cards and last-known history; it does not turn running work into a success.
 The state model, session reader and Codex tap are JavaScript with no npm dependencies. The existing Linux desktop file picker remains a separate OS helper.
 
-Install Node and jq alongside the CLIs on the remote host, and copy the runtime files from this checkout (replace `YOUR_HOST` with its SSH destination):
+Install working Node and jq alongside the CLIs on the remote host. Check them through `hc exec --on YOUR_MACHINE node --version`, not just an interactive shell: fnm can expose Node only after shell startup, and a binary on PATH can still fail to load a shared library. Expose `npm` and `npx` there too for plugins such as Sites.
+
+On Amazon Linux 2023, Node can require `libatomic`; Git features need `git`, and command runners currently invoke `/bin/zsh`:
+
+```sh
+sudo dnf install -y libatomic git jq zsh
+```
+
+`ripgrep` (the `rg` command) and `gh` are not in that machine's configured Amazon Linux repositories. Install their official release binaries into `~/.local/bin`; sign in with `gh auth login` on the remote host for PR badges and private repositories. PR badges and worktree fetches load the target user's login/interactive shell, including Bash's `.bashrc` authorization. No Bun installation on the VPS is needed for the remote chat runtime.
+
+Copy the runtime files from this checkout (replace `YOUR_HOST` with its SSH destination):
 
 ```sh
 ssh YOUR_HOST 'mkdir -p ~/.config/herdr-app/agent ~/.config/herdr-app/mods/chat'
@@ -281,9 +307,22 @@ rsync -ab agent/ YOUR_HOST:.config/herdr-app/agent/
 rsync -ab mods/chat/{session.mjs,codex-tap.mjs,event-hook.sh,ask-hook.sh,restart.sh} YOUR_HOST:.config/herdr-app/mods/chat/
 ```
 
-The + menu resolves the launcher in the remote user's home. On Linux it uses the CLI's own configured sandbox and approval policy, without the macOS seatbelt override.
+For agents to publish Herdr artifacts, also copy `mods/artifacts/{bin/herdr-artifact,ARTIFACTS.md,markup.js}` with their directory structure and link the CLI into the remote `~/.local/bin`. The desktop pulls and checks remote artifacts before opening them.
+
+Codex plugins have their own requirements. The Pets plugin's bundled scripts need Python 3.10 or newer and Pillow; Amazon Linux's default Python 3.9 is insufficient. Install `python3.11 python3.11-pip`, create a user virtual environment and install Pillow there; run those scripts with that environment's Python. Sites uses Node and the project's package manager. Pages, plugin management, templates and the OGP gateway have no additional local runtime dependency in their installed manifests; connected services still need account authorization.
+
+The + menu, folder/worktree popup and model picker resolve the launcher and installed CLIs in the remote user's home. On Linux they use the CLI's own configured sandbox and approval policy, without the macOS seatbelt override.
+Human chat input runs `hc send` on the destination machine, preserving it as user input; cross-machine core forwarding would wrap even the desktop caller as another agent. Actual agent-to-agent messages retain their attribution.
 Start a new agent after updating runtime files to enable new hook registrations and the JavaScript tap. Existing conversations remain readable.
 Remote readers are sent with each request, so the remote host does not need the native UI mods.
+
+Remote spaces stay visible in the sidebar even without agents or terminals; inactivity does not fold them away. Folder and machine disclosure arrows still work. A chat-only space keeps the parked terminal's live folder for its PR badge and worktree dialogs.
+
+Remote worktrees support creation from the latest fetched default branch, opening existing checkouts and removing them with the dialog's dirty-file and unpushed-submodule checks. Fetches use the remote shell's Git credentials. PR badges use the aggregate CI state, so a token with Pull requests and Commit statuses read access can show the badge without access to individual check-run details; when status access is unavailable, the PR still appears without a CI verdict.
+
+Worktree setup, teardown, the setup editor and container controls also run on the selected machine. Keep `agent/worktree` installed there; it needs Bash, Git, jq and `/usr/bin/ruby` with YAML and JSON. Each machine keeps its own `~/.config/herdr-app/worktrees/<repo>.yaml`, initially imported from `.termic.yaml` and `.worktreeinclude`. The desktop closes remote spaces after their teardown succeeds; a failed hook leaves the space and checkout available for retry. Collection rules also match a worktree's main checkout, even without a space open there.
+
+Some mods still read only this computer: saved-session browsing, usage/Insights and the chat status-bar branch fallback. Remote image previews also have local file-path assumptions. Installing more VPS packages does not add remote support to those paths. The shared browser and seatbelt sandbox scripts are macOS-specific.
 
 ## Updating
 
@@ -314,7 +353,8 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `mods/usage`, `footer-sandbox` | The Usage popup, and the sidebar footer that opens it. |
 | `mods/insights` | Token usage by model and day from the agents' session logs, opened from the Usage popup. From [GaganSD/coding-agent-toolkit](https://github.com/GaganSD/coding-agent-toolkit/tree/main/herdr-insights) (MIT) at 9718f5f, unchanged; its `runtime.json` (this machine's Node path) stays out of git. |
 | `mods/space-folders` | The sidebar: folders, worktree spaces, pull requests, close-time teardown. |
-| `mods/pulls-review`, `mods/review` | The Review bar and native diff review pane, from herdr-t3. |
+| `mods/changes-sandbox` | The original Changes panel, with wrapped diffs and local Open in… actions. |
+| `mods/git-graph` | Commit graph, branch and tag labels, commit details and Git actions, from herdr-git-graph. |
 | `mods/linear` | The Linear panel, its right-click menu and dialogs. |
 | `mods/tabs-sandbox` | The tab bar, with Linear and container controls. |
 | `mods/worktree-hooks`, `worktree-setup`, `resources` | The worktree dialogs, the setup editor and a worktree's containers. |

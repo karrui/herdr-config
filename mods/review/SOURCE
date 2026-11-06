@@ -1,7 +1,0 @@
-Imported from https://github.com/JinJieBeWater/herdr-t3
-Commit: 07ead52d98ca5bf1f461f5ce6d253ebae918ed2d
-Path: extras/mods/review
-License: Apache-2.0 (LICENSE); asset credits in NOTICE and cat/NOTICE.
-Local changes: main.js omits the AI review button and supports the shared sidebar,
-with per-tab selections and visibility-aware refresh. check-pane.cjs covers
-button removal, tab navigation, empty selections and hidden-panel behavior.

@@ -1,9 +1,11 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, exec as execFile, appHome, home, hc, nextCommand, notify } from "herdr";
+import { spaces, panes, terminals, run, openOverlay, theme, window, shared, layout, settings, home, hc, nextCommand, notify } from "herdr";
 import { KEY_CHANGED, LINKS, linearLocation, readKey, findTicket } from "./linear-resolve.js";
 import { chatAgents, tabStatus } from "./parked.js";
+import { worktreeExec } from "./worktree-runtime.js";
+import { readCounts } from "./git.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -21,9 +23,10 @@ export default class Tabs extends View {
     // Each answer is kept for the place it's about, so switching back to a space shows the
     // last one at once while it's asked again: containers this space's worktree setup
     // started (mods/resources), per folder; the Linear ticket, per terminal and branch.
-    this.resources = {}; this.ticket = {};
+    this.resources = {}; this.ticket = {}; this.changes = {};
     this.asked = {}; this.asking = {};
     cx.timer.every(15000, (cx) => { if (window()?.active) this.countResources(cx, true); });
+    cx.timer.every(10000, (cx) => { if (window()?.active) this.countChanges(cx, true); });
     cx.timer.every(300000, (cx) => { if (window()?.active) this.findLinear(cx, true); });
     // "tabs-sandbox.close" in keys.json (cmd-w).
     cx.spawn(async (cx) => {
@@ -81,7 +84,9 @@ export default class Tabs extends View {
     const space = spaces().find((p) => p.active);
     if (!space) return null;
     const tabs = new Set((space.tabs ?? []).map((c) => c.id));
-    const folder = panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || space.folder;
+    const ps = panes(), chats = new Set(ps.filter((p) => tabs.has(p.tab) && p.mod === "chat").map((p) => p.pane));
+    const terminal = chats.size && terminals().find((t) => t.state === "live" && chats.has(t.labels?.["herdr.chat"]));
+    const folder = ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || terminal?.foreground?.cwd || terminal?.cwd || space.folder;
     return folder ? { space, folder, on: space.machine ?? null, id: `${space.machine ?? null}|${folder}` } : null;
   }
 
@@ -104,9 +109,9 @@ export default class Tabs extends View {
   // Asked again when the popup acted, and every 15 seconds while the window is in front.
   countResources(cx, force = false) {
     const at = this.spaceFolder();
-    if (!at || at.on) return;
+    if (!at) return;
     this.look(`resources|${at.id}`, String(shared("resources.changed") ?? 0), force, cx, async () => {
-      const r = await execFile("/bin/zsh", ["-lc", 'exec "$0" resources "$1"', `${appHome()}/agent/worktree`, at.folder]);
+      const r = await worktreeExec("resources", at.folder, [], at.on);
       try {
         const d = JSON.parse(r.stdout.trim().split("\n").pop());
         this.resources[at.id] = { running: d.containers.filter((c) => c.state === "running").length, total: d.containers.length + d.volumes.length };
@@ -114,12 +119,22 @@ export default class Tabs extends View {
     });
   }
 
+  countChanges(cx, force = false) {
+    const where = linearLocation();
+    if (!where.cwd) return;
+    const id = JSON.stringify(where);
+    this.look(`changes|${id}`, "", force, cx, async () => {
+      try { this.changes[id] = await readCounts(where); }
+      catch { this.changes[id] = null; }
+    });
+  }
+
   // A worktree space's last tab closes the space through the worktree dialog, so the
   // repo's teardown runs before it goes (worktree-hooks); any other tab as usual.
   closeTab(c, space) {
     const at = this.spaceFolder();
-    const worktree = space && !space.machine && (space.tabs ?? []).length === 1 && at?.space.id === space.id
-      && at.folder.startsWith(`${home()}/.herdr/worktrees/`);
+    const worktree = space && (space.tabs ?? []).length === 1 && at?.space.id === space.id
+      && (space.machine ? /\/\.herdr\/worktrees\//.test(at.folder) : at.folder.startsWith(`${home()}/.herdr/worktrees/`));
     if (worktree) openOverlay({ mod: "worktree-hooks", kind: "dialog", width: 440, height: 260, props: { space: space.id, action: "close" } });
     else run("tab.close", { id: c.id });
   }
@@ -156,8 +171,10 @@ export default class Tabs extends View {
     const t = theme();
     const space = spaces().find(p => p.active);
     this.countResources(cx);
+    this.countChanges(cx);
     this.findLinear(cx);
-    const place = this.spaceFolder(), res = place && !place.on ? this.resources[place.id] : null;
+    const place = this.spaceFolder(), res = place ? this.resources[place.id] : null;
+    const changes = this.changes[JSON.stringify(linearLocation())];
     const shown = space?.tabs ?? [];
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
@@ -190,7 +207,7 @@ export default class Tabs extends View {
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
     // Linear and Artifacts aren't Herdr's panels, so the welcome's choice never lists them.
-    const enabled = [...(shared("workspace.panels") ?? ["files"]).filter(id => id !== "changes"), "review", "linear", "artifacts"];
+    const enabled = [...(shared("workspace.panels") ?? ["files"]).filter(id => id !== "review"), "changes", "graph", "linear", "artifacts", "subagents"];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon, tip, menu) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -213,11 +230,17 @@ export default class Tabs extends View {
         h_flex().id("resources").h(26).px(8).gap(5).flex_none().items_center().rounded(6).text_size(12).bg(t.chrome)
           .text_color(res.running ? t.foreground : t.muted).hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
           .tooltip("Containers this worktree's setup started")
-          .on_click(() => openOverlay({ mod: "resources", kind: "popup", width: 380, height: 380, props: { folder: place.folder } }))
+          .on_click(() => openOverlay({ mod: "resources", kind: "popup", width: 380, height: 380,
+            props: { folder: place.folder, machine: place.on, pane: panes().find((p) => p.focused)?.pane } }))
           .child(svg("mods/resources/container.svg").size(14))
           .child(div().size(6).rounded(3).bg(res.running ? t.ansi2 : t.dim))
           .child(String(res.running))))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
+      .child(panelButton("changes", h_flex().gap(5).items_center()
+        .when(Boolean(changes), el => el.child(div().text_color(t.ansi2).child(`+${changes.add}`))
+          .child(div().text_color(t.ansi1).child(`−${changes.del}`))), "mods/changes-sandbox/changes.svg",
+        changes ? `${changes.files} changed files · uncommitted changes` : "Uncommitted changes"))
+      .child(panelButton("graph", null, "mods/git-graph/icons/graph.svg", "Git graph"))
       .child((() => {
         // The ticket's id once found for this branch; just the icon otherwise.
         const lp = this.linearPlace(), found = lp ? this.ticket[lp.id] : null, issue = found?.issue ?? null;
@@ -229,6 +252,7 @@ export default class Tabs extends View {
       })())
       // What agents made to show you (herdr-artifact): reports, boards, forms.
       .child(panelButton("artifacts", null, "mods/artifacts/artifacts.svg", "Artifacts"))
+      .child(panelButton("subagents", null, "mods/chat/subagents.svg", "Subagents"))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-sandbox/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs-sandbox/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/tabs-sandbox/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

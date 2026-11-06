@@ -18,14 +18,17 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, TextareaState, Textarea, Scrollbar, VirtualListScrollHandle, TextView, v_virtual_list, InputState, Input } from "gpui-base";
-import { focused, props, run, theme, hc, exec, shared, setShared, watchFolder, window, settings, playSound, appHome, home, readTextFile, writeTextFile, nextCommand, openOverlay, closeOverlay, knownAgents } from "herdr";
+import { focused, props, run, theme, hc, exec, shared, setShared, watchFolder, window, settings, playSound, appHome, home, readTextFile, writeTextFile, nextCommand, openOverlay, closeOverlay } from "herdr";
 import { agents, panes, terminals, spaces, inRender } from "./live.js";
+import { subagentContext, subagentPanel } from "./subagents.js";
+import { storedTerminals, descendantTerminals, withLineage, conversationTitle } from "./lineage.js";
+import { openCodeLink } from "./links.js";
 import * as fs from "fs/promises";
 import { FIND, LOG, EVENTS, MAIN_ROLLOUT, Conversation, Live, records, eventLines, resultText, summary, excerpt, names } from "./log.js";
 import { words } from "./asks.js";
-import { childrenOf, active, settled, handoffText } from "./state.js";
-import { sessionIO } from "./transport.js";
-import { remoteRun } from "./launch.js";
+import { childrenOf, projectChildren, active, settled, handoffText } from "./state.js";
+import { sessionIO, sendInput } from "./transport.js";
+import { remoteRun, availableAgents } from "./launch.js";
 import { AskCards } from "./cards.js";
 import * as strips from "./strips.js";
 import { red, green, amber, toast, toastWho, plainError } from "./ui.js";
@@ -165,6 +168,7 @@ function howAnswered(ask, text, where) {
   if (!d) return null;
   const plan = ask.words.kind === "plan";
   if (d.behavior === "allow") return `${plan ? "Approved" : d.updatedInput ? "Answered" : "Allowed"} ${where}`;
+  if (ask.req?.elicitation) return `Cancelled ${where}`;
   if (ask.words.kind === "questions") return `Left to talk over ${where}`;
   return plan ? `Sent back to planning ${where}` : `Denied ${where}`;
 }
@@ -202,6 +206,8 @@ export default class Chat extends View {
 
   init(_props, cx) {
     const P = props();
+    this.subagentsPanel = P?.view === "subagents";
+    if (this.subagentsPanel) { this.subagentBranches = new Map(); return; }
     this.origin = P?.terminal ?? null;
     this.addr = this.origin;
     this.machine = P?.transcript?.machine ?? (this.addr?.includes("/") ? this.addr.split("/")[0] : null);
@@ -446,6 +452,7 @@ export default class Chat extends View {
   // Closing (back to the terminal, or the pane goes): the hook stops waiting on this chat, so
   // Claude asks in its terminal instead.
   async close(cx) {
+    if (this.subagentsPanel) return;
     this.box.release();
     this.findBox.release();
     this.scroll.release();
@@ -567,7 +574,7 @@ export default class Chat extends View {
     }
     if (added || kept.length !== this.asks.length) {
       this.asks = kept;
-      this.cards.keep(kept.map((a) => a.id));
+      this.cards.keep([...kept, ...this.asyncAsks()].map((a) => a.id));
       if (added) this.askAlert();
       cx.notify();
     }
@@ -601,15 +608,44 @@ export default class Chat extends View {
     try { this.askEnds = JSON.parse(localStorage.getItem(`askends:${this.addr}`) ?? "[]") ?? []; } catch { this.askEnds = []; }
   }
 
-  // The card's answer goes to the waiting hook; it prints it as Claude's decision.
+  // Async questions keep their identity while the agent continues working.
+  asyncAsks() {
+    if (this.kind !== "codex" || !this.addr || this.transcript) return [];
+    return [...(this.conv?.questions?.values() ?? [])].filter(q => q.async && !q.closed).map(q => {
+      const id = `async:${this.own()}:${q.call}:${Object.keys(q.answers).length}`;
+      if (q.card?.id !== id) {
+        const req = { async: true, session_id: this.own(), call_id: q.call, tool_name: "AskUserQuestion", tool_input: { questions: q.questions.filter(item => !(item.questionItemId in q.answers)) } };
+        q.card = { id, at: q.at, req, words: words(req) };
+      }
+      return q.card;
+    });
+  }
+
+  // Blocking requests use the provider callback; async questions are attributed human replies.
   reply(ask, text, cx) {
     if (ask.sending) return;
     ask.sending = true;
     const how = howAnswered(ask, text, "in the chat");
     cx.spawn(async cx => {
       try {
-        await sessionIO("answer", [this.askDir, ask.id, JSON.stringify(ask.req), text, how ?? ""], this.machine);
-        this.asks = this.asks.filter(a => a.id !== ask.id);
+        if (ask.req?.async) {
+          if (ask.req.session_id !== this.own()) throw new Error("This question belongs to an earlier session.");
+          if (text) {
+            const decision = JSON.parse(text).hookSpecificOutput?.decision;
+            const replies = ask.req.tool_input.questions.map(q => {
+              const answer = decision?.behavior === "allow" ? decision.updatedInput?.answers?.[q.question] : decision?.message;
+              if (typeof answer !== "string" || !answer.trim()) throw new Error("Answer each question before submitting.");
+              return { answer, question: q.question, questionItemId: q.questionItemId };
+            });
+            const r = await sendInput(this.addr, `<send_user_message_question_reply>\n${JSON.stringify(replies)}\n</send_user_message_question_reply>`);
+            if (r.code !== 0) throw new Error(refusal(r).message);
+          }
+          const question = this.conv?.questions.get(ask.req.call_id);
+          if (question) question.closed = text ? "answered" : "released";
+        } else {
+          await sessionIO("answer", [this.askDir, ask.id, JSON.stringify(ask.req), text, how ?? ""], this.machine);
+          this.asks = this.asks.filter(a => a.id !== ask.id);
+        }
         if (how) this.askEnded(ask, how);
       } catch (e) {
         this.error = `Answer not delivered: ${e.message ?? e}`;
@@ -621,7 +657,9 @@ export default class Chat extends View {
   // Each: { id, at, strips, owner (its AskCards, for keys), ask, question (a questions card) }.
   timelineCards() {
     const out = [];
-    for (const a of this.asks) out.push({ id: `card:${a.id}`, at: askAt(a.id), strips: this.cards.strips(a, { who: this.cli() }), owner: this.cards, ask: a, question: a.words.kind === "questions" });
+    const asks = [...this.asks, ...this.asyncAsks()];
+    this.cards.keep(asks.map(a => a.id));
+    for (const a of asks) out.push({ id: `card:${a.id}`, at: a.at ?? askAt(a.id), strips: this.cards.strips(a, { who: this.cli() }), owner: this.cards, ask: a, call: a.req?.async ? a.req.call_id : null, question: a.words.kind === "questions" });
     const own = this.addr && openCard(this.addr);
     if (own) out.push({ id: `card:${own.id}`, at: own.opened, strips: screenStrips(own, { who: this.cli(),
       busy: this.screenBusy.has(own.id), error: this.screenErr.get(own.id),
@@ -630,7 +668,10 @@ export default class Chat extends View {
   }
 
   // The agent's status. Parked behind this chat it isn't in agents(); the core's word then.
+  apiLimit() { return this.live?.limit ?? this.conv?.limit ?? null; }
+
   status() {
+    if (this.apiLimit()) return "blocked";
     const a = agents().find((x) => x.address === this.addr);
     if (a) return a.status;
     const k = terminals().find((x) => x.address === this.addr);
@@ -645,7 +686,17 @@ export default class Chat extends View {
   }
 
   async log(args) {
-    const r = await exec("sh", ["-c", this.transcript && this.transcript.side !== false ? `SIDE=1\n${LOG}` : LOG, "log", ...args], { on: this.machine });
+    let command = this.transcript && this.transcript.side !== false ? `SIDE=1\n${LOG}` : LOG;
+    if (this.kind === "codex" && this.transcript && this.transcript.side !== false) {
+      const key = `${this.machine ?? "local"}:${this.path}`;
+      if (this.scopePath !== key) {
+        const scope = await sessionIO("scope", [this.path], this.machine);
+        if (!Number.isSafeInteger(scope.start) || scope.start < 0) throw new Error("The child conversation is still initializing.");
+        this.scopeStart = scope.start; this.scopePath = key;
+      }
+      command = `FLOOR=${this.scopeStart}\n${command}`;
+    }
+    const r = await exec("sh", ["-c", command, "log", ...args], { on: this.machine });
     if (!this.machine && args[0] !== "results" && r.stdout.includes('"type":"input_image"')) r.stdout = await attach.logImages(args[1], r.stdout);
     return r;
   }
@@ -709,7 +760,7 @@ export default class Chat extends View {
     try {
       if (t.state === "live") {
         // hc send pastes the line into the shell and presses Enter.
-        const r = await hc(["send", t.address, [...fresh, msg].map(shellWord).join(" ")]);
+        const r = await sendInput(t.address, [...fresh, msg].map(shellWord).join(" "));
         if (r.code !== 0) throw new Error(refusal(r).message);
       } else {
         const pane = this.myPane();
@@ -1127,7 +1178,7 @@ export default class Chat extends View {
     const st = this.status();
     if (st === "working" || st === "blocked" || this.asks.length || openCard(this.addr) || this.pending.some((p) => !p.failed && !p.late)) return;
     const msg = this.queue.shift();
-    if (msg.raw) hc(["send", this.addr, msg.text]);
+    if (msg.raw) sendInput(this.addr, msg.text);
     else this.deliver(msg, cx);
     this.saveSoon(cx);
     cx.notify();
@@ -1163,7 +1214,7 @@ export default class Chat extends View {
         p.sent = [body, ...paths].filter(Boolean).join("\n\n");
         // A final skill token opens Codex's completion menu, consuming the send Enter.
         if (this.kind === "codex" && /(?:^|\s)\$[\w:.-]+$/.test(p.sent)) p.sent += " ";
-        r = await this.typed(() => hc(["send", this.addr, p.sent]));
+        r = await this.typed(() => sendInput(this.addr, p.sent));
         // Its own dialog is open in its terminal (a question or a permission with no card
         // here): the words answer it the "Reply instead…" way.
         if (r.code !== 0 && refusal(r).kind === "blocked" && (this.kind === "claude" || this.kind === "codex")) r = await this.replyInstead(p.sent, cx);
@@ -1213,7 +1264,7 @@ export default class Chat extends View {
     let r;
     for (let i = 0; i < 10; i++) {
       await cx.sleep(300);
-      r = await hc(["send", this.addr, text]);
+      r = await sendInput(this.addr, text);
       if (r.code === 0 || refusal(r).kind !== "blocked") break;
     }
     return r;
@@ -1247,7 +1298,7 @@ export default class Chat extends View {
   // A held message sent at once (the agent takes it mid-turn).
   sendQueued(msg, cx) {
     this.queue = this.queue.filter((m) => m !== msg);
-    if (msg.raw) hc(["send", this.addr, msg.text]);
+    if (msg.raw) sendInput(this.addr, msg.text);
     else this.deliver(msg, cx);
     this.saveSoon(cx);
   }
@@ -1271,8 +1322,14 @@ export default class Chat extends View {
     this.saveSoon(cx);
   }
 
-  // Up in an empty box (or one showing a recalled message): the previous message again.
-  recallStep(dir) {
+  // Up edits the queue's last message first; an empty queue falls back to sent history.
+  recallStep(dir, cx) {
+    if (this.box.value() && this.recall < 0) return false;
+    if (dir === 1 && !this.box.value() && this.queue.length) {
+      this.recall = -1;
+      this.editQueued(this.queue.at(-1), cx);
+      return true;
+    }
     const mine = [...(this.conv?.items ?? []).filter((x) => x.kind === "user" && x.text && !x.from).map((x) => x.text), ...this.pending.map((p) => p.text)];
     const list = [...new Set(mine.reverse())];
     if (!list.length) return false;
@@ -1607,7 +1664,7 @@ export default class Chat extends View {
     if (st === "blocked" || this.asks.length) {
       this.queue.push({ id: `r${Date.now()}`, text: line, files: [], quote: null, raw: true, label: on ? `${emoji} reaction` : `${emoji} reaction removed` });
       this.saveSoon(cx);
-    } else hc(["send", this.addr, line]);
+    } else sendInput(this.addr, line);
     cx.notify();
   }
 
@@ -1627,7 +1684,7 @@ export default class Chat extends View {
     const back = i < 0 ? 1 : users.length - i;
     cx.spawn(async (cx) => {
       if (this.kind === "claude") {
-        await hc(["send", this.addr, "/rewind"]);
+        await sendInput(this.addr, "/rewind");
         await cx.sleep(700);
         await hc(["keys", this.addr, ...Array(back).fill("up")]);
       } else {
@@ -1684,7 +1741,7 @@ export default class Chat extends View {
     const i = agent.CLAUDE_EFFORTS.indexOf(effort);
     if (i < 0) return Promise.reject(new Error(`Claude Code has no effort "${effort}".`));
     return this.typed(async () => {
-      const r = await hc(["send", this.addr, "/effort"]);
+      const r = await sendInput(this.addr, "/effort");
       if (r.code !== 0) throw new Error(refusal(r).message);
       // The slider is up once its hint shows; keys sent before then would land in the prompt.
       let up = false;
@@ -1717,7 +1774,7 @@ export default class Chat extends View {
         const stale = !this.pickCache || Date.now() - this.pickCache.at > 60000 || this.pickCache.machine !== this.machine;
         if (stale) {
           const [claude, codex, known] = await Promise.all([agent.defaults("claude", this.machine), agent.defaults("codex", this.machine),
-            knownAgents({ on: this.machine }).catch(() => [])]);
+            availableAgents(this.machine).catch(() => [])]);
           const prog = (key) => known.find((a) => a.key === key || (a.run ?? [])[0] === key);
           this.pickCache = { at: Date.now(), machine: this.machine, dflts: { claude, codex },
             icons: Object.fromEntries(["claude", "codex"].map((k) => [k, { icon: prog(k)?.icon ?? null, tint: Boolean(prog(k)?.tint) }])),
@@ -1771,7 +1828,7 @@ export default class Chat extends View {
       this.liveEffort = { effort: pick.effort, at: Date.now() };
       this.pendingEffort = pick.effort;
       cx.spawn(async (cx) => {
-        while (this.status() === "blocked" || this.asks.length || openCard(this.addr)) await cx.sleep(500);
+        while ((this.status() === "blocked" && !this.apiLimit()) || this.asks.length || openCard(this.addr)) await cx.sleep(500);
         if (this.pendingEffort !== pick.effort) return;
         this.pendingEffort = null;
         try {
@@ -1938,12 +1995,13 @@ export default class Chat extends View {
     // Cards waiting on the person, in the timeline at their moment (DECISIONS, Chat): the
     // agent's question in place of its "Asked you" line, the rest by time.
     const cards = this.timelineCards();
-    const ownQ = cards.find((c) => c.question);
+    const ownQ = cards.find((c) => c.question && !c.call);
+    const asyncCards = new Map(cards.filter(c => c.call && items.some(x => x.kind === "ask" && x.call === c.call)).map(c => [c.call, c]));
     let qAt = -1;
     if (ownQ) for (let i = items.length - 1; i >= 0; i--) if (items[i].kind === "ask" && !items[i].closed) { qAt = i; break; }
     // What isn't in the log, each before the first thing said after its moment.
     const timed = [...this.askEnds.map((e) => ({ at: e.at, row: { kind: "askend", id: `ae:${e.id}`, text: `${e.title} · ${e.how}` } })), ...screenEnds,
-      ...cards.filter((c) => !(c === ownQ && qAt >= 0)).map((c) => ({ at: c.at, card: c }))]
+      ...cards.filter((c) => !asyncCards.has(c.call) && !(c === ownQ && qAt >= 0)).map((c) => ({ at: c.at, card: c }))]
       .sort((a, b) => a.at - b.at);
     // A card is a run of strips, one list row each (strips.js), kept together as one block.
     const putCard = (c) => c.strips.forEach((s, j) => out.push({ kind: "cardstrip", id: `cs:${c.id}:${s.key}`, s, blk: c.id, first: j === 0, last: j === c.strips.length - 1,
@@ -1961,6 +2019,7 @@ export default class Chat extends View {
       const x = items[i];
       while (ti < timed.length && x.at && timed[ti].at < x.at) { dated(timed[ti].at); put(timed[ti++]); }
       if (i === qAt) { putCard(ownQ); continue; }
+      if (x.kind === "ask" && asyncCards.has(x.call)) { putCard(asyncCards.get(x.call)); continue; }
       if (x.kind !== "mark") dated(x.at);
       if (x.kind === "artifact") {
         // A published artifact: its card (the latest publish of it; earlier ones a line), or a
@@ -2045,7 +2104,7 @@ export default class Chat extends View {
         out.push(...card, { kind: "band", id: `ab:${x.id}`, bar });
         block(from, x.id);
       } else if (x.kind === "files") {
-        out.push(x);
+        out.push(...this.fileCardRows(x));
         if (this.opened.has(x.id)) for (const f of x.files) for (const diff of f.diffs ?? []) {
           out.push({ ...diff, id: `${x.id}:${diff.id}`, dim: x.dim });
         }
@@ -2226,7 +2285,9 @@ export default class Chat extends View {
       case "worked": return x.stopped ? 32 : 41;
       case "compacted": return 20;
       case "plan": return 54 + x.steps.reduce((n, s) => n + lines(s.text, w - 46) * 20, 0);
-      case "files": return 50 + (Math.min(x.files.length, FILES_SHOWN) + (x.files.length > FILES_SHOWN ? 1 : 0)) * 24;
+      case "files": return x.headerOnly ? 40 : 50 + (Math.min(x.files.length, FILES_SHOWN) + (x.files.length > FILES_SHOWN ? 1 : 0)) * 24;
+      case "filelink": return x.last ? 32 : 24;
+      case "filemore": return 32;
       case "gallery": return GALLERY_H + 8;
       case "diff": return 32 + (this.opened.has(x.id) ? 10 + Math.min(x.lines.length, DIFF_SHOWN) * 18 + (x.lines.length + (x.more ?? 0) > DIFF_SHOWN ? 18 : 0) : 0);
       case "tools": return this.opened.has(x.id) ? 26 + x.steps.reduce((n, s) => n + (s.cmd || s.kind === "run" ? 36 : 19), 0) : 20;
@@ -2240,6 +2301,23 @@ export default class Chat extends View {
       }
       default: return 60;
     }
+  }
+
+  openLink(url, cx) {
+    const owner = this.t ?? terminals().find(t => t.address === this.eventTerminal);
+    const context = { cwd: owner?.foreground?.cwd ?? owner?.cwd, machine: this.machine,
+      tab: panes().find(p => p.pane === this.myPane())?.tab ?? focused()?.tab };
+    cx.spawn(async () => {
+      try { await openCodeLink(url, context); }
+      catch (e) { toast({ title: "Could not open link", body: e.message ?? String(e), level: "info" }); }
+    });
+  }
+
+  fileCardRows(card) {
+    const shown = card.files.slice(0, FILES_SHOWN), left = card.files.length - shown.length;
+    return [{ ...card, headerOnly: true, blk: card.id },
+      ...shown.map((file, i) => ({ ...file, kind: "filelink", id: `${card.id}:file:${i}`, blk: card.id, dim: card.dim, last: !left && i === shown.length - 1 })),
+      ...(left ? [{ kind: "filemore", id: `${card.id}:more`, of: card.id, blk: card.id, files: card.files, left, dim: card.dim }] : [])];
   }
 
   // One row of the conversation. Rows are drawn inside the list's layout: no handlers here,
@@ -2483,11 +2561,12 @@ export default class Chat extends View {
       case "files": {
         // The files a finished turn edited (foldTurns()), in the order it first edited them, each
         // with its lines added and removed over all its edits, as a diff's header says them.
-        const shown = x.files.slice(0, FILES_SHOWN), left = x.files.length - shown.length;
+        const shown = x.headerOnly ? [] : x.files.slice(0, FILES_SHOWN), left = x.headerOnly ? 0 : x.files.length - shown.length;
         const open = this.opened.has(x.id);
         const counts = (el, add, del) => el.when(add > 0, (el) => el.child(div().flex_none().text_color(green()).child(`+${add}`)))
           .when(del > 0, (el) => el.child(div().flex_none().text_color(red()).child(`−${del}`)));
         return pad(v_flex().w_full().gap(4).px(12).py(10).rounded(10).border_1().border_color(t.border).cursor_pointer().hover((s) => s.bg(t.hover))
+          .when(x.headerOnly, el => el.rounded_b(0).pb(4).border_b(0))
           .child(counts(h_flex().gap(6).items_center().text_size(12).font_medium().text_color(t.dim)
             .child(div().flex_none().child(x.files.length === 1 ? "Edited 1 file" : `Edited ${x.files.length} files`)),
           x.files.reduce((n, f) => n + f.add, 0), x.files.reduce((n, f) => n + f.del, 0))
@@ -2499,6 +2578,14 @@ export default class Chat extends View {
             .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(String(f.file).split("/").filter(Boolean).slice(-3, -1).join("/"))), f.add, f.del)))
           .when(left > 0, (el) => el.child(div().h(20).text_size(12.5).text_color(t.dim).child(`${left} more file${left === 1 ? "" : "s"}`))));
       }
+      case "filelink": case "filemore":
+        return col(h_flex().w_full().h(x.last || x.kind === "filemore" ? 32 : 24).px(12).gap(6).items_center().text_size(12.5)
+          .border_l(1).border_r(1).border_color(t.border).cursor_pointer().hover(s => s.bg(t.hover))
+          .when(x.last || x.kind === "filemore", el => el.pb(8).border_b(1).rounded_b(10))
+          .child(div().min_w(0).truncate().text_color(x.file ? t.foreground : t.dim).child(x.file ? fileName(x.file) : `${x.left} more files`))
+          .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(x.file ? x.file.split("/").filter(Boolean).slice(-3, -1).join("/") : ""))
+          .when(x.add > 0, el => el.child(div().text_color(green()).child(`+${x.add}`)))
+          .when(x.del > 0, el => el.child(div().text_color(red()).child(`−${x.del}`))), 18, 0);
       case "codehead": {
         const done = this.copied === x.id;
         // Run, on a block of ! commands for Claude Code: they run as you'd type them (runBangs()).
@@ -2625,9 +2712,10 @@ export default class Chat extends View {
       if (c?.kind === "input") (c.state ?? null)?.focus();
       else c?.fn?.(cx);
     }
-    else if (row.kind === "files") {
-      const open = !this.opened.has(key);
-      for (const id of [key, ...row.files.flatMap((f) => (f.diffs ?? []).map((d) => `${key}:${d.id}`))]) {
+    else if (row.kind === "filelink") this.openLink(row.file, cx);
+    else if (row.kind === "files" || row.kind === "filemore") {
+      const of = row.of ?? key, open = !this.opened.has(of);
+      for (const id of [of, ...row.files.flatMap((f) => (f.diffs ?? []).map((d) => `${of}:${d.id}`))]) {
         if (open) this.opened.add(id); else this.opened.delete(id);
       }
     }
@@ -2694,6 +2782,8 @@ export default class Chat extends View {
   statusLine(t, st) {
     // A card asks (in the timeline, where it appeared): nothing under the conversation repeats it.
     if (this.asks.length || (this.addr && openCard(this.addr))) return null;
+    if (this.apiLimit()) return h_flex().flex_none().w_full().max_w(COLUMN + 28).mx_auto().h(30).px(14).gap(8).items_center().text_size(12).text_color(t.blocked)
+      .tooltip(this.apiLimit().text).child(svg("mods/chat/clock.svg").size(12).flex_none()).child("Waiting · API limit");
     const liveOwner = !this.transcript || terminals().some(k => k.address === this.eventTerminal && k.state === "live");
     if (liveOwner && (this.remoteError || this.producerGone || this.live?.connection === "disconnected")) return div().flex_none().px(26).py(6).text_size(12).text_color(t.muted).child("Agent connection unavailable · Reconnecting");
     if (st === "working") {
@@ -2738,10 +2828,12 @@ export default class Chat extends View {
   // their parent is this agent) count when they report working or blocked. Idle or finished
   // helpers, and programs that report nothing, don't count.
   helpers() {
-    const rows = childrenOf(this.conv, this.live, this.discovered ?? []).filter(h => this.kind !== "claude" || h.terminal || this.conv?.helpers.has(h.call) || this.discovered?.some(d => d.id === h.id));
-    return rows.map(h => ({ ...h, label: h.label || h.desc || "Subagent",
+    const merged = childrenOf(this.conv, this.live, this.discovered ?? []);
+    const rows = projectChildren([...(this.live?.descendantEvents?.values() ?? [])], this.own(), merged).filter(h => this.kind !== "claude" || h.terminal || this.conv?.helpers.has(h.call) || this.discovered?.some(d => d.id === h.id));
+    return withLineage(rows.map(h => ({ ...h, label: h.label || h.desc || "Subagent",
       status: (this.remoteError || this.producerGone || this.live?.connection === "disconnected") && active(h.status) ? "unavailable" : h.status,
-      spec: [agent.modelName(h.model), agent.levelName(h.effort)].filter(Boolean).join(" · ") }));
+    })), { owner: this.eventTerminal, session: this.transcript?.parentSession ?? this.own(), path: this.transcript?.rootPath ?? this.path,
+      machine: this.machine, title: this.transcript?.title || conversationTitle(this.t, panes(), spaces()) });
   }
 
   async refreshChildren() {
@@ -2752,23 +2844,62 @@ export default class Chat extends View {
       this.childrenKey = key;
       try { this.discovered = JSON.parse(localStorage.getItem(key) ?? "[]"); } catch { this.discovered = []; }
     }
-    const found = await sessionIO("children", [this.transcript?.rootPath ?? this.path, this.kind, JSON.stringify([...this.live.children.keys()])], this.machine);
+    const found = await sessionIO("tree", [this.path, this.kind, JSON.stringify([...this.live.children.keys()]), this.transcript?.rootPath ?? this.path], this.machine);
     const all = new Map((this.discovered ?? []).map(h => [h.id, h]));
-    for (const h of found) if (this.kind !== "claude" || this.conv?.helpers.has(h.call) || all.has(h.id)) all.set(h.id, { ...all.get(h.id), ...h });
-    for (const k of terminals().filter(k => k.parent === this.addr)) {
-      const kind = KINDS[k.report?.app ?? k.status?.app ?? k.agent];
+    // Older history stored grandchildren as siblings; the transcript tree supplies their parent.
+    const merge = list => list.map(h => {
+      const next = childrenOf(null, null, [all.get(h.id), h].filter(Boolean))[0];
+      all.delete(h.id);
+      return { ...next, children: merge(next.children ?? []) };
+    });
+    for (const h of merge(found)) all.set(h.id, h);
+    const core = terminals();
+    const terminalNodes = this.addr ? storedTerminals([...all.values()], this.addr) : new Map();
+    for (const k of descendantTerminals(core, this.addr)) {
+      const old = terminalNodes.get(k.address) ?? {};
+      const kind = KINDS[k.report?.app ?? k.status?.app ?? k.agent ?? k.labels?.["herdr.agent"]] ?? old.provider;
       if (!kind) continue;
-      const old = all.get(k.address) ?? {};
-      const h = { ...old, id: k.address, terminal: k.address, provider: kind, label: k.name || k.title || k.address,
-        status: k.state !== "live" ? (k.exit_code ? "failed" : "completed") : ({ working: "running", blocked: "waiting", done: "completed", idle: "idle" }[k.status] ?? "unavailable") };
+      const machine = k.address.includes("/") ? k.address.split("/")[0] : null;
+      const h = { ...old, id: k.address, terminal: k.address, parentTerminal: k.parent, provider: kind, machine, label: k.name || k.title || old.label || k.address,
+        box: k.labels?.["herdr.sandbox"] ?? old.box,
+        children: old.children ?? [],
+        at: old.at ?? k.created_ms,
+        status: k.state !== "live" ? (k.exit_code ? "failed" : "completed") : ({ working: "running", blocked: "waiting", done: "completed", idle: settled(old.status) ? old.status : "idle" }[k.status] ?? "unavailable") };
       if (!h.path && k.foreground?.pid) {
-        const r = await exec("sh", ["-c", FIND, "child", kind, String(k.foreground.pid)], { on: this.machine });
+        const r = await exec("sh", ["-c", FIND, "child", kind, String(k.foreground.pid)], { on: machine });
         if (r.stdout.trim().endsWith(".jsonl")) h.path = r.stdout.trim();
       }
-      all.set(h.id, h);
+      terminalNodes.set(h.id, h);
+    }
+    const batches = new Map();
+    for (const h of [...terminalNodes.values()].slice(-128)) {
+      if (!h.path) continue;
+      const machine = h.machine ?? (h.terminal.includes("/") ? h.terminal.split("/")[0] : null);
+      if (!batches.has(machine)) batches.set(machine, []);
+      batches.get(machine).push({ terminal: h.terminal, path: h.path, kind: h.provider, box: h.box });
+    }
+    for (const [machine, requests] of batches) {
+      const sessions = await sessionIO("sessions", [JSON.stringify(requests)], machine).catch(() => []);
+      for (const info of sessions) {
+        const h = terminalNodes.get(info.terminal);
+        if (!h) continue;
+        h.session = info.id ?? agent.sessionOf(h.provider, h.path);
+        for (const key of ["model", "effort", "prompt", "result", "waitingReason", "error", "updated"]) if (info[key] !== undefined) h[key] = info[key];
+        if (info.waitingReason === "api_limit") h.status = "waiting";
+        if ((!core.some(k => k.address === h.terminal) || ["idle", "unavailable"].includes(h.status)) && settled(info.status)) h.status = info.status;
+        h.children = childrenOf(null, null, [...h.children, ...(info.children ?? [])]);
+        if (info.events?.length) h.children = projectChildren(info.events, h.session, h.children);
+      }
+    }
+    if (key !== `lineage:${this.machine ?? "local"}:${this.kind}:${this.own()}`) return;
+    for (const [id, h] of all) if (h.terminal) all.delete(id);
+    for (const h of terminalNodes.values()) {
+      const parent = terminalNodes.get(h.parentTerminal);
+      if (parent) parent.children.push(h);
+      else if (h.parentTerminal === this.addr) all.set(h.id, h);
     }
     this.discovered = [...all.values()].slice(-128);
-    try { localStorage.setItem(key, JSON.stringify(childrenOf(this.conv, this.live, this.discovered).slice(-128))); } catch {}
+    try { localStorage.setItem(key, JSON.stringify(projectChildren([...(this.live.descendantEvents?.values() ?? [])], this.own(), childrenOf(this.conv, this.live, this.discovered)).slice(-128))); } catch {}
   }
 
   // Monitors and background commands it left running, until their last notice (log.js bg): for
@@ -2784,7 +2915,7 @@ export default class Chat extends View {
   // (as pane-sandbox's Run chip does in Terminal mode).
   runBangs(cmds) {
     const t = terminals().find((x) => x.address === this.addr);
-    if (!t?.labels?.["herdr.sandbox"]) { this.typed(async () => { for (const c of cmds) await hc(["send", this.addr, `! ${c}`]); }); return; }
+    if (!t?.labels?.["herdr.sandbox"]) { this.typed(async () => { for (const c of cmds) await sendInput(this.addr, `! ${c}`); }); return; }
     run("pane.split", { direction: "down", pane: this.myPane(), argv: ["/bin/zsh", "-lic", 'cd "$1" && print -r -- "$ $2" && eval "$2"; exec zsh -l', "zsh", t.foreground?.cwd ?? t.cwd ?? home(), cmds.join("; ")] });
   }
 
@@ -2797,7 +2928,7 @@ export default class Chat extends View {
     if (this.transcript || !this.addr) return;
     const all = shared("chat.subagents") ?? {};
     const list = this.helpers().map(h => ({ ...h, path: h.path ?? null }));
-    const mine = this.path ? { log: this.path, kind: this.kind, machine: this.machine, list, owner: this.addr, session: this.own(), calls: [...this.conv?.helpers.keys() ?? []], spool: this.spool, connection: this.remoteError || this.producerGone ? "unavailable" : this.live?.connection } : null;
+    const mine = this.path ? { log: this.path, kind: this.kind, machine: this.machine, list, owner: this.addr, session: this.own(), calls: [...this.conv?.helpers.keys() ?? []], spool: this.spool, waitingReason: this.apiLimit() ? "api_limit" : null, connection: this.remoteError || this.producerGone ? "unavailable" : this.live?.connection } : null;
     if (JSON.stringify(mine) === JSON.stringify(all[this.addr] ?? null)) return;
     const next = { ...all };
     if (mine) next[this.addr] = mine; else delete next[this.addr];
@@ -2807,14 +2938,19 @@ export default class Chat extends View {
   openHelper(h) {
     if (h.terminal && terminals().some(k => k.address === h.terminal && k.state === "live")) {
       openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { terminal: h.terminal, dialog: true,
-        parent: { title: this.t?.name || "Parent conversation", terminal: this.addr } } });
+        parent: { title: h.parentTitle || this.t?.name || "Parent conversation", terminal: h.parentTerminal ?? this.addr } } });
       return;
     }
     if (!h.path) { toast({ title: "Conversation unavailable", body: "The provider has not reported this subagent's transcript yet.", level: "info" }); return; }
+    const kind = h.provider ?? this.kind;
+    const owner = h.terminal ?? h.owner ?? this.eventTerminal;
+    const machine = h.terminal || h.owner ? (owner?.includes("/") ? owner.split("/")[0] : null) : this.machine;
     openOverlay({ mod: "chat", kind: "dialog", width: 860, height: 640, props: { transcript: { path: h.path,
-      kind: h.provider ?? this.kind, title: h.label, spec: h.spec || null, machine: this.machine,
-      owner: this.eventTerminal, session: h.id, rootPath: this.transcript?.rootPath ?? this.path, parentSession: this.transcript?.parentSession ?? this.own(), prompt: h.prompt,
-      parent: { title: this.transcript?.title || this.t?.name || this.t?.title || "Parent conversation" } } } });
+      kind, title: h.label, spec: h.spec || null, machine,
+      owner, session: h.terminal ? h.session ?? agent.sessionOf(kind, h.path) : h.id,
+      rootPath: h.terminal ? h.path : h.rootPath ?? this.transcript?.rootPath ?? this.path,
+      parentSession: h.terminal ? undefined : h.ownerSession ?? this.transcript?.parentSession ?? this.own(), side: h.terminal ? false : undefined, prompt: h.prompt,
+      parent: { title: h.parentTitle || this.transcript?.title || this.t?.name || this.t?.title || "Parent conversation" } } } });
   }
 
   // Only waiting: its current call is itself a wait (hc wait, a sleep, a monitor, wait_agent, a
@@ -2823,14 +2959,32 @@ export default class Chat extends View {
     return Boolean(this.conv?.waiting);
   }
 
+  showSubagents() {
+    run("layout.select", { stack: "panel-body", child: "subagents" });
+    run("layout.show", { id: "panel" });
+  }
+
+  subagentsView() {
+    const context = subagentContext(shared("chat.subagents") ?? {}, terminals(), panes(), focused(), spaces());
+    if (context) {
+      this.addr = context.owner;
+      this.machine = context.entry.machine;
+      this.path = context.entry.log;
+      this.kind = context.entry.kind;
+      this.t = { name: context.title };
+      context.entry = { ...context.entry, list: withLineage(context.entry.list ?? [], { owner: context.owner, session: context.entry.session,
+        path: context.entry.log, machine: context.entry.machine, title: context.title }) };
+    }
+    return subagentPanel(theme(), context, h => this.openHelper(h), () => run("layout.hide", { id: "panel" }), this.subagentBranches);
+  }
+
   // Above the box: the CLI's subagents at work, one row each as Claude Code and Codex list them
   // (a spinner, its name, how long). Four rows, then "+N more" opens the rest.
   background(t, st) {
     const now = Date.now();
-    const all = this.helpers();
-    const helpers = all.filter(h => !settled(h.status)), previous = all.filter(h => settled(h.status)), jobs = this.jobs();
-    if (!helpers.length && !jobs.length && !previous.length) return null;
-    const shown = [...helpers, ...jobs, ...(this.previousOpen ? previous : [])];
+    const helpers = this.helpers().filter(h => active(h.status)), jobs = this.jobs();
+    if (!helpers.length && !jobs.length) return null;
+    const shown = [...helpers, ...jobs];
     const open = this.helpersOpen || shown.length <= 5;
     const list = open ? shown : shown.slice(0, 4);
     const ago = (at) => {
@@ -2840,29 +2994,27 @@ export default class Chat extends View {
     };
     // A click opens its conversation (openHelper()).
     // A monitor or background command has no conversation: its command shows on hover instead.
-    const row = (h, i) => h_flex().id(`helper-${i}`).w_full().h(24).px(6).gap(8).items_center().text_size(12).rounded(6)
+    const row = (h, i) => h_flex().id(`helper-${i}`).w_full().h(24).flex_none().px(6).gap(8).items_center().text_size(12).rounded(6)
       .when(!h.job, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.openHelper(h); }))
       .when(Boolean(h.job && h.cmd), (el) => el.tooltip(h.cmd.length > 300 ? `${h.cmd.slice(0, 299)}…` : h.cmd))
       .child(h.status === "waiting" ? div().size(8).mx(2).flex_none().rounded(4).bg(t.blocked)
-        : active(h.status ?? "running") ? svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)
-        : div().w(12).flex_none().text_color(h.status === "failed" ? t.blocked : t.muted).child(h.status === "completed" ? "✓" : h.status === "failed" ? "!" : settled(h.status) ? "–" : "?"))
+        : svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(h.label))
       .when(Boolean(h.spec || h.job), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(h.spec || (h.job === "monitor" ? "Monitor" : "In background"))))
-      .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(h.status === "waiting" ? "Needs you" : h.status === "unavailable" ? "Unavailable" : settled(h.status) ? h.status : ago(h.at)));
+      .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(h.status === "waiting" ? h.waitingReason === "api_limit" ? "Waiting · API limit" : "Needs you" : ago(h.at)));
     // A card docked on the box's top edge (as Manus shows its running work), so the helpers read
     // apart from the agent's own working line above: a count that folds it, then a row each.
     const shut = this.helpersShut;
     return v_flex().flex_none().w_full().max_w(COLUMN + 28).mx_auto().px(14).pt(6)
       .child(v_flex().mx(12).px(6).py(4).rounded_t(10).border_1().border_b(0).border_color(t.border).bg(t.surface)
-        .child(h_flex().id("helpers-head").h(24).px(6).gap(6).items_center().rounded(6).cursor_pointer().text_size(12).text_color(t.muted)
+        .child(h_flex().id("helpers-head").h(28).flex_none().px(6).gap(6).items_center().rounded(6).cursor_pointer().text_size(12).text_color(t.muted)
           .hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { cx.stop_propagation(); this.helpersShut = !shut; cx.notify(); })
-          .child(div().flex_1().child(`${[[helpers.filter(h => active(h.status)).length, "agent"], [jobs.filter((j) => j.job === "monitor").length, "monitor"], [jobs.filter((j) => j.job !== "monitor").length, "background command"]]
-            .filter(([n]) => n).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ") || `${all.length} subagent${all.length === 1 ? "" : "s"}`} ${helpers.some(h => active(h.status)) || jobs.length ? "running" : ""}`))
+          .child(div().flex_1().child([[helpers.length, "active subagent"], [jobs.filter((j) => j.job === "monitor").length, "monitor"], [jobs.filter((j) => j.job !== "monitor").length, "background command"]]
+            .filter(([n]) => n).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ")))
+          .child(this.button("helpers-panel", "View all", null, "ghost", t, () => this.showSubagents()))
           .child(svg(`mods/chat/chevron-${shut ? "up" : "down"}.svg`).size(12).flex_none()))
-        .when(!shut, (el) => el.children(list.map(row))
-          .when(previous.length > 0, el => el.child(div().id("previous-agents").h(26).px(6).flex().items_center().cursor_pointer().text_color(t.muted).hover(s => s.text_color(t.foreground))
-            .on_click((_e, cx) => { this.previousOpen = !this.previousOpen; cx.notify(); }).child(`Previous agents · ${previous.length}`)))
+        .when(!shut, (el) => el.child(v_flex().id("helpers-list").h(Math.min(list.length * 24, 320)).flex_none().overflow_y_scrollbar().children(list.map(row)))
           .when(!open, (el) => el.child(h_flex().id("helpers-more").h(22).px(6).gap(6).items_center().rounded(6).cursor_pointer()
             .text_size(12).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => { cx.stop_propagation(); this.helpersOpen = true; cx.notify(); })
@@ -2904,7 +3056,7 @@ export default class Chat extends View {
           .when(drag?.target === m && drag.msg !== m, (el) => el.child(div().absolute().left(8).right(8).h(2).bg(t.accent)
             .when(i < this.queue.indexOf(drag.msg), (el) => el.top(0)).when(i > this.queue.indexOf(drag.msg), (el) => el.bottom(0))))
           .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(t.foreground)
-            .child(m.label ?? (m.text || m.files.map((f) => f.name).join(", "))))
+            .child(norm(m.label ?? (m.text || m.files.map((f) => f.name).join(", ")))))
           .child(action(`queued-now-${m.id}`, "Steer", "mods/chat/reply.svg", "Send this message now", (cx) => this.sendQueued(m, cx)))
           .child(action(`queued-x-${m.id}`, null, "mods/artifacts/trash.svg", "Remove queued message", (cx) => {
             this.queue = this.queue.filter((x) => x !== m); this.saveSoon(cx);
@@ -3312,8 +3464,8 @@ export default class Chat extends View {
       .on_action("chat_slash_down", take(() => { this.slashSel = (sel + 1) % list.length; }))
       .on_action("chat_slash_take", take((cx) => this.pick(list[sel], cx)))
       .on_action("chat_slash_close", take(() => { this.slashOff = this.box.value().replace(/\n+$/, ""); }))
-      .on_action("chat_recall_up", take(() => this.recallStep(1)))
-      .on_action("chat_recall_down", take(() => this.recallStep(-1)))
+      .on_action("chat_recall_up", take((cx) => this.recallStep(1, cx)))
+      .on_action("chat_recall_down", take((cx) => this.recallStep(-1, cx)))
       .on_key_down((e, cx) => {
         const k = e.key, m = e.modifiers ?? {};
         // The "/" list: Up and Down choose, Tab or Enter takes one, Escape closes it.
@@ -3323,9 +3475,9 @@ export default class Chat extends View {
           if (k === "tab") { cx.stop_propagation(); this.pick(list[sel], cx); return; }
           if (k === "escape") { this.slashOff = this.box.value().replace(/\n+$/, ""); cx.stop_propagation(); cx.notify(); return; }
         }
-        // Up in an empty box: earlier messages; Down: back again.
+        // Up in an empty box edits queued work before recalling sent messages; Down goes back.
         if ((k === "up" && (!this.box.value() || this.recall >= 0)) || (k === "down" && this.recall >= 0)) {
-          if (this.recallStep(k === "up" ? 1 : -1)) { cx.stop_propagation(); cx.notify(); }
+          if (this.recallStep(k === "up" ? 1 : -1, cx)) { cx.stop_propagation(); cx.notify(); }
           return;
         }
         if (k === "escape" && this.quote) { this.quote = null; cx.stop_propagation(); cx.notify(); return; }
@@ -3354,7 +3506,7 @@ export default class Chat extends View {
         .child(Textarea.new(this.box).w_full().text_size(13).text_color(t.foreground)
           .when(Boolean(this.boxSpare && this.lineH), (el) => el.mb(-this.lineH)))
         .when(!this.box.value().trim(), (el) => el.child(div().absolute().top(9).left(12).text_size(13).text_color(t.dim)
-          .child(this.asks.length || st === "blocked" ? "Reply instead…" : this.placeholder()))))
+          .child(this.asks.length || (st === "blocked" && !this.apiLimit()) ? "Reply instead…" : this.placeholder()))))
       // One row: Attach on the left; on the right what the agent runs on (opens the picker) and
       // Send. Send never turns into Stop: while the agent works it still sends (or queues); Stop
       // is on the working line above.
@@ -3458,7 +3610,7 @@ export default class Chat extends View {
   // One copy of Herdr's live lists for the whole render (live.js): a render past Herdr's 50 ms
   // is stopped, and the chat then shows "This view could not be re-rendered".
   render(cx) {
-    return inRender(() => this.draw(cx));
+    return inRender(() => this.subagentsPanel ? this.subagentsView() : this.draw(cx));
   }
 
   draw(cx) {

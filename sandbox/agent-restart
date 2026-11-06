@@ -1,28 +1,29 @@
 #!/bin/bash
 # Restarts the Claude or Codex agent in Herdr terminal $1 with the sandbox "on" or "off" ($2),
-# resuming the same conversation and keeping its other flags. The agent must run in the
-# terminal's shell (as Herdr's + menu starts it), which is what's left once it quits.
+# resuming the same conversation and keeping its other flags.
 set -euo pipefail
 term="$1"; mode="$2"
 dir="$(cd "$(dirname "$0")" && pwd)"
 usage="$(dirname "$dir")/usage"
 fail() { echo "$1" >&2; exit 1; }
+[ "$mode" != on ] || [ "$(uname -s)" = Darwin ] || fail "Herdr's filesystem sandbox is only available on macOS."
 
 info=$(hc get "$term" --json)
+chat=$(jq -r '.labels["herdr.chat"] // empty' <<<"$info")
+shell_pid=$(jq -r '.pid' <<<"$info")
+fg_pid=$(jq -r '.foreground.pid // empty' <<<"$info")
+[ -n "$fg_pid" ] || fail "The agent isn't running."
+in_shell=0
 case "$(jq -r '.argv[0] | split("/") | last' <<<"$info")" in
-  zsh|bash|fish|sh|-zsh|-bash|-fish|-sh) ;;
-  *) fail "This agent isn't running in a shell, so it can't be started again here." ;;
+  zsh|bash|fish|sh|-zsh|-bash|-fish|-sh) if [ "$fg_pid" != "$shell_pid" ]; then in_shell=1; fi ;;
 esac
+[ "$in_shell" = 1 ] || [ -n "$chat" ] || fail "This agent isn't running in a shell or attached to a chat."
 app=$(jq -r '.status.app // empty' <<<"$info")
 case "$app" in
   claude-code) program=claude ;;
   codex) program=codex ;;
   *) fail "Only Claude and Codex agents can be restarted." ;;
 esac
-shell_pid=$(jq -r '.pid' <<<"$info")
-fg_pid=$(jq -r '.foreground.pid // empty' <<<"$info")
-[ -n "$fg_pid" ] && [ "$fg_pid" != "$shell_pid" ] || fail "The agent isn't running."
-
 # Its arguments after the program, minus how it was resumed, sandboxed and given
 # Herdr's instructions (the launcher adds those back, read fresh).
 args=()
@@ -60,6 +61,13 @@ else
   # Codex's own sandbox can't start inside ours; ours stands in for it.
   [ "$mode" = on ] && flags+=(--sandbox danger-full-access)
   if [ -n "$session" ]; then cmd=(codex resume "${flags[@]+"${flags[@]}"}" "$session"); else cmd=(codex "${flags[@]+"${flags[@]}"}"); fi
+fi
+if [ "$in_shell" = 0 ]; then
+  [ -n "$session" ] || fail "The conversation isn't saved yet; send its first message before restarting."
+  argv=$(printf '%s\0' "${cmd[@]}" | jq -Rs 'split("\u0000")[:-1]')
+  HERDR_RESTART_CHAT="$chat" HERDR_RESTART_RESUME=1 HERDR_RESTART_SANDBOX="$mode" \
+    bash "$(dirname "$dir")/mods/chat/restart.sh" "$term" "$argv" >/dev/null
+  exit
 fi
 launch=("$(dirname "$dir")/agent/launch")
 [ "$mode" = on ] && launch+=(--sandbox)

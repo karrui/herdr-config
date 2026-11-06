@@ -3,6 +3,7 @@
 // other, so mods/space-folders/fresh-worktree.js is a copy of this file. Change both.
 // herdr's exec takes an argv list and never goes through a shell.
 import { exec as execFile } from "herdr";
+import { loginExec } from "./shell.js";
 
 // `dirOf(branch)`: the folder for a branch's checkout. A name already taken (by a
 // branch here or on the remote, as of the fetch, or a folder) becomes "<name>-2", "-3", …
@@ -14,7 +15,7 @@ export async function freshWorktree(repo, name, dirOf, on) {
   const head = await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   const base = head.code === 0 ? head.stdout.trim() : null; // "origin/main"
   // Offline or signed out: from what was fetched last. No password prompt to hang on.
-  if (base) await run("env", ["GIT_TERMINAL_PROMPT=0", "git", "-C", repo, "fetch", "--quiet", "origin", base.slice("origin/".length)]);
+  if (base) await loginExec("env", ["GIT_TERMINAL_PROMPT=0", "git", "-C", repo, "fetch", "--quiet", "origin", base.slice("origin/".length)], { on }).catch(() => null);
   // Git keeps branches as paths: "a" can't sit beside "a/b", either way round.
   const refs = (await git(["for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes/origin"])).stdout
     .split("\n").filter(Boolean).map((r) => r.replace(/^refs\/(heads|remotes\/origin)\//, ""));

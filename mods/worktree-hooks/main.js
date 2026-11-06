@@ -3,10 +3,11 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Checkbox } from "gpui-base";
-import { run, props, closeOverlay, theme, spaces, panes, exec, home, hc, appHome, shared, setShared, notify } from "herdr";
+import { run, props, closeOverlay, theme, spaces, panes, terminals, exec, home, hc, appHome, shared, setShared, notify } from "herdr";
 import { freshWorktree } from "./fresh-worktree.js";
+import { worktreeArgv } from "./worktree-runtime.js";
 
-// The repo's own worktree setup and teardown (.termic.yaml), on this computer only.
+// The desktop coordinates space closure; each machine runs its own worktree hooks.
 const HOOKS = () => `${appHome()}/agent/worktree`;
 // "DEVX-642 Implement spec" -> "devx-642-implement-spec", for a branch name.
 const hyphenate = (s) => s.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60);
@@ -15,7 +16,9 @@ const hyphenate = (s) => s.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase
 function place(s) {
   if (!s) return null;
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
-  return panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder || null;
+  const ps = panes(), chats = new Set(ps.filter((p) => tabs.has(p.tab) && p.mod === "chat").map((p) => p.pane));
+  const terminal = chats.size && terminals().find((t) => t.state === "live" && chats.has(t.labels?.["herdr.chat"]));
+  return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || terminal?.foreground?.cwd || terminal?.cwd || s.folder || null;
 }
 
 // Checkouts go to <ROOT>/<repo>/<branch, slashes as dashes>.
@@ -170,8 +173,7 @@ export default class Worktree extends View {
           this.dirty = (await git(repo.top, ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain"], this.on)).out !== "";
           this.unpushed = (await submodules(repo.top, this.on)).unpushed;
         }
-        // Close deletes the worktree only when it's clean, local, and no other space is in it.
-        const deletes = props()?.action === "remove" || (props()?.action === "close" && !this.on && !this.dirty && !this.sharedWith);
+        const deletes = props()?.action === "remove" || (props()?.action === "close" && !this.dirty && !this.sharedWith);
         if (repo?.linked && deletes) {
           this.branch = (await git(repo.top, ["branch", "--show-current"], this.on)).out || null;
           if (this.branch) this.lost = Number((await git(repo.top, ["rev-list", "--count", "HEAD", "--not", "--remotes"], this.on)).out) || 0;
@@ -224,7 +226,7 @@ export default class Worktree extends View {
     if (r.branch !== branch) notify({ title: `Made branch ${r.branch}`, body: `${branch} was taken.`, level: "info" });
     const path = r.dir, p = props();
     // A Setup pane runs the repo's setup first; the agent waits for it.
-    const argv = this.on ? p.argv : [HOOKS(), "start", path, ...(p.argv ? ["--", ...p.argv] : [])];
+    const argv = worktreeArgv("start", path, p.argv ? ["--", ...p.argv] : [], this.on);
     // Leave spaces unnamed so they follow the checkout folder and nest under the repo.
     const name = this.title.value().trim();
     run("space.new", { folder: path, machine: this.on, tab: p.tab, argv, ...(name ? { name } : {}) });
@@ -267,12 +269,9 @@ export default class Worktree extends View {
         HOOKS(), this.repo.top, s.id, force ? "--force" : "", branch]);
       return r.code === 0 ? "" : r.stderr.trim() || "Couldn't start the teardown.";
     }
-    // Terminals first: a shell sitting in the folder keeps it busy on Windows.
-    run("space.close", { id: s.id, confirmed: true });
-    const r = await git(this.repo.main, ["worktree", "remove", ...(force ? ["--force"] : []), this.repo.top], this.on);
-    if (!r.ok) return r.err || "git worktree remove failed.";
-    const b = branch ? await git(this.repo.main, ["branch", "-D", branch], this.on) : { ok: true };
-    return b.ok ? "" : b.err || `Couldn't delete branch ${branch}.`;
+    setShared("worktree.teardown", { ...(shared("worktree.teardown") ?? {}), [s.id]: Date.now() });
+    const r = await hc(["run", "--bg", "--cwd", home(), "--", HOOKS(), "remote", this.on, "remove", this.repo.top, s.id, force ? "--force" : "", branch]);
+    return r.code === 0 ? "" : r.stderr.trim() || "Couldn't start the remote teardown.";
   }
 
   // Close on a Herdr worktree space (the menus' Close, a last tab's ×): the space stays,
@@ -281,9 +280,13 @@ export default class Worktree extends View {
   async closeSpace() {
     const s = this.space();
     if (!s) return "";
-    if (this.on || !this.repo?.linked || this.sharedWith) { run("space.close", { id: s.id, confirmed: true }); return ""; }
+    if (!this.repo?.linked || this.sharedWith) { run("space.close", { id: s.id, confirmed: true }); return ""; }
     setShared("worktree.teardown", { ...(shared("worktree.teardown") ?? {}), [s.id]: Date.now() });
     const branch = this.deleteBranch ? this.branch ?? "" : "";
+    if (this.on) {
+      const r = await hc(["run", "--bg", "--cwd", home(), "--", HOOKS(), "remote", this.on, "closed", this.repo.top, s.id, "", branch]);
+      return r.code === 0 ? "" : r.stderr.trim() || "Couldn't start the remote teardown.";
+    }
     const r = await hc(["run", "--bg", "--cwd", this.repo.top, "--", "/bin/zsh", "-lic", 'exec "$0" closed "$1" "$2" "$3"', HOOKS(), this.repo.top, s.id, branch]);
     return r.code === 0 ? "" : r.stderr.trim() || "Couldn't start the teardown.";
   }
@@ -379,12 +382,14 @@ export default class Worktree extends View {
           ? `${this.folder ? tilde(this.folder, this.userHome) : "This folder"} is not in a git repository.${closing ? " The space closes with no teardown." : ""}`
           : closing && this.sharedWith
             ? `Its agents and terminals stop. ${this.sharedWith.name} is still working in ${tilde(r.top, this.userHome)}, so the worktree stays.`
+          : closing && !r.linked
+            ? "Its agents and terminals stop, then the space closes. The main checkout stays."
           : closing
             ? `Its agents and terminals stop. This repo's teardown runs first, then the space closes${this.dirty ? "." : ` and ${tilde(r.top, this.userHome)} is deleted.`}`
           : remove
             ? !r.linked
               ? "This is the repository's main checkout, not a worktree."
-              : `${this.on ? "" : "Runs this repo's teardown, then "}${this.on ? "Closes" : "closes"} the space and deletes ${tilde(r.top, this.userHome)}.`
+              : `Runs this repo's teardown, then closes the space and deletes ${tilde(r.top, this.userHome)}.`
             : `A new space on a checkout in ${tilde(ROOT(this.userHome), this.userHome)}/${r.name}/. It starts on a new branch from origin's latest default branch; a taken name gets -2.`;
     const blocked = closing ? r === undefined : !r || (remove && !r.linked);
     return v_flex()

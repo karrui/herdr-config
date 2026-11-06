@@ -1,12 +1,11 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-// herdr's exec takes an argv list and never goes through a shell.
-import { exec as execFile, theme, props, closeOverlay, appHome, settings, home } from "herdr";
+import { theme, props, closeOverlay, settings, home } from "herdr";
+import { worktreeExec } from "./worktree-runtime.js";
 
 // A window editing a repo's worktree setup and teardown: Herdr's own copy in
 // ~/.config/herdr-app/worktrees/, read and written through agent/worktree so the file's
-// place and format live in one script. props: { folder } (any checkout of the repo).
-const HOOKS = () => `${appHome()}/agent/worktree`;
+// place and format live in one script. props: { folder, machine } (any checkout).
 const tilde = (p) => (p?.startsWith(home()) ? `~${p.slice(home().length)}` : p);
 
 export default class WorktreeSetup extends View {
@@ -24,7 +23,7 @@ export default class WorktreeSetup extends View {
     this.teardown = editor("bash");
     for (const e of [this.copy, this.setup, this.teardown]) e.on("change", (_e, cx) => { this.dirty = true; this.status = null; cx.notify(); });
     cx.spawn(async (cx) => {
-      const r = await execFile(HOOKS(), ["config", props().folder]).catch((e) => ({ code: 1, stderr: String(e) }));
+      const r = await worktreeExec("config", props().folder, [], props().machine).catch((e) => ({ code: 1, stderr: String(e) }));
       try {
         const c = JSON.parse(r.stdout);
         this.config = c;
@@ -40,7 +39,7 @@ export default class WorktreeSetup extends View {
   save(cx) {
     const body = { copy: this.copy.value().split("\n"), setup: this.setup.value(), teardown: this.teardown.value() };
     cx.spawn(async (cx) => {
-      const r = await execFile(HOOKS(), ["save", props().folder, JSON.stringify(body)]).catch((e) => ({ code: 1, stderr: String(e) }));
+      const r = await worktreeExec("save", props().folder, [JSON.stringify(body)], props().machine).catch((e) => ({ code: 1, stderr: String(e) }));
       this.status = r.code === 0 ? { text: "Saved. New worktrees use it; Enter in a Setup pane reruns it." } : { error: true, text: r.stderr.trim() || "Couldn't save." };
       if (r.code === 0) this.dirty = false;
       cx.notify();

@@ -25,12 +25,39 @@
 #                                             the containers and volumes its setup started
 #   worktree config <path>                    the repo's file and settings, as JSON
 #   worktree save <path> <json>               write {copy, setup, teardown} to that file
+#   worktree remote <machine> remove|closed|cleanup <path> <space> [--force] [<branch>]
+#                                             desktop coordinator: target teardown,
+#                                             desktop close, then target removal
+#   worktree teardown <path>                 run only the target's teardown
+#   worktree finish <path> remove|closed [--force] [<branch>]
+#                                             remove after teardown and desktop close
 # Setup and teardown run outside the sandbox (they install, start Docker); an agent
 # started after them doesn't. Sandboxed agents can't edit Herdr's config.
 set -uo pipefail
-cmd="$1"; dir="$2"; shift 2
 here="$(cd "$(dirname "$0")" && pwd)"
 self="$here/$(basename "$0")"
+log_to() {
+  log="$here/logs/$1.log"
+  mkdir -p "$(dirname "$log")"
+  rm -f "$log.exit"
+  exec >"$log" 2>&1
+  trap 'code=$?; printf "%s\n" "$code" > "$log.exit"' EXIT
+}
+# The desktop coordinates closing a remote space; the headless VPS only runs its hooks.
+if [ "${1:-}" = remote ]; then
+  machine="$2" action="$3" dir="$4" space="$5" force="${6:-}" branch="${7:-}"
+  case "$action" in remove|closed|cleanup) ;; *) echo "Invalid remote worktree action" >&2; exit 2 ;; esac
+  log_to "$space"
+  runtime="$(hc exec --on "$machine" sh -c 'printf %s "${HERDR_APP_HOME:-$HOME/.config/herdr-app}/agent/worktree"')" || exit
+  remote() { hc exec --on "$machine" --timeout 600 bash -lic 'exec "$@"' sh "$runtime" "$@"; }
+  remote teardown "$dir" || exit
+  if [ "$action" != cleanup ]; then herdr-app do space.close --id "$space" --confirmed true >/dev/null || exit; fi
+  [ "$action" != cleanup ] || action=closed
+  remote finish "$dir" "$action" "$force" "$branch"
+  exit $?
+fi
+cmd="$1"; dir="${2/#\~/$HOME}"; shift 2
+case "$cmd" in remove|closed) log_to "${1:-closed-$(basename "$dir")}" ;; esac
 configs="$(dirname "$here")/worktrees"
 cd "$dir" || exit 1
 # running, done or failed: in the worktree's own git folder, out of its files.
@@ -40,10 +67,13 @@ repo="${main/#$HOME/~}"
 
 # This repo's file: <name>.yaml, or <name>-<hash>.yaml when that name is another repo's.
 config_file() {
-  local name f
+  local name f hash owner
   name="$(basename "$main")"
-  for f in "$configs/$name.yaml" "$configs/$name-$(printf %s "$main" | shasum | cut -c1-6).yaml"; do
-    if [ ! -e "$f" ] || [ "$(get "$f" repo)" = "$repo" ]; then echo "$f"; return; fi
+  if command -v sha1sum >/dev/null; then hash=sha1sum; else hash=shasum; fi
+  for f in "$configs/$name.yaml" "$configs/$name-$(printf %s "$main" | "$hash" | cut -c1-6).yaml"; do
+    if [ ! -e "$f" ]; then echo "$f"; return; fi
+    owner="$(get "$f" repo)" || { echo "Couldn't read worktree config: $f" >&2; return 1; }
+    if [ "$owner" = "$repo" ]; then echo "$f"; return; fi
   done
 }
 
@@ -63,7 +93,7 @@ write_config() {
       s = t["scripts"] || {}
       include = File.exist?(".worktreeinclude") ? File.readlines(".worktreeinclude").map(&:strip).reject { |l| l.empty? || l.start_with?("#") } : []
       c = { "copy" => (Array(s["files_to_copy"]).map(&:to_s) + include).uniq, "setup" => s["setup"].to_s, "teardown" => s["archive"].to_s }
-      exit 1 if c["copy"].empty? && c["setup"].strip.empty? && c["teardown"].strip.empty?
+      exit 3 if c["copy"].empty? && c["setup"].strip.empty? && c["teardown"].strip.empty?
       note = "Copied from its .termic.yaml and .worktreeinclude on #{Time.now.strftime("%Y-%m-%d")}; Herdr reads only this file now."
     else
       c = JSON.parse(from)
@@ -82,8 +112,13 @@ write_config() {
     File.write(file, out.join("\n") + "\n")' "$1" "$repo" "$2" 2>/dev/null
 }
 
-conf="$(config_file)"
-[ -e "$conf" ] || write_config "$conf" termic
+conf="$(config_file)" || exit 1
+if [ ! -e "$conf" ]; then
+  write_config "$conf" termic
+  code=$?
+  [ "$code" = 0 ] || [ "$code" = 3 ] || exit "$code"
+fi
+[ ! -e "$conf" ] || /usr/bin/ruby -ryaml -e 'YAML.load_file(ARGV[0])' "$conf" || exit 1
 has() { [ -e "$conf" ] && [ -n "$(get "$conf" "$1")" ]; }
 
 setup_once() {
@@ -149,6 +184,27 @@ record() {
   echo "Tracking what this setup started: ${#cs[@]} containers, ${#vs[@]} volumes."
 }
 
+teardown() {
+  local script
+  script="$(get "$conf" teardown)"
+  [ -z "$script" ] || { echo "Tearing down"; bash -c "$script"; }
+}
+
+finish() {
+  local action="$1" force="${2:-}" branch="${3:-}" dirty flags=()
+  case "$action" in
+    closed)
+      dirty="$(git --no-optional-locks status --porcelain)" || return
+      [ -z "$dirty" ] || { echo "Kept: it has uncommitted changes"; return 3; } ;;
+    remove) case "$force" in --force) flags=(--force) ;; "") ;; *) echo "Invalid removal flag" >&2; return 2 ;; esac ;;
+    *) echo "Invalid worktree action" >&2; return 2 ;;
+  esac
+  echo "Removing the worktree"
+  cd "$main" && git worktree remove ${flags[@]+"${flags[@]}"} -- "$dir" || return
+  echo "Removed"
+  [ -z "$branch" ] || { git branch -D -- "$branch" && echo "Deleted branch $branch"; }
+}
+
 case "$cmd" in
   start)
     [ "${1:-}" = "--" ] && shift
@@ -157,7 +213,7 @@ case "$cmd" in
       # Beside this pane: the same space and tab. Not as this terminal's child, which
       # Herdr would show as a sub-agent instead of a pane.
       labels="$(hc get "$HC_TERMINAL_ID" --json | jq -r '.labels | "herdr.space=\(.["herdr.space"])", "herdr.tab=\(.["herdr.tab"])"')"
-      if ! env -u HC_TERMINAL_ID -u HC_SCOPE hc run --bg --keep --cwd "$dir" \
+      if ! env -u HC_TERMINAL_ID -u HC_SCOPE hc run --bg --keep --no-parent --cwd "$dir" \
         $(printf -- '--label %s ' $labels) -- "${SHELL:-/bin/zsh}" -lic 'exec "$0" setup "$1"' "$self" "$dir" >/dev/null; then
         echo "Couldn't open a Setup pane; setting up here."
         setup_once
@@ -179,33 +235,18 @@ case "$cmd" in
       read -r || exit 0
     done
     ;;
-  remove)
-    space="$1"; force="${2:-}"; branch="${3:-}"
-    mkdir -p "$here/logs"
-    exec >"$here/logs/$space.log" 2>&1
-    script="$(has teardown && get "$conf" teardown)"
-    [ -z "$script" ] || { echo "Tearing down"; bash -c "$script"; }
-    echo "Removing the worktree"
-    herdr-app do space.close --id "$space" --confirmed true >/dev/null
-    cd "$main" && git worktree remove $force "$dir" && echo "Removed" || exit
-    [ -z "$branch" ] || { git branch -D "$branch" && echo "Deleted branch $branch"; }
-    ;;
-  closed)
+  teardown) teardown ;;
+  finish) finish "$@" ;;
+  remove|closed)
     # Closing its space: run the teardown, then remove the worktree when that loses
     # nothing uncommitted, and delete <branch> (local only) with it. With <space> (the Close dialog),
     # the space stays up, struck through, until the teardown is done, then closes; without
     # (it already closed some other way), this only cleans up. Exits 3 when it kept it.
-    space="${1:-}"; branch="${2:-}"
-    mkdir -p "$here/logs"
-    if [ -n "$space" ]; then exec >"$here/logs/$space.log" 2>&1; else exec >"$here/logs/closed-$(basename "$dir").log" 2>&1; fi
-    script="$(has teardown && get "$conf" teardown)"
-    [ -z "$script" ] || { echo "Tearing down"; bash -c "$script"; }
-    dirty="$(git --no-optional-locks status --porcelain)"
-    [ -z "$dirty" ] || echo "Kept: it has uncommitted changes"
-    [ -z "$space" ] || herdr-app do space.close --id "$space" --confirmed true >/dev/null
-    [ -z "$dirty" ] || exit 3
-    cd "$main" && git worktree remove "$dir" && echo "Removed" || exit
-    [ -z "$branch" ] || { git branch -D "$branch" && echo "Deleted branch $branch"; }
+    space="${1:-}"; force=""; branch="${2:-}"
+    if [ "$cmd" = remove ]; then force="${2:-}"; branch="${3:-}"; fi
+    teardown || exit
+    [ -z "$space" ] || herdr-app do space.close --id "$space" --confirmed true >/dev/null || exit
+    finish "$cmd" "$force" "$branch"
     ;;
   resources)
     # What this worktree's setup started, as JSON with each container's state now; or,
@@ -238,5 +279,5 @@ case "$cmd" in
   save)
     write_config "$conf" "$1" && echo "Saved ${conf/#$HOME/~}"
     ;;
-  *) echo "usage: worktree start|setup|remove|config|save <path> ..." >&2; exit 2 ;;
+  *) echo "usage: worktree start|setup|remove|closed|teardown|finish|resources|config|save <path> ...; worktree remote <machine> ..." >&2; exit 2 ;;
 esac

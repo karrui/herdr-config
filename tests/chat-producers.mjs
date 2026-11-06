@@ -7,7 +7,7 @@ import http from "node:http";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
-import { writeEvent, claudeHook, children, answer, operation } from "../mods/chat/session.mjs";
+import { writeEvent, claudeHook, children, answer, operation, elicitationResponse } from "../mods/chat/session.mjs";
 import { CodexTap, RpcSocket } from "../mods/chat/codex-tap.mjs";
 
 function temp(t) { const folder = fs.mkdtempSync(path.join(os.tmpdir(), "herdr-chat-test-")); t.after(() => fs.rmSync(folder, { recursive: true, force: true })); return folder; }
@@ -52,6 +52,19 @@ test("late reconciliation cannot regress live child state or its persisted snaps
   assert.equal(json(path.join(folder, 'chat-events/t1.state.json')).events['root:child:child'].status, 'completed');
 });
 
+test("a sibling interaction neither adopts a completed agent nor starts a new turn", async t => {
+  const tap = new CodexTap('', temp(t), 't1', process.pid);
+  tap.join = async () => {};
+  tap.child('worker', { parent: 'root', status: 'completed', observedAt: 100 });
+  tap.collaboration('sibling', { type: 'subAgentActivity', agentThreadId: 'worker', kind: 'interacted' }, 200);
+  assert.equal(tap.children.get('worker').parent, 'root');
+  assert.equal(tap.children.get('worker').status, 'completed');
+  tap.note('turn/started', { threadId: 'worker', turn: { id: 'new-turn' }, observedAt: 300 });
+  assert.equal(tap.children.get('worker').status, 'running');
+  assert.equal(tap.children.get('worker').parent, 'root');
+  await tap.writes;
+});
+
 test("join requests full history and keeps completed items completed during an active turn", async t => {
   const tap = new CodexTap('', temp(t), 't1', process.pid), events = [];
   tap.emit = (ev, fields) => events.push({ ev, ...fields });
@@ -76,10 +89,98 @@ test("approval answers are fenced, atomically published once, and never overwrit
 
 test("Claude child metadata correlates its own model and spawning call", async t => {
   const folder = temp(t), dir = path.join(folder, "parent/subagents"); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'parent.jsonl'), JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'call', name: 'Agent' }] } }) + '\n');
   fs.writeFileSync(path.join(dir, "agent-child.meta.json"), JSON.stringify({ toolUseId: "call" }));
   fs.writeFileSync(path.join(dir, "agent-child.jsonl"), JSON.stringify({ type: "assistant", message: { model: "actual-model", content: [{ type: "text", text: "Result" }] } }) + "\n");
   const found = await children(path.join(folder, "parent.jsonl"), "claude", []);
   assert.equal(found[0].call, "call"); assert.equal(found[0].model, "actual-model"); assert.equal(found[0].result, "Result");
+});
+
+test("Claude history distinguishes a delivered report, an ended handback, and an API limit", async t => {
+  const folder = temp(t), file = path.join(folder, 'child.jsonl');
+  const rows = [{ type: 'assistant', timestamp: '2026-11-06T00:00:00Z', message: { content: [{ type: 'tool_use', id: 'report', name: 'SubagentHandback', input: { message: 'Finished the implementation' } }] } }];
+  const read = async () => { fs.writeFileSync(file, rows.map(JSON.stringify).join('\n') + '\n'); return (await operation('sessions', [JSON.stringify([{ terminal: 't1', path: file, kind: 'claude' }])]))[0]; };
+  assert.notEqual((await read()).status, 'completed');
+  rows.push({ type: 'user', timestamp: '2026-11-06T00:00:01Z', toolEndsTurn: true, toolUseResult: { success: true }, message: { content: [{ type: 'tool_result', tool_use_id: 'report', content: 'Delivered' }] } });
+  let info = await read(); assert.equal(info.status, 'completed'); assert.equal(info.result, 'Finished the implementation');
+  rows.push({ type: 'assistant', timestamp: '2026-11-06T00:00:02Z', isApiErrorMessage: true, error: 'rate_limit', message: { content: [{ type: 'text', text: "You've hit your weekly limit" }] } });
+  info = await read(); assert.equal(info.status, 'waiting'); assert.equal(info.waitingReason, 'api_limit');
+  rows.push({ type: 'api-request', timestamp: '2026-11-06T00:00:03Z' });
+  info = await read(); assert.equal(info.status, 'running'); assert.equal(info.waitingReason, null);
+});
+
+test("Claude trees match each spawning call to its actual parent, including calls before long outputs", async t => {
+  const folder = temp(t), root = path.join(folder, 'root.jsonl'), dir = path.join(folder, 'root/subagents');
+  fs.mkdirSync(dir, { recursive: true });
+  const call = (id, agentId) => ({ type: 'assistant', agentId, isSidechain: Boolean(agentId), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Agent', input: {} }] } });
+  fs.writeFileSync(root, [call('spawn-a'), call('spawn-c')].map(JSON.stringify).join('\n') + '\n');
+  for (const [id, toolUseId] of [['a', 'spawn-a'], ['b', 'spawn-b'], ['c', 'spawn-c']]) fs.writeFileSync(path.join(dir, `agent-${id}.meta.json`), JSON.stringify({ toolUseId, description: id }));
+  fs.writeFileSync(path.join(dir, 'agent-a.jsonl'), [call('spawn-b', 'a'), { type: 'user', message: { role: 'user', content: 'x'.repeat(400000) } }].map(JSON.stringify).join('\n') + '\n');
+  fs.writeFileSync(path.join(dir, 'agent-b.jsonl'), JSON.stringify(call('spawn-a', 'b')) + '\n');
+  fs.writeFileSync(path.join(dir, 'agent-c.jsonl'), JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [] } }) + '\n');
+  const tree = await operation('tree', [root, 'claude', '[]']);
+  assert.deepEqual(tree.map(h => h.id), ['a', 'c']);
+  assert.equal(tree[0].children[0].id, 'b'); assert.equal(tree[0].children[0].parent, 'a');
+  assert.equal(tree[0].children[0].children.length, 0, 'a malformed cycle cannot reattach its ancestor');
+  const nested = await operation('tree', [path.join(dir, 'agent-a.jsonl'), 'claude', '[]', root]);
+  assert.equal(nested[0].id, 'b');
+});
+
+test("terminal session batches read reported models and keep native identity across providers", async t => {
+  const folder = temp(t), codex = path.join(folder, 'codex.jsonl'), claude = path.join(folder, 'claude.jsonl');
+  fs.writeFileSync(codex, [
+    { type: 'session_meta', payload: { id: 'codex-native', source: 'cli' } },
+    { type: 'turn_context', payload: { model: 'gpt-6.1-sol', effort: 'high' } },
+    { type: 'event_msg', payload: { type: 'task_complete' } },
+  ].map(JSON.stringify).join('\n') + '\n');
+  fs.writeFileSync(claude, JSON.stringify({ type: 'assistant', sessionId: 'claude-native', message: { model: 'claude-sonnet-4-6', content: [] } }) + '\n');
+  const result = await operation('sessions', [JSON.stringify([
+    { terminal: 't1', path: codex, kind: 'codex' },
+    { terminal: 't2', path: claude, kind: 'claude' },
+    { terminal: 'missing', path: path.join(folder, 'missing.jsonl'), kind: 'codex' },
+  ])]);
+  assert.deepEqual(result.map(s => [s.terminal, s.id, s.model]), [
+    ['t1', 'codex-native', 'gpt-6.1-sol'], ['t2', 'claude-native', 'claude-sonnet-4-6'],
+  ]);
+  assert.equal(result[0].effort, 'high'); assert.equal(result[0].status, 'completed');
+  await assert.rejects(operation('sessions', ['[null]']), /Invalid session identity/);
+  await assert.rejects(operation('sessions', ['{}']), /Invalid session list/);
+});
+
+test('Codex child scope excludes inherited parent metadata, messages and completion', async t => {
+  const folder = temp(t), file = path.join(folder, 'child.jsonl');
+  const rows = [
+    { type: 'session_meta', payload: { id: 'child', parent_thread_id: 'parent', subagent_history_start_ordinal: 5, source: { subagent: { thread_spawn: { parent_thread_id: 'parent' } } } } },
+    { type: 'session_meta', payload: { id: 'parent' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Parent request' }] } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Parent answer' }] } },
+    { type: 'event_msg', payload: { type: 'task_complete' } },
+    { type: 'turn_context', payload: { model: 'child-model', effort: 'high' } },
+    { type: 'event_msg', payload: { type: 'task_started' } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Child reply' }] } },
+  ];
+  fs.writeFileSync(file, rows.map(JSON.stringify).join('\n') + '\n');
+  const scope = await operation('scope', [file]);
+  assert.equal(scope.start, Buffer.byteLength(rows.slice(0, 5).map(JSON.stringify).join('\n') + '\n'));
+  const info = (await operation('sessions', [JSON.stringify([{ terminal: 't1', path: file, kind: 'codex' }])]))[0];
+  assert.equal(info.id, 'child'); assert.equal(info.parent, 'parent'); assert.equal(info.model, 'child-model');
+  assert.equal(info.status, 'running'); assert.equal(info.result, 'Child reply');
+  fs.writeFileSync(file, JSON.stringify(rows[0]) + '\n');
+  assert.equal((await operation('scope', [file])).start, null, 'partially copied context must wait rather than expose parent history');
+});
+
+test("Codex terminal metadata finds the latest model before a long tool output", async t => {
+  const folder = temp(t), file = path.join(folder, 'long.jsonl');
+  fs.writeFileSync(file, [
+    { type: 'session_meta', payload: { id: 'native', model: 'initial-model', source: 'cli' } },
+    { type: 'turn_context', payload: { model: 'earlier-model', effort: 'low' } },
+    { type: 'response_item', payload: { output: 'x'.repeat(300000) } },
+    { type: 'turn_context', payload: { model: 'gpt-6.1-sol', effort: 'xhigh' } },
+    { type: 'response_item', payload: { output: 'x'.repeat(3000000) } },
+    { type: 'event_msg', payload: { type: 'task_complete' } },
+  ].map(JSON.stringify).join('\n') + '\n');
+  const [session] = await operation('sessions', [JSON.stringify([{ terminal: 't1', path: file, kind: 'codex' }])]);
+  assert.equal(session.model, 'gpt-6.1-sol'); assert.equal(session.effort, 'xhigh');
 });
 
 test("paths are resolved in the agent environment", async () => {
@@ -105,10 +206,11 @@ test("Codex history lookup verifies exact parent identity and excludes guardian 
   let DatabaseSync;
   try { ({ DatabaseSync } = await import('node:sqlite')); } catch { t.skip('This Node version has no built-in SQLite'); return; }
   const folder = temp(t), parent = '12345678-1234-1234-1234-123456789abc';
+  fs.writeFileSync(`${folder}/rollout-${parent}.jsonl`, JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'spawn_agent', call_id: 'spawn-call', arguments: JSON.stringify({ task_name: 'review' }) } }) + '\n');
   const db = new DatabaseSync(path.join(folder, 'state_5.sqlite'));
   db.exec('create table threads(id text, rollout_path text, source text)');
-  for (const [id, owner, internal] of [['child', parent, false], ['other', 'different-parent', false], ['guardian', parent, true]]) {
-    const source = { subagent: internal ? { other: 'guardian' } : { thread_spawn: { parent_thread_id: owner } } };
+  for (const [id, owner, internal] of [['child', parent, false], ['nested', 'child', false], ['other', 'different-parent', false], ['guardian', parent, true]]) {
+    const source = { subagent: internal ? { other: 'guardian' } : { thread_spawn: { parent_thread_id: owner, agent_path: '/root/review' } } };
     const file = path.join(folder, id + '.jsonl');
     fs.writeFileSync(file, JSON.stringify({ type: 'session_meta', payload: { id, source } }) + '\n' + JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } }) + '\n');
     db.prepare('insert into threads values(?,?,?)').run(id, file, JSON.stringify(source));
@@ -120,7 +222,32 @@ test("Codex history lookup verifies exact parent identity and excludes guardian 
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', source + '\nawait run(process.argv.slice(1));', '--', 'children', `${folder}/rollout-${parent}.jsonl`, 'codex', '["child","other","guardian"]'], { env: { ...process.env, CODEX_HOME: folder }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout).map(c => c.id), ['child']);
+  assert.equal(JSON.parse(result.stdout)[0].call, 'spawn-call', 'native IDs reconcile the saved spawn placeholder');
+  const nested = spawnSync(process.execPath, ['--input-type=module', '-e', source + '\nawait run(process.argv.slice(1));', '--', 'tree', `${folder}/rollout-${parent}.jsonl`, 'codex', '[]'], { env: { ...process.env, CODEX_HOME: folder }, encoding: 'utf8' });
+  assert.equal(nested.status, 0, nested.stderr);
+  assert.equal(JSON.parse(nested.stdout)[0].children[0].id, 'nested');
   assert.equal(process.env.CODEX_HOME, previous);
+});
+
+test('remote session reads recover native descendants from snapshots without a SQLite index', async t => {
+  const folder = temp(t), file = path.join(folder, 'root.jsonl');
+  fs.writeFileSync(file, JSON.stringify({ type: 'session_meta', payload: { id: 'root' } }) + '\n');
+  const events = [{ src: 'codex', ev: 'child', thread: 'root', child: 'child', status: 'completed' },
+    { src: 'codex', ev: 'child', thread: 'child', child: 'deep', status: 'running' },
+    { src: 'codex', ev: 'item/agentMessage/delta', thread: 'child', delta: 'not lineage' }];
+  const sandbox = path.join(folder, 'sandbox/broker/box2/chat-events'); fs.mkdirSync(sandbox, { recursive: true });
+  fs.writeFileSync(path.join(sandbox, 't2.state.json'), JSON.stringify({ events: Object.fromEntries(events.map((e, i) => [i, e])) }));
+  const source = fs.readFileSync(new URL('../mods/chat/session.mjs', import.meta.url), 'utf8');
+  const run = requests => spawnSync(process.execPath, ['--input-type=module', '-e', source + '\nawait run(process.argv.slice(1));', '--', 'sessions', JSON.stringify(requests)],
+    { env: { ...process.env, HERDR_APP_HOME: folder, CODEX_HOME: folder }, encoding: 'utf8' });
+  const request = { terminal: 'vps/t2', path: file, kind: 'codex', box: 'box2' };
+  let result = run([request]); assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout)[0].children.length, 0);
+  assert.deepEqual(JSON.parse(result.stdout)[0].events, events.slice(0, 2));
+  fs.mkdirSync(path.join(folder, 'data'), { recursive: true }); fs.renameSync(sandbox, path.join(folder, 'data/chat-events'));
+  result = run([request]); assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout)[0].events, events.slice(0, 2), 'history survives sandbox cleanup');
+  assert.notEqual(run([{ ...request, box: '../escape' }]).status, 0);
 });
 
 function frame(value, op = 1, final = true) {
@@ -175,10 +302,11 @@ test("Unix WebSocket preserves fragmented Unicode JSON and answers ping", async 
 
 test("tap round trip keeps a child running after parent completion and resolves one approval", async t => {
   const folder = temp(t), rootPath = path.join(folder, "root.jsonl"), childPath = path.join(folder, "child.jsonl");
-  fs.writeFileSync(rootPath, "{}\n"); fs.writeFileSync(childPath, "{}\n"); let socket, approved;
+  fs.writeFileSync(rootPath, "{}\n"); fs.writeFileSync(childPath, "{}\n"); let socket, approved, mcpApproved;
   const file = await server(t, folder, (message, peer) => {
     socket = peer;
     if (message.id === "approval") { approved = message.result; return; }
+    if (message.id === "mcp-approval") { mcpApproved = message.result; return; }
     if (message.id == null) return;
     const result = message.method === "thread/loaded/list" ? { data: ["root"] } : message.method === "thread/resume" ? { thread: { id: message.params.threadId, path: message.params.threadId === "root" ? rootPath : childPath, parentThreadId: message.params.threadId === "child" ? "root" : null } } : { data: [] };
     peer.write(frame({ id: message.id, result }));
@@ -198,4 +326,54 @@ test("tap round trip keeps a child running after parent completion and resolves 
   assert.equal(approved.decision, "accept"); assert.equal(tap.pending.size, 0);
   await tap.writes;
   assert.equal(json(path.join(folder, "chat-events/t1.state.json")).events["root:child:child"].status, "waiting");
+  socket.write(frame({ id: "mcp-approval", method: "mcpServer/elicitation/request", params: { threadId: "root", turnId: "turn", serverName: "computer", mode: "form", message: "Allow Herdr?",
+    requestedSchema: { type: "object", required: ["access"], properties: { access: { type: "string", enum: ["once", "session"], enumNames: ["Allow", "Allow for this session"] } } } } }));
+  await until(() => tap.pending.size === 1);
+  const aid = [...tap.pending.keys()][0], req = json(path.join(tap.asks, "req", `${aid}.json`));
+  await operation("answer", [tap.asks, aid, JSON.stringify(req), JSON.stringify({ hookSpecificOutput: { decision: { behavior: "allow", updatedInput: { answers: { [req.elicitation.question]: "once" } } } } }), "Answered in chat"]);
+  await until(() => mcpApproved);
+  assert.deepEqual(mcpApproved, { action: "accept", content: { access: "once" } });
+});
+
+test("MCP permission cards preserve exact enum values and fence invalid answers before publishing", async t => {
+  const folder = temp(t), tap = new CodexTap("unused", folder, "t1", process.pid), sent = [];
+  for (const dir of ["req", "ans", "end"]) fs.mkdirSync(path.join(tap.asks, dir), { recursive: true });
+  tap.conn = { send: message => sent.push(message) };
+  const params = { threadId: "root", turnId: "turn", serverName: "computer", mode: "form", message: 'Allow Computer Use to use "Herdr"?',
+    requestedSchema: { type: "object", required: ["permission"], properties: { permission: { type: "string", oneOf: [
+      { const: "allow_once", title: "Allow" }, { const: "allow_session", title: "Allow for this session" }, { const: "allow_always", title: "Always allow" },
+    ] } } } };
+  const approve = (request, value) => ({ behavior: "allow", updatedInput: { answers: { [request.elicitation.question]: value } } });
+  for (const value of ["allow_once", "allow_session", "allow_always"]) {
+    tap.ask({ id: value, method: "mcpServer/elicitation/request", params });
+    const id = [...tap.pending.keys()][0], request = json(path.join(tap.asks, "req", `${id}.json`));
+    assert.deepEqual(request.tool_input.questions[0].options.map(o => o.value), ["allow_once", "allow_session", "allow_always"]);
+    assert.throws(() => answer(tap.asks, id, request, JSON.stringify({ hookSpecificOutput: { decision: approve(request, "Allow") } })), /Choose an option/);
+    assert.throws(() => answer(tap.asks, id, request, '{}'), /Invalid permission answer/);
+    assert.ok(!fs.existsSync(path.join(tap.asks, "ans", `${id}.json`)));
+    assert.throws(() => tap.answer(id, approve(request, "bogus")), /Choose an option/);
+    assert.ok(tap.pending.has(id) && fs.existsSync(path.join(tap.asks, "req", `${id}.json`)));
+    answer(tap.asks, id, request, JSON.stringify({ hookSpecificOutput: { decision: approve(request, value) } }));
+    tap.answers();
+    assert.deepEqual(sent.at(-1), { id: value, result: { action: "accept", content: { permission: value } } });
+    assert.equal(tap.pending.size, 0);
+  }
+  const request = tap.words("mcpServer/elicitation/request", params);
+  assert.deepEqual(elicitationResponse(request, { behavior: "deny" }), { action: "cancel" });
+  assert.equal(elicitationResponse(request, null), null);
+  const legacy = tap.words("mcpServer/elicitation/request", { ...params, mode: "openai/form", requestedSchema: { type: "object", required: ["p"], properties: { p: { type: "string", enum: ["yes", "no"], enumNames: ["Allow", "Deny"] } } } });
+  assert.equal(legacy.tool_input.questions[0].options[0].value, "yes");
+  for (const other of [{ mode: "url", url: "https://example.com" }, { mode: "openai/userVerification", title: "Verify", challenge: "secret" },
+    { mode: "form", requestedSchema: { type: "object", properties: { password: { type: "string" } } } }]) {
+    const native = tap.words("mcpServer/elicitation/request", { ...params, ...other });
+    assert.equal(native.tool_name, "McpElicitation");
+    assert.throws(() => elicitationResponse(native, { behavior: "allow" }), /Choose an option/);
+    assert.ok(!JSON.stringify(native).includes('"secret"'));
+  }
+  tap.ask({ id: "cancel", method: "mcpServer/elicitation/request", params });
+  tap.answer([...tap.pending.keys()][0], { behavior: "deny" });
+  assert.deepEqual(sent.at(-1), { id: "cancel", result: { action: "cancel" } });
+  tap.ask({ id: "terminal", method: "mcpServer/elicitation/request", params });
+  const count = sent.length; tap.answer([...tap.pending.keys()][0], null);
+  assert.equal(sent.length, count, "terminal handoff sends no server answer");
 });

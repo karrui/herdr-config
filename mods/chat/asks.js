@@ -39,10 +39,10 @@ export function words(req) {
     case "AskUserQuestion": {
       // Each question with its options: the chat's question card answers them all at once.
       const questions = (Array.isArray(v.questions) ? v.questions : []).map((q) => ({
-        text: String(q?.question ?? ""), header: String(q?.header ?? ""), multi: q?.multiSelect === true,
+        text: String(q?.question ?? ""), header: String(q?.header ?? ""), multi: q?.multiSelect === true, strict: q?.strict === true,
         options: (Array.isArray(q?.options) ? q.options : []).map((o) => {
           const label = typeof o === "string" ? o : String(o?.label ?? "");
-          return { label, name: label.replace(/\s*\(recommended\)\s*$/i, ""), recommended: /\(recommended\)\s*$/i.test(label), description: typeof o === "object" ? o?.description ?? "" : "" };
+          return { label, name: q.strict ? o.value : label.replace(/\s*\(recommended\)\s*$/i, ""), recommended: !q.strict && /\(recommended\)\s*$/i.test(label), description: typeof o === "object" ? o?.description ?? "" : "" };
         }).filter((o) => o.label),
       })).filter((q) => q.text);
       return { kind: "questions", title: questions[0]?.text ?? "A question", detail: "", questions, cut: false };
@@ -71,6 +71,7 @@ export function words(req) {
       return { kind: "permission", title, ...lines(v.reason, ...files.flatMap((f) => [f?.path, f?.diff])) };
     }
     case "request_permissions": return { kind: "permission", title: "Allow more access", ...lines(v.reason, JSON.stringify(v.permissions ?? {}, null, 1)) };
+    case "McpElicitation": return { kind: "permission", title: v.message, ...lines(v.detail), unread: true };
   }
   const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
   const json = Object.keys(v).length ? JSON.stringify(v, null, 1) : "";

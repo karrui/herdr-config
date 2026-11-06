@@ -12,13 +12,16 @@ import { chatAgents } from "./parked.js";
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
-  return panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
+  const ps = panes(), chats = new Set(ps.filter((p) => tabs.has(p.tab) && p.mod === "chat").map((p) => p.pane));
+  const terminal = chats.size && terminals().find((t) => t.state === "live" && chats.has(t.labels?.["herdr.chat"]));
+  return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || terminal?.foreground?.cwd || terminal?.cwd || s.folder;
 }
 
 // A space on one of Herdr's worktrees (~/.herdr/worktrees) closes through the worktree
 // dialog, which runs the repo's teardown before the space goes (worktree-hooks).
 function closesWithTeardown(s) {
-  return Boolean(s && !s.machine && place(s)?.startsWith(`${home()}/.herdr/worktrees/`));
+  const path = s && place(s);
+  return Boolean(path && (s.machine ? /\/\.herdr\/worktrees\//.test(path) : path.startsWith(`${home()}/.herdr/worktrees/`)));
 }
 
 // A space's checkout: "main" (a repo's own), "linked" (a worktree), or null.

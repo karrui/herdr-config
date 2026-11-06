@@ -26,6 +26,9 @@ export default class AgentBar extends View {
     this.entries = [];
     this.rules = [];
     this.hover = null;
+    cx.timer.every(30000, cx => {
+      if (window()?.active && (this.view === "footer" || this.view === "usage") && agentAt(this.address())) this.refresh(cx);
+    });
     cx.spawn(async cx => {
       await fs.mkdir(BLOCKED, { recursive: true });
       await fs.mkdir(CLAUDE, { recursive: true });
@@ -187,7 +190,7 @@ export default class AgentBar extends View {
         .when(Boolean(p?.icon), el => el.child(p.tint ? svg(p.icon).size(15).text_color(t.foreground) : image(p.icon).size(15)))
         .child(div().flex_1().font_semibold().text_color(t.foreground).child(p?.name ?? agent?.app ?? "Agent"))
         .when(Boolean(u?.model), el => el.child(div().text_size(12).text_color(t.dim).child(u.model))))
-      .when(!u, el => el.child(div().px(18).py(14).text_color(t.dim).child("No reading yet. It arrives after the agent's next turn.")))
+      .when(!u, el => el.child(div().px(18).py(14).text_color(t.dim).child("No reading yet. Check your agent's sign-in; account limits refresh automatically.")))
       .when(u?.ctx != null, el => el.child(this.meter("m-ctx", "Context", u.ctx, "this conversation",
         u.ctx_tokens != null && u.ctx_size ? `${tokens(u.ctx_tokens)} / ${tokens(u.ctx_size)} tokens` : "")).child(rule()))
       .when(u?.five != null, el => el.child(this.limitMeter("m-five", "Session", "rolling 5 hours", u.five, u.five_reset, u.limits_at)))
@@ -195,9 +198,13 @@ export default class AgentBar extends View {
       .when(u?.cost != null, el => el.child(rule()).child(v_flex().px(18).py(12).gap(4)
         .child(h_flex().justify_between().child(div().text_color(t.foreground).child("Would have cost"))
           .child(div().font_semibold().text_color(t.foreground).child(`$${u.cost.toFixed(2)}`)))
-        .child(div().text_size(12).text_color(t.dim).child("at API rates this session. Your plan covers it."))))
+        .child(div().text_size(12).text_color(t.dim).child(agent?.app === "codex"
+          ? "Estimated at standard API token rates; excludes tools and helpers."
+          : "at API rates this session. Your plan covers it."))))
       .child(rule())
-      .child(div().px(18).py(12).text_size(12).text_color(t.dim).child("Reported by the agent as it works."));
+      .child(div().px(18).py(12).text_size(12).text_color(t.dim).child(u?.source === "api"
+        ? `Account limits refresh every ${agent?.app === "codex" ? "minute" : "3 minutes"}. Context is per conversation.`
+        : "Reported by the agent as it works."));
   }
 
   // Blocked list

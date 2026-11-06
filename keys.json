@@ -74,6 +74,7 @@
     "cmd-alt-[": "space-folders.prev"
   },
   "mod:chat": {
+    "cmd-f": "chat.find",
     "ctrl-f": "chat.find"
   }
 }

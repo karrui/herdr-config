@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Read Codex and Claude account limits, cached across Herdr views."""
+from datetime import datetime
+import fcntl
+import json
+import math
+import os
+from pathlib import Path
+import select
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+
+def query():
+    proc = subprocess.Popen(["codex", "app-server"], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+    deadline, buf = time.monotonic() + 10, b""
+
+    def send(message):
+        proc.stdin.write((json.dumps(message) + "\n").encode())
+        proc.stdin.flush()
+
+    def reply(id):
+        nonlocal buf
+        while True:
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                message = json.loads(line)
+                if message.get("id") == id:
+                    if "error" in message:
+                        raise ValueError("Codex could not read account limits")
+                    return message["result"]
+            left = deadline - time.monotonic()
+            if left <= 0 or not select.select([proc.stdout], [], [], left)[0]:
+                raise TimeoutError("Codex usage timed out")
+            chunk = os.read(proc.stdout.fileno(), 65536)
+            if not chunk:
+                raise EOFError("Codex app-server exited")
+            buf += chunk
+
+    try:
+        send({"id": 1, "method": "initialize", "params": {
+            "clientInfo": {"name": "herdr_usage", "title": "Herdr usage", "version": "1"}}})
+        reply(1)
+        send({"method": "initialized", "params": {}})
+        send({"id": 2, "method": "account/rateLimits/read"})
+        return reply(2)
+    finally:
+        # The read never starts a thread; shut down this private server and its children.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+        except ProcessLookupError:
+            proc.wait()
+        proc.stdin.close()
+        proc.stdout.close()
+
+
+def reading(result):
+    bucket = (result.get("rateLimitsByLimitId") or {}).get("codex") or result.get("rateLimits")
+    if not isinstance(bucket, dict):
+        raise ValueError("No Codex limits")
+    data = {"at": int(time.time()), "source": "api", "plan": bucket.get("planType"),
+            "five": None, "five_reset": None, "week": None, "week_reset": None}
+    for window in (bucket.get("primary"), bucket.get("secondary")):
+        if not isinstance(window, dict):
+            continue
+        key = {300: "five", 10080: "week"}.get(window.get("windowDurationMins"))
+        pct, reset = window.get("usedPercent"), window.get("resetsAt")
+        if key and type(pct) in (int, float) and math.isfinite(pct) and 0 <= pct <= 100:
+            data[key] = pct
+            if type(reset) in (int, float) and math.isfinite(reset) and reset > 0:
+                data[key + "_reset"] = reset
+    return data
+
+
+def claude_query():
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    # shortcut: custom config folders use file credentials; add keyed Keychain lookup when needed.
+    if not token and sys.platform == "darwin" and "CLAUDE_CONFIG_DIR" not in os.environ:
+        try:
+            result = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                                    capture_output=True, timeout=4)
+            if result.returncode == 0:
+                token = json.loads(result.stdout).get("claudeAiOauth", {}).get("accessToken")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    if not token:
+        token = json.loads((config / ".credentials.json").read_text()).get("claudeAiOauth", {}).get("accessToken")
+    if not token:
+        raise ValueError("No Claude subscription login")
+    # Only use the bearer in memory; Claude owns refresh-token rotation and credential writes.
+    request = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
+        "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20"})
+    with urllib.request.urlopen(request, timeout=8) as response:
+        return json.load(response)
+
+
+def claude_reading(result):
+    limits = {}
+    for key, window in result.items():
+        if not key.startswith(("five_hour", "seven_day")) or not isinstance(window, dict):
+            continue
+        pct, reset = window.get("utilization"), window.get("resets_at")
+        if type(pct) not in (int, float) or not math.isfinite(pct) or not 0 <= pct <= 100:
+            continue
+        try:
+            reset = datetime.fromisoformat(reset.replace("Z", "+00:00")).timestamp() if reset else None
+        except (ValueError, TypeError, AttributeError):
+            reset = None
+        limits[key] = {"used_percentage": pct, "resets_at": reset}
+    if not limits:
+        raise ValueError("No Claude limits")
+    return {"at": int(time.time()), "source": "api", "limits": limits,
+            "five": limits.get("five_hour", {}).get("used_percentage"),
+            "five_reset": limits.get("five_hour", {}).get("resets_at"),
+            "week": limits.get("seven_day", {}).get("used_percentage"),
+            "week_reset": limits.get("seven_day", {}).get("resets_at")}
+
+
+def main(provider):
+    home = Path(os.environ.get("HERDR_APP_HOME", Path.home() / ".config/herdr-app"))
+    path = home / f"data/usage/{provider}-limits.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path) + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            cache = json.loads(path.read_text())
+            if not isinstance(cache, dict) or type(cache.get("checked")) not in (int, float):
+                cache = {}
+        except (OSError, ValueError):
+            cache = {}
+        interval = 180 if provider == "claude" else 60
+        if time.time() - cache.get("checked", 0) >= interval:
+            checked = time.time()
+            try:
+                cache["data"] = claude_reading(claude_query()) if provider == "claude" else reading(query())
+            except urllib.error.HTTPError as error:
+                if error.code == 429:
+                    try:
+                        retry = float(error.headers.get("Retry-After", 0))
+                    except ValueError:
+                        retry = 0
+                    checked += max(600, retry) - interval
+                error.close()
+            except (OSError, ValueError, KeyError, TypeError, EOFError, TimeoutError):
+                pass  # Keep the original timestamp so a failed refresh never looks fresh.
+            cache["checked"] = checked
+            with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as tmp:
+                json.dump(cache, tmp)
+            os.replace(tmp.name, path)
+        if cache.get("data"):
+            print(json.dumps(cache["data"]))
+
+
+if __name__ == "__main__":
+    try:
+        if len(sys.argv) == 2 and sys.argv[1] in ("codex", "claude"):
+            main(sys.argv[1])
+    except OSError:
+        pass  # The caller can still use session logs if caching is unavailable.

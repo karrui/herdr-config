@@ -1,16 +1,16 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, exec as execFile, notify, appHome } from "herdr";
+import { theme, spaces, panes, terminals, focused, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared, exec as execFile, notify, appHome } from "herdr";
 
 // Claude Code and Codex start as a chat: their tab's pane header (pane-sandbox) swaps the new
 // terminal for the chat once it shows, from this label. Terminal there shows the CLI again.
 // The terminal labels itself before the agent starts: the menu closes as it starts one, and a
 // label set here once tab.new answered was dropped with it.
-function start(a, space) {
+function start(a, space, folder) {
   const chat = /^(claude|codex)(-|$)/.test(a.key ?? "");
   const argv = chat ? ["sh", "-c", 'hc label "$HC_TERMINAL_ID" chat.start=1 >/dev/null 2>&1; exec "$@"', "sh", ...a.run] : a.run;
-  run("tab.new", { name: a.name, space: space?.id, argv });
+  run("tab.new", { name: a.name, space: space?.id, folder, argv });
 }
 
 // The last agents each machine reported, shown at once while knownAgents() checks again.
@@ -62,6 +62,11 @@ export default class NewMenu extends View {
   render() {
     const t = theme();
     const space = spaces().find(s => s.active);
+    const f = focused();
+    const pane = f?.pane ? panes().find(p => p.pane === f.pane) : null;
+    // Chat panes park their terminal; use its live folder before closing the popup.
+    const terminal = pane?.mod === "chat" ? terminals().find(t => t.state === "live" && t.labels?.["herdr.chat"] === pane.pane) : null;
+    const folder = terminal?.foreground?.cwd || terminal?.cwd || pane?.cwd || f?.cwd || space?.folder;
     const installed = this.agents.filter(a => a.installed);
     const choices = [...installed, ...this.agents.filter(a => !a.installed).slice(0, 2)];
     // Its height is what its parts add up to (the agents list scrolls past 9), so none is squeezed.
@@ -73,9 +78,9 @@ export default class NewMenu extends View {
         const agent = /^[1-9]$/.test(e.key) ? installed[Number(e.key) - 1] : null;
         if (!agent) return;
         closeOverlay(props().overlay);
-        start(agent, space);
+        start(agent, space, folder);
       })
-      .child(this.row("terminal", svg("icons/shell.svg").size(14), "Terminal", () => run("tab.new", { space: space?.id }), shortcut("tab.new")))
+      .child(this.row("terminal", svg("icons/shell.svg").size(14), "Terminal", () => run("tab.new", { space: space?.id, folder }), shortcut("tab.new")))
       // The shared Chrome agents drive over CDP (browser/open starts it or brings it forward).
       .child(this.row("browser", svg("mods/new-menu-sandbox/browser.svg").size(14), "Browser", () => execFile(`${appHome()}/browser/open`, [])
         .then(r => r, e => ({ code: 1, stderr: String(e) }))
@@ -83,7 +88,7 @@ export default class NewMenu extends View {
       .child(div().h(HEAD).flex_none().px(8).pt(9).text_size(11).text_color(t.dim).child("Start an agent"))
       .child(v_flex().id("agents").flex_1().min_h(0).overflow_y_scrollbar()
         .children(choices.map((a, i) => this.row(a.key, a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14), a.name,
-          () => start(a, space), a.installed ? (i < 9 ? String(i + 1) : "") : "not installed", a.installed)))
+          () => start(a, space, folder), a.installed ? (i < 9 ? String(i + 1) : "") : "not installed", a.installed)))
         .when(this.agents.length === 0, el => el.child(div().h(ROW).flex_none().flex().items_center().px(8).text_color(t.dim).child(this.failed ? "Could not load agents" : "Checking installed agents…"))))
       // Agents cmd-w parked here, and sessions that ran in this space's folders (mods/resume).
       .child(this.row("resume", svg("mods/workspace-chrome/clock.svg").size(14), "Resume a session\u2026", () => openOverlay({ mod: "resume", kind: "dialog", width: 520, height: 480, props: { space: space?.id } }), "", Boolean(space)))

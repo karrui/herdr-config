@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Summarize a Codex rollout's context and estimated API token cost."""
+import json
+from pathlib import Path
+import re
+import sys
+
+# USD per million input, cached input, output tokens; checked 2026-11-06.
+# https://developers.openai.com/api/docs/pricing
+RATES = {
+    "gpt-6.1-sol": (2, 0.10, 10),
+    "gpt-6.1-terra": (1, 0.05, 5),
+    "gpt-6-sol": (2, 0.20, 10),
+    "gpt-6-astra": (10, 1, 50),
+    "gpt-6-luna": (0.10, 0.01, 0.50),
+    "gpt-5.6-sol": (4, 0.40, 20),
+    "gpt-5.3-codex": (1.75, 0.175, 14),
+}
+FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens")
+
+
+def summarize(lines):
+    model, info, previous = None, {}, None
+    cost, priced, complete = 0, False, True
+    for line in lines:
+        # Skip messages and embedded images without decoding or retaining their payloads.
+        if '"turn_context"' not in line and '"token_count"' not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue  # The active writer may not have finished the last line yet.
+        payload = record.get("payload") or {}
+        if record.get("type") == "turn_context":
+            model = payload.get("model")
+            continue
+        if payload.get("type", record.get("type")) != "token_count" or not payload.get("info"):
+            continue
+        info = payload["info"]
+        totals = info.get("total_token_usage")
+        if not isinstance(totals, dict):
+            complete = False
+            continue
+        current = [totals.get(k, 0) for k in FIELDS]
+        if any(type(n) is not int or n < 0 for n in current):
+            complete = False
+            continue
+        # Counters repeat, and may reset after a resume; a reset applies to the whole vector.
+        reset = previous is None or any(a < b for a, b in zip(current, previous))
+        delta = current if reset else [a - b for a, b in zip(current, previous)]
+        previous = current
+        if not any(delta):
+            continue
+        rate = RATES.get(re.sub(r"-\d{4}-\d{2}-\d{2}$", "", model or ""))
+        if not rate:
+            complete = False  # Never present an unpriced model as free or a partial total as complete.
+            continue
+        inp, cached, written, out = delta
+        if cached + written > inp:
+            complete = False
+            continue
+        long = inp > 272000 and (model or "").startswith("gpt-6")
+        # Reasoning is already included in output_tokens. Cache writes use the 30-minute rate.
+        cost += ((max(0, inp - cached - written) * rate[0] + cached * rate[1] + written * rate[0] * 1.25)
+                 * (2 if long else 1) + out * rate[2] * (1.5 if long else 1)) / 1000000
+        priced = True
+    last, size = info.get("last_token_usage") or {}, info.get("model_context_window")
+    tokens = last.get("total_tokens")
+    return {"model": model, "ctx": tokens / size * 100 if tokens is not None and size else None,
+            "ctx_tokens": tokens, "ctx_size": size, "cost": cost if priced and complete else None}
+
+
+if __name__ == "__main__":
+    path = Path(sys.argv[1])
+    with path.open() as file:
+        data = summarize(file)
+    match = re.search(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", path.stem)
+    data["session"] = match[0] if match else None
+    print(json.dumps(data))

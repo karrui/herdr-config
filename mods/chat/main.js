@@ -347,7 +347,7 @@ export default class Chat extends View {
     // Long replies opened with Show more (by message id), and their words' drawn height.
     this.unfolded = new Set();
     this.natural = new Map();
-    // Find in the chat (Ctrl+F): open, the current match.
+    // Find in the chat (Cmd/Ctrl+F): open, the current match.
     this.finding = false;
     this.findIdx = 0;
     this.findBox = InputState.new({ placeholder: "Find in chat" });
@@ -888,8 +888,11 @@ export default class Chat extends View {
         this.start = Number(head[1]);
         this.records = [...recs, ...this.records];
         this.rebuild();
-        this.anchor = first ? { id: first, until: Date.now() + 3000 } : null;
-        this.reanchor = true;
+        if (this.findQuery()) { this.findIdx = 0; this.findJump = true; }
+        else {
+          this.anchor = first ? { id: first, until: Date.now() + 3000 } : null;
+          this.reanchor = true;
+        }
       } catch (e) {
         this.error = String(e?.message ?? e);
       } finally {
@@ -1252,18 +1255,22 @@ export default class Chat extends View {
     cx.notify();
   }
 
-  // ---- find (Ctrl+F) ----------------------------------------------------------------------------
+  // ---- find (Cmd/Ctrl+F) ------------------------------------------------------------------------
 
   openFind(cx) {
     this.finding = true;
     this.findJump = true;
-    cx.timer.after(0, () => this.findBox.focus());
+    cx.timer.after(0, () => {
+      if (!this.finding || !(this.dialog || this.transcript || focused()?.pane === this.myPane())) return;
+      this.findBox.focus();
+      this.findBox.set_selected_range({ start: 0, end: this.findBox.value().length });
+    });
     cx.notify();
   }
 
   closeFind(cx) {
     this.finding = false;
-    this.box.focus();
+    if (!this.transcript) this.box.focus();
     cx.notify();
   }
 
@@ -1326,7 +1333,8 @@ export default class Chat extends View {
     const total = matches.reduce((n, m) => n + m.n, 0);
     const q = this.findQuery();
     const count = !q ? "" : total ? `${Math.min(this.findIdx, total - 1) + 1} of ${total}` : "No matches";
-    const icon = (id, path, fn) => div().id(id).size(22).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+    const icon = (id, path, label, fn) => div().id(id).size(22).flex_none().flex().items_center().justify_center().rounded(6).cursor_pointer()
+      .tooltip(label).role("button").tab_index(0).accessibility_label(label)
       .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => { cx.stop_propagation(); fn(cx); cx.notify(); })
       .child(svg(path).size(14));
@@ -1338,14 +1346,14 @@ export default class Chat extends View {
       .on_action("chat_find_prev", take((cx) => this.findStep(-1, rows, cx)))
       .child(svg("mods/chat/search.svg").size(14).flex_none().text_color(t.dim))
       .child(Input.new(this.findBox).flex_1().text_size(13).text_color(t.foreground))
-      .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).child(count))
+      .child(div().flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11.5).text_color(t.dim).tooltip("Matches in loaded messages").child(count))
       .when(Boolean(this.start), (el) => el.child(h_flex().id("find-earlier").h(22).px(8).flex_none().items_center().rounded(6).cursor_pointer()
         .text_size(12).text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => { cx.stop_propagation(); this.loadEarlier(cx); })
         .child(this.loadingEarlier ? "Loading…" : "Search earlier")))
-      .child(icon("find-prev", "mods/chat/chevron-up.svg", (cx) => this.findStep(-1, rows, cx)))
-      .child(icon("find-next", "mods/chat/chevron-down.svg", (cx) => this.findStep(1, rows, cx)))
-      .child(icon("find-x", "mods/chat/x.svg", (cx) => this.closeFind(cx)));
+      .child(icon("find-prev", "mods/chat/chevron-up.svg", "Previous match (Shift+Enter)", (cx) => this.findStep(-1, rows, cx)))
+      .child(icon("find-next", "mods/chat/chevron-down.svg", "Next match (Enter)", (cx) => this.findStep(1, rows, cx)))
+      .child(icon("find-x", "mods/chat/x.svg", "Close search (Escape)", (cx) => this.closeFind(cx)));
   }
 
   // A reply's reference was clicked: the message it answers, scrolled to and lit up a moment
@@ -1386,6 +1394,7 @@ export default class Chat extends View {
         .on_click((_e, cx) => { cx.stop_propagation(); fn(); })).child(label);
     return h_flex().flex_none().h(38).px(14).gap(10).items_center().border_b(1).border_color(t.border).text_size(12.5)
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(name))
+      .child(this.button("dlg-find", "Find", "mods/chat/search.svg", "secondary", t, (cx) => this.openFind(cx)))
       .child(h_flex().p(2).gap(2).rounded(8).bg(t.surface).border_1().border_color(t.border)
         .child(seg("dlg-chat", "Chat", true, () => {}))
         .child(seg("dlg-term", "Terminal", false, () => this.toTerminal())))
@@ -1783,6 +1792,7 @@ export default class Chat extends View {
   // edited files ends in a card of them (each +added −removed): in view for the latest turn,
   // folded with the work for the others.
   foldTurns(items, working) {
+    const query = this.findQuery().toLowerCase();
     const FOLDS = new Set(["agent", "thought", "tools", "diff", "plan", "files"]);
     const folds = (x) => FOLDS.has(x.kind) && !(x.kind === "plan" && x.steps?.some((s) => s.status !== "completed"));
     // Steers in a turn you stopped don't split it (it doesn't fold).
@@ -1824,6 +1834,7 @@ export default class Chat extends View {
       const id = `w:${(lead ?? span[0]).id}`, start = lead?.at ?? span.find((x) => x.at)?.at, end = (steer ?? span[fin])?.at ?? 0;
       out.push({ kind: "worked", id, more: Boolean(lead?.steer), secs: start && end > start ? Math.round((end - start) / 1000) : null });
       // Opened, what it folds is drawn faded (rowBare(), dim), so the last reply stands out.
+      if (query && span.slice(0, fin).some(x => x.kind === "agent" && x.text?.toLowerCase().includes(query))) this.opened.add(id);
       const open = this.opened.has(id);
       span.forEach((x, k) => { if (k >= fin || !folds(x)) out.push(x); else if (open) out.push({ ...x, dim: true }); });
       span = [];
@@ -3193,6 +3204,7 @@ export default class Chat extends View {
         // What it runs on, where the box's model button sits: its log's, else its row's.
         .when(Boolean(this.conv?.meta?.model || this.transcript.spec), (el) => el.child(div().flex_none().text_color(t.muted)
           .child(this.conv?.meta?.model ? [agent.modelName(this.conv.meta.model), agent.levelName(this.conv.meta.effort)].filter(Boolean).join(" · ") : this.transcript.spec)))
+        .child(this.button("transcript-find", "Find", "mods/chat/search.svg", "secondary", t, (cx) => this.openFind(cx)))
         .child(this.button("chat-close", "Close", null, "secondary", t, () => closeOverlay(props().overlay))));
     // An open card, or the agent's own dialog in its terminal, doesn't lock the box: words
     // written there answer it ("Reply instead…").
@@ -3369,6 +3381,11 @@ export default class Chat extends View {
   draw(cx) {
     const mine = this.myPane();
     this.paneFocused = Boolean(mine && focused()?.pane === mine);
+    const fq = shared("chat.findreq");
+    if (fq && mine && !this.dialog && !this.transcript && fq.pane === mine && fq.at !== this.findReqAt && Date.now() - fq.at < 5000) {
+      this.findReqAt = fq.at;
+      cx.timer.after(0, cx => this.openFind(cx));
+    }
     // A tab's Restart agent (mods/menu-hooks): shared "chat.restarting" = { terminal, at }.
     const rs = shared("chat.restarting");
     if (rs && rs.terminal === this.addr && rs.at !== this.restartingAt && Date.now() - rs.at < 5000) {

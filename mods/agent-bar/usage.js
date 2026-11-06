@@ -1,5 +1,5 @@
-// Usage data: Claude's status line writes usage/claude/<terminal>.json each turn; Codex's
-// comes from its session file, read by usage/codex-usage. Both give
+// Context comes from Claude's status line or Codex's rollout. Account limits use
+// shared API caches, with session reports as fallback. Both give
 // { model, ctx, ctx_tokens, ctx_size, five, five_reset, week, week_reset, cost? }.
 // herdr's exec takes an argv list and never goes through a shell.
 import { exec as execFile, agents, terminals, appHome, readTextFile } from "herdr";
@@ -14,17 +14,21 @@ export function agentAt(address) {
   return [...agents(), ...chatAgents()].find(a => a.address === address && (a.app === "claude-code" || a.app === "codex")) ?? null;
 }
 
-// Plan limits are account-wide: take them from whichever Claude session reported last,
-// so an idle tab still shows what other sessions have spent.
+// Keep session context and cost; prefer the API cache over limits repeated by a status line.
 async function claudeUsage(address) {
-  const all = (await Promise.all((await fs.readdir(CLAUDE)).filter(f => f.endsWith(".json"))
+  const [files, r] = await Promise.all([fs.readdir(CLAUDE).catch(() => []),
+    execFile("python3", [`${DIR}/account-limits`, "claude"]).catch(() => null)]);
+  const all = (await Promise.all(files.filter(f => f.endsWith(".json"))
     .map(async f => { try { return { f, u: JSON.parse(await readTextFile(`${CLAUDE}/${f}`)) }; } catch { return null; } })))
     .filter(Boolean);
   const own = all.find(x => x.f === `${address}.json`)?.u;
-  if (!own) return null;
-  const latest = all.reduce((a, b) => (b.u.at ?? 0) > (a.u.at ?? 0) ? b : a).u;
-  const { five, five_reset, week, week_reset } = latest;
-  return { ...own, five, five_reset, week, week_reset, limits_at: latest.at };
+  let api = null;
+  try { api = JSON.parse(r?.stdout.trim() || "null"); } catch {}
+  const latest = api ?? all.map(x => x.u).filter(u => u?.five != null || u?.week != null)
+    .reduce((a, b) => !a || (b.at ?? 0) > (a.at ?? 0) ? b : a, null);
+  if (!latest) return own ?? null;
+  const { five, five_reset, week, week_reset, limits, source } = latest;
+  return { ...own, five, five_reset, week, week_reset, limits, source, limits_at: latest.at };
 }
 
 export async function loadUsage(agent) {
@@ -39,7 +43,7 @@ export async function loadUsage(agent) {
   return null;
 }
 
-// Codex has no feed to watch, so it's read again whenever its agent changes (a turn ends).
+// Agent changes refresh context; the footer's timer also refreshes account limits.
 export function usageKey(agent) {
   return agent ? `${agent.address}:${agent.app === "codex" ? `${agent.status}:${agent.seq}` : ""}` : null;
 }

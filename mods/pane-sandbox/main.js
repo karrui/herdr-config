@@ -11,7 +11,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { panes, terminals, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, notify, nextCommand, exec as execFile } from "herdr";
+import { panes, terminals, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, notify, nextCommand, setShared, exec as execFile } from "herdr";
 
 const CHAT = "chat", LABEL = "herdr.chat";
 // When a toggle last swapped a pane (every copy of this build shares it).
@@ -282,6 +282,14 @@ export default class Pane extends View {
       .when(st === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child("Needs you")))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))
+      .when(Boolean(p.chat), el => el.child(div().id(`ph-find-${pane}`).size(22).flex_none().flex().items_center().justify_center().rounded(4)
+        .cursor_pointer().text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
+        .tooltip("Find in chat (⌘F / Ctrl+F)").role("button").tab_index(0).accessibility_label("Find in chat")
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          run("pane.focus", { pane });
+          setShared("chat.findreq", { pane, at: Date.now() });
+        }).child(svg("mods/chat/search.svg").size(14))))
       .when(this.hovered, el => el
         .child(this.button(t, `ph-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
         .child(this.button(t, `ph-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))

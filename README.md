@@ -33,6 +33,9 @@ The reply comes back the same way: a Claude Code agent reports what it did to th
 ![The chat view, with sub-agents under their agents in the Agents list](docs/chat.png)
 
 Chat shows an agent as a conversation, with its terminal one click away.
+Use the search icon beside Chat / Terminal, or **Cmd+F / Ctrl+F**, to find text and jump between matches
+with **Enter / Shift+Enter** or the arrows. Matching replies inside collapsed turns open automatically.
+**Search earlier** reads another page of history; **Escape** closes search.
 Messages sent while it worked are marked Steer, and the work after them folds under "Continued for".
 In the Agents list, each agent's helpers sit under it, named by their task: Codex reviewers it started with `hc`, and Claude Code's own helpers.
 
@@ -182,7 +185,15 @@ Right-click the Linear button to link a different ticket, stop or restore detect
 - Spaces with an agent, and folders with a terminal open, come first.
   The rest go under an Inactive line, in each folder and at the bottom; click it to fold them away.
 - **Usage**, above Settings, shows Claude Code's and Codex's plan limits: each 5-hour and weekly window, when it resets, and how old the reading is.
-  They're account-wide, as each agent last reported them, so Claude Code needs the status line set up above.
+  They're account-wide. Codex fetches its limits through `account/rateLimits/read`, using your existing Codex login,
+  with one shared cache for the footer and panel refreshed every minute while Herdr is active.
+  Claude uses the subscription endpoint its CLI uses (`/api/oauth/usage`), cached for three minutes with rate-limit backoff.
+  That endpoint is undocumented and may change. Herdr reads the existing login without saving tokens or refreshing credentials.
+  Neither needs an agent turn for account limits. If an API is unavailable, Herdr keeps the last reading or falls back to session reports.
+  Context and cost still come from the conversation; Claude Code needs the status line set up above for those.
+  The footer's usage popup also estimates what a Codex conversation would cost at standard API token rates,
+  accounting for cached input, model changes, and long-context pricing. Tool fees and separate helper sessions are excluded;
+  an estimate is hidden if any model in the conversation has no known price (`usage/codex-session`).
   A reading older than half an hour is dimmed, as use elsewhere isn't in it, and a window that has reset since reads 0%.
   **Token insights** at its foot opens a dashboard of tokens by model and day, from the agents' session logs (`mods/insights`).
 

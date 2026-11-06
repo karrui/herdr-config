@@ -13,6 +13,56 @@ function load(file, names, globals) {
   return vm.runInNewContext(`${source}\n;({${names.join(',')}})`, { View: class {}, ...globals });
 }
 
+test('Claude footer and panel share API limits before a first turn, preserving session context and cost', async () => {
+  const api = { at: 100, source: 'api', five: 25, five_reset: 2000000000, week: 51, week_reset: 2000100000,
+    limits: { five_hour: { used_percentage: 25, resets_at: 2000000000 }, seven_day: { used_percentage: 51 },
+      seven_day_sonnet: { used_percentage: 12 } } };
+  const report = { at: 200, ctx: 10, cost: 1.25, model: 'Opus', five: 1, week: 2 };
+  for (const hasSession of [false, true]) {
+    const globals = { appHome: () => '/app',
+      fs: { readdir: async () => hasSession ? ['t1.json'] : [] }, readTextFile: async () => JSON.stringify(report),
+      execFile: async (command, args) => {
+        assert.equal(command, 'python3');
+        assert.equal(args.join('|'), '/app/usage/account-limits|claude');
+        return { stdout: JSON.stringify(api) };
+      } };
+    const { loadUsage } = load('mods/agent-bar/usage.js', ['loadUsage'], globals);
+    const footer = await loadUsage({ app: 'claude-code', address: 't1' });
+    const { claude } = load('mods/usage/main.js', ['claude'], globals);
+    const panel = await claude();
+    assert.equal(footer.five, 25, 'a status line can repeat an older API value with a newer timestamp');
+    assert.equal(footer.week, 51);
+    assert.equal(footer.limits_at, panel.at);
+    assert.equal(panel.windows[2].name, 'Weekly, Sonnet');
+    assert.equal(footer.ctx, hasSession ? 10 : undefined);
+    assert.equal(footer.cost, hasSession ? 1.25 : undefined);
+    globals.execFile = async () => ({ stdout: '' });
+    const fallback = await load('mods/agent-bar/usage.js', ['loadUsage'], globals).loadUsage({ app: 'claude-code', address: 't1' });
+    assert.equal(fallback?.five ?? null, hasSession ? 1 : null);
+  }
+});
+
+test('the usage bar polls either provider only while the window is active', () => {
+  let active = true;
+  for (const app of ['codex', 'claude-code']) {
+    const timers = [];
+    const { AgentBar } = load('mods/agent-bar/main.js', ['AgentBar'], {
+      props: () => ({}), window: () => ({ active }), agentAt: () => ({ app }),
+    });
+    const view = Object.assign(Object.create(AgentBar.prototype), { address: () => 't1' });
+    let reads = 0;
+    view.refresh = () => reads++;
+    view.init({}, { spawn() {}, timer: { every: (ms, fn) => timers.push({ ms, fn }) } });
+    assert.equal(timers[0].ms, 30000);
+    active = true;
+    timers[0].fn({});
+    assert.equal(reads, 1);
+    active = false;
+    timers[0].fn({});
+    assert.equal(reads, 1);
+  }
+});
+
 const space = { active: true, folder: '/other', branch: 'other-branch', machine: 'remote' };
 const chat = { pane: 'chat-pane', mod: 'chat' };
 const terminal = { address: 'remote/t1', state: 'live', cwd: '/initial', foreground: { cwd: '/worktree' }, labels: { 'herdr.chat': chat.pane } };
@@ -20,6 +70,72 @@ const context = {
   spaces: () => [space], panes: () => [chat], terminals: () => [terminal],
   focused: () => ({ pane: chat.pane }), shared: () => null, LINKS: 'linear.links',
 };
+
+test('chat search finds folded replies and jumps between matching message rows', () => {
+  const stop = new Error('jumped');
+  let element;
+  element = new Proxy({}, { get: () => () => element });
+  const jumps = [];
+  const { Chat } = load('mods/chat/main.js', ['Chat'], {
+    shared: () => null, focused: () => ({ pane: 'chat' }), theme: () => ({}),
+    div: () => element, v_flex: () => element,
+  });
+  const view = Object.assign(Object.create(Chat.prototype), {
+    addr: 't1', phase: 'ready', finding: true, findIdx: 0, findJump: true,
+    findBox: { value: () => 'needle' }, opened: new Set(),
+    myPane: () => 'chat', alerts() {}, sizeBox() {}, status: () => 'idle', button: () => element,
+    scroll: { scroll_to_item: (...args) => { jumps.push(args); throw stop; } },
+  });
+  const items = [
+    { id: 'u1', kind: 'user', text: 'Question' },
+    { id: 'a1', kind: 'agent', text: 'Hidden NEEDLE in an earlier reply' },
+    { id: 'a2', kind: 'agent', text: 'Final reply' },
+    { id: 'u2', kind: 'user', text: 'Another needle' },
+  ];
+  view.finding = false;
+  assert.ok(!view.foldTurns(items, false).some(r => r.id === 'a1'));
+  view.finding = true;
+  const rows = view.foldTurns(items, false);
+  assert.ok(rows.some(r => r.id === 'a1'));
+  view.rows = () => rows;
+  assert.equal(view.findMatches(rows).length, 2);
+  for (const direction of [0, 1, 1, -1]) {
+    if (direction) view.findStep(direction, rows, { notify() {} });
+    assert.throws(() => view.draw({}), e => e === stop);
+    const expected = view.findRow(view.findMatches(rows));
+    assert.deepEqual(jumps.at(-1), [expected.index, 'center']);
+    assert.equal(view.pinned, false);
+    view.findJump = true;
+  }
+  view.finding = false;
+  assert.ok(view.foldTurns(items, false).some(r => r.id === 'a1'), 'jump target stays open after search closes');
+});
+
+test('search focuses only when requested, selects the query, and leaves the composer draft untouched', () => {
+  let pane = 'chat', focused = 0, selection;
+  const { Chat } = load('mods/chat/main.js', ['Chat'], { focused: () => ({ pane }) });
+  const view = Object.assign(Object.create(Chat.prototype), {
+    myPane: () => 'chat', findBox: { value: () => 'existing query', focus: () => focused++, set_selected_range: r => { selection = r; } },
+    box: { focus: () => focused++, value: () => 'Unsent draft' },
+  });
+  let later;
+  const cx = { timer: { after: (_ms, fn) => { later = fn; } }, notify() {} };
+  view.openFind(cx);
+  later();
+  assert.equal(focused, 1);
+  assert.equal(selection.end, 'existing query'.length);
+  assert.equal(view.box.value(), 'Unsent draft');
+  view.openFind(cx);
+  pane = 'another-pane';
+  later();
+  assert.equal(focused, 1, 'a delayed search must not reclaim focus after switching panes');
+  view.transcript = {};
+  view.closeFind(cx);
+  assert.equal(focused, 1, 'a read-only transcript has no composer to focus');
+  const keys = JSON.parse(readFileSync(`${__dirname}/../keys.json`, 'utf8'))['mod:chat'];
+  assert.equal(keys['cmd-f'], 'chat.find');
+  assert.equal(keys['ctrl-f'], 'chat.find');
+});
 
 for (const [file, subject] of [['mods/linear/main.js', 'key'], ['mods/tabs-sandbox/main.js', 'Tabs']]) {
   test(`${file}: Linear follows the chat's parked terminal`, () => {
@@ -254,9 +370,17 @@ test('Codex restart session lookup ignores helper and reviewer rollouts', (t) =>
   writeFileSync(join(dir, 'ps'), '#!/bin/sh\nprintf "100 1\\n101 100\\n"\n', { mode: 0o755 });
   writeFileSync(join(dir, 'lsof'), `#!/bin/sh\nprintf 'n%s\\nn%s\\n' '${main}' '${helper}'\n`, { mode: 0o755 });
   writeFileSync(join(dir, 'ls'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  const result = spawnSync('bash', [`${__dirname}/../usage/codex-usage`, '100'], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` }, encoding: 'utf8' });
+  writeFileSync(join(dir, 'codex'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  mkdirSync(join(dir, 'data/usage'), { recursive: true });
+  writeFileSync(join(dir, 'data/usage/codex-limits.json'), JSON.stringify({ checked: Date.now() / 1000,
+    data: { at: 1234, source: 'api', week: 51 } }));
+  const result = spawnSync('bash', [`${__dirname}/../usage/codex-usage`, '100'], { env: { ...process.env,
+    HERDR_APP_HOME: dir, PATH: `${dir}:${process.env.PATH}` }, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).session, mainId);
+  assert.equal(JSON.parse(result.stdout).ctx, 10);
+  assert.equal(JSON.parse(result.stdout).week, 51);
+  assert.equal(JSON.parse(result.stdout).at, 1234);
 });
 
 test('embedded Codex images are decoded from the log into preview files', async (t) => {

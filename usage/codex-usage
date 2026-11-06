@@ -1,58 +1,48 @@
 #!/bin/bash
 # Prints, as JSON, the context and plan usage of the Codex session running under
 # terminal process $1. Context comes from the session file (rollout) that Codex keeps
-# open; plan limits are account-wide, so they come from whichever session reported
-# last. Prints nothing when there is no such session.
+# open; account-wide plan limits come from the cached app-server API, falling back
+# to session logs when no API reading is available.
 # With no $1: only the plan limits, with when they were reported (`at`) and the plan.
 root="$1"
+here="$(cd "$(dirname "$0")" && pwd)"
+limits=$(python3 "$here/account-limits" codex 2>/dev/null)
 
-# The newest plan limits any session reported: a session that just started has none yet.
-limits='{}'
-for f in $(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -5); do
-  line=$(grep '"type":"token_count"' "$f" | grep '"rate_limits":{' | tail -1)
-  [ -n "$line" ] && { limits="$line"; break; }
-done
-windows='([$l.payload.rate_limits.primary, $l.payload.rate_limits.secondary] | map(select(. != null))) as $w
-  | ($w | map(select(.window_minutes == 300)) | first) as $five
-  | ($w | map(select(.window_minutes == 10080)) | first) as $week'
-
-if [ -z "$root" ]; then
-  [ "$limits" = '{}' ] && exit 0
-  /usr/bin/jq -nc --argjson l "$limits" "$windows"' | {
-    at: ($l.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601),
-    plan: $l.payload.rate_limits.plan_type,
-    five: $five.used_percent, five_reset: $five.resets_at,
-    week: $week.used_percent, week_reset: $week.resets_at
-  }'
-  exit 0
+if [ -z "$limits" ]; then
+  for f in $(ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -5); do
+    line=$(grep '"type":"token_count"' "$f" | grep '"rate_limits":{' | tail -1)
+    [ -n "$line" ] || continue
+    limits=$(printf '%s\n' "$line" | /usr/bin/jq -c '
+      ([.payload.rate_limits.primary, .payload.rate_limits.secondary] | map(select(. != null))) as $w
+      | ($w | map(select(.window_minutes == 300)) | first) as $five
+      | ($w | map(select(.window_minutes == 10080)) | first) as $week
+      | {
+        at: (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601),
+        source: "log", plan: .payload.rate_limits.plan_type,
+        five: $five.used_percent, five_reset: $five.resets_at,
+        week: $week.used_percent, week_reset: $week.resets_at
+      }')
+    [ -n "$limits" ] && break
+  done
 fi
+plans() { [ -z "$limits" ] || printf '%s\n' "$limits"; }
+[ -n "$root" ] || { plans; exit 0; }
 
 # The terminal's process and everything under it.
 pids=$(ps -A -o pid=,ppid= | awk -v root="$root" '
   { parent[$1] = $2 }
   END { for (p in parent) { x = p; while (x > 1 && x != root) x = parent[x]; if (x == root) printf "%s,", p } }')
 pids="${pids%,}"
-[ -n "$pids" ] || exit 0
+[ -n "$pids" ] || { plans; exit 0; }
 
 # Helpers and internal reviewers can have newer rollouts under the same process tree.
 rollout=$(lsof -a -p "$pids" -Fn 2>/dev/null | sed -n 's|^n\(.*/\.codex/sessions/.*\.jsonl\)$|\1|p' | sort -r | while IFS= read -r f; do
   head -n 1 "$f" | /usr/bin/jq -e '.payload.source | if type == "object" then has("subagent") | not else true end' >/dev/null 2>&1 || continue
   printf '%s\n' "$f"; break
 done)
-[ -n "$rollout" ] || exit 0
+[ -n "$rollout" ] || { plans; exit 0; }
 
-model=$(grep '"type":"turn_context"' "$rollout" | tail -1 | /usr/bin/jq -r '.payload.model // empty')
-
-# rollout-<time>-<session uuid>.jsonl
-session=$(basename "$rollout" .jsonl | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
-
-grep '"type":"token_count"' "$rollout" | tail -1 | /usr/bin/jq -c --arg model "$model" --arg session "$session" --argjson l "$limits" '.payload as $p
-  | '"$windows"'
-  | {
-      session: (if $session == "" then null else $session end),
-      model: (if $model == "" then null else $model end),
-      ctx: (if $p.info.model_context_window then $p.info.last_token_usage.total_tokens / $p.info.model_context_window * 100 else null end),
-      ctx_tokens: $p.info.last_token_usage.total_tokens, ctx_size: $p.info.model_context_window,
-      five: $five.used_percent, five_reset: $five.resets_at,
-      week: $week.used_percent, week_reset: $week.resets_at
-    }'
+usage=$(python3 "$here/codex-session" "$rollout" 2>/dev/null)
+[ -n "$usage" ] || { plans; exit 0; }
+[ -n "$limits" ] || limits='{}'
+printf '%s\n' "$usage" | /usr/bin/jq -c --argjson l "$limits" '$l + .'

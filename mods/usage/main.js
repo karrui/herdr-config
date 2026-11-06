@@ -1,7 +1,4 @@
-// The Usage popup (the sidebar footer's Usage): Claude's and Codex's plan limits, account-wide, from whichever of
-// their sessions reported last. Claude's status line saves them each turn
-// (usage/claude-statusline, into usage/claude/<terminal>.json); Codex's are in its
-// newest session file (usage/codex-usage, given no terminal).
+// Account-wide limits use shared API caches; session reports are the fallback.
 // herdr's exec takes an argv list and never goes through a shell.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -10,7 +7,7 @@ import * as fs from "fs/promises";
 
 const DIR = `${appHome()}/usage`;
 const CLAUDE = `${DIR}/claude`;
-// Codex has no feed to watch: read again this often while the window is in front.
+// Helpers share their API caches with the footer.
 const EVERY = 30000;
 
 // Token history (mods/insights): its tab in this space if there is one, else a new one, as the mod's
@@ -44,12 +41,14 @@ function windowName(key) {
   return model ? `${name}, ${model[0].toUpperCase()}${model.slice(1).replace(/_/g, " ")}` : name;
 }
 
-// The newest reading with limits any Claude session saved, or null: every window its
-// status line reports (a model's own weekly limit too, once Claude Code sends one).
+// Claude's API reports model-specific windows too; status-line reports are the fallback.
 async function claude() {
-  const files = (await fs.readdir(CLAUDE).catch(() => [])).filter((f) => f.endsWith(".json"));
-  const all = await Promise.all(files.map(async (f) => { try { return JSON.parse(await readTextFile(`${CLAUDE}/${f}`)); } catch { return null; } }));
-  const u = all.filter((u) => u?.five != null || u?.week != null).reduce((a, b) => (!a || (b.at ?? 0) > (a.at ?? 0) ? b : a), null);
+  const [files, r] = await Promise.all([fs.readdir(CLAUDE).catch(() => []),
+    execFile("python3", [`${DIR}/account-limits`, "claude"]).catch(() => null)]);
+  const all = await Promise.all(files.filter(f => f.endsWith(".json")).map(async (f) => { try { return JSON.parse(await readTextFile(`${CLAUDE}/${f}`)); } catch { return null; } }));
+  let api = null;
+  try { api = JSON.parse(r?.stdout.trim() || "null"); } catch {}
+  const u = api ?? all.filter((u) => u?.five != null || u?.week != null).reduce((a, b) => (!a || (b.at ?? 0) > (a.at ?? 0) ? b : a), null);
   if (!u) return null;
   const windows = u.limits ? Object.entries(u.limits).filter(([, w]) => w?.used_percentage != null)
     .map(([key, w]) => ({ key, name: windowName(key), pct: w.used_percentage, reset: w.resets_at }))
@@ -121,12 +120,12 @@ export default class Usage extends View {
       .child(h_flex().h(36).flex_none().pl(14).pr(6).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().flex_1().font_semibold().child("Usage limits"))
         .child(div().id("usage-refresh").size(24).flex().items_center().justify_center().rounded(6).cursor_pointer()
-          .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Read again (account-wide, as the agents last reported)")
+          .text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Read account limits (Codex cached for 1 minute; Claude for 3 minutes)")
           .on_click((_e, cx) => this.load(cx)).child(svg("mods/menu-hooks/rotate-ccw.svg").size(13))))
       .child(this.section("claude", "Claude Code", "icons/claude.svg", this.claude,
-        "No reading yet. Claude Code reports its limits after a turn, once its status line is set up (see the README).", t))
+        "No reading yet. Check your Claude Code sign-in; account limits refresh automatically.", t))
       .child(div().h(1).mx(14).bg(t.border))
-      .child(this.section("codex", "Codex", "icons/codex.svg", this.codex, "No reading yet. Codex reports its limits after a turn.", t))
+      .child(this.section("codex", "Codex", "icons/codex.svg", this.codex, "No reading yet. Check your Codex sign-in; account limits refresh automatically.", t))
       .child(div().flex_1())
       // Where the tokens went, by model and day, from the agents' session logs.
       .child(h_flex().id("usage-insights").flex_none().h(36).mx(6).mb(6).px(8).gap(8).items_center().rounded(7).cursor_pointer()

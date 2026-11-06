@@ -1,12 +1,13 @@
 import { exec, notify, setShared, openOverlay, run } from "herdr";
 import { dialogFor, dialogHeight, doneText } from "./git.js";
 import { executeAction } from "./execute.js";
+import { loginExec } from "./shell.js";
 
 // Runs an action's git commands in order, stopping at the first failure. Every
 // graph copy refreshes after, whether or not its folder watch saw the change.
 export async function perform(action, values, ctx, { toast = true } = {}) {
   try {
-    const result = await executeAction(action, values, ctx, exec);
+    const result = await executeAction(action, values, ctx, ctx.on ? loginExec : exec);
     if (!result.ok) {
       if (toast) notify({ title: "Couldn't do that", body: result.message, level: "error" });
       return result;

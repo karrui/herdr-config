@@ -4,4 +4,5 @@ Path: mods/git-graph
 License: MIT (icons: ISC)
 
 Local change: follow the parked terminal's live folder when a chat pane is focused.
+Respect explicit remote machine props and load remote Git actions' login environment.
 Integrated into main-sandbox's side panel and tabs-sandbox's toolbar.

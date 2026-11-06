@@ -11,9 +11,10 @@ import { perform, openDialog, showChanges } from "./act.js";
 import { icon } from "./menu.js";
 import { available, check, openUpdate, newer } from "./update.js";
 import { depthOf, unsearched, findArgs, parseFound, REPO_STATUS, LATEST_TAG, FETCH, REMOTES, fetchable, parseRepoStatus, parseRemotes, webUrl, syncOf } from "./repos.js";
+import { loginExec } from "./shell.js";
 
 function location(folder) {
-  if (folder) return { cwd: folder, on: null };
+  if (folder) return { cwd: folder, on: props()?.machine ?? null };
   const space = spaces().find((s) => s.active), f = focused();
   const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
   const terminal = pane?.mod === "chat" ? terminals().find(t => t.state === "live" && t.labels?.["herdr.chat"] === pane.pane) : null;
@@ -298,7 +299,7 @@ export class Graph {
     const stale = () => this.workspace?.root !== run.root;
     cx.spawn(async (cx) => {
       await pool(repos, 8, async (r) => {
-        const out = await exec("env", FETCH, { cwd: r.path, on }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+        const out = await (on ? loginExec : exec)("env", FETCH, { cwd: r.path, on }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
         if (out.code === 0) this.fetchErrors.delete(r.path);
         else { run.failed++; this.fetchErrors.set(r.path, (out.stderr || "git fetch failed").trim().split("\n").pop()); }
         run.done++;

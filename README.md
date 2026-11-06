@@ -163,6 +163,8 @@ Right-click a file or its diff to open it in VS Code or reveal it in Finder. Rig
 
 The graph icon beside the change counts opens [Git Graph](https://github.com/rabeeh-ta/herdr-git-graph) in the side panel. It follows the focused terminal or parked chat's worktree, including remote spaces, and shows commit lanes, branches, tags and uncommitted files. Click a commit for details and file diffs; right-click commits or labels for Git actions.
 
+History, diffs and Git actions run on the repository's machine. Remote fetches and actions load that user's login shell for Git credentials. A graph opened with explicit pane props can use `{ folder, machine }` to select a remote checkout.
+
 The recipe's source revision is recorded in `mods/git-graph/SOURCE`. Run its checks with `node tests/git-graph.mjs` and `node --test tests/git-graph-location.cjs`. The recipe checks GitHub for newer releases daily; its update window can turn that check off.
 
 ### Linear

@@ -677,6 +677,28 @@ test('semantic async question items recover on reload and keep separate card ide
   view.transcript = {}; assert.equal(view.asyncAsks().length, 0, 'a native child transcript cannot send an answer into its parent thread');
 });
 
+test('a monitor leaves the panel when it expires or is stopped, though both name only its task id', t => {
+  const { spawnSync } = require('node:child_process');
+  const folder = fs.mkdtempSync('/tmp/herdr-monitor-log-'); t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
+  const file = `${folder}/session.jsonl`;
+  const call = (id, name, input) => ({ isSidechain: false, type: 'assistant', uuid: `u-${id}`, timestamp: '2026-11-23T05:39:40Z',
+    message: { id: `m-${id}`, model: 'm', content: [{ type: 'tool_use', id, name, input }] } });
+  const result = (id, text) => ({ isSidechain: false, type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text }] } });
+  const notice = (task, event) => ({ isSidechain: false, type: 'user', message: { role: 'user',
+    content: `<task-notification>\n<task-id>${task}</task-id>\n<summary>Monitor event: "PR"</summary>\n<event>${event}</event>\n</task-notification>` }, origin: { kind: 'task-notification' } });
+  const monitor = (id, task) => [call(id, 'Monitor', { command: 'pr-wait 727', description: `PR ${id}` }),
+    result(id, `Monitor started (task ${task}, expires in 30m unless the source ends first)`)];
+  const rows = [...monitor('toolu_a', 'baaaaaaaa'), ...monitor('toolu_b', 'bbbbbbbbb'), ...monitor('toolu_c', 'bccccccccc'),
+    notice('baaaaaaaa', 'checks finished'), notice('baaaaaaaa', '[Monitor expired after 30m with 6 events delivered. Re-arm it if you still need the watch.]'),
+    call('toolu_stop', 'TaskStop', { task_id: 'bbbbbbbbb' }), result('toolu_stop', 'Successfully stopped task: bbbbbbbbb')];
+  fs.writeFileSync(file, rows.map(JSON.stringify).join('\n') + '\n');
+  const { LOG, records } = load('mods/chat/log.js', ['LOG', 'records']);
+  const out = spawnSync('sh', ['-c', LOG, 'log', 'page', file, '999999999999999', '200'], { encoding: 'utf8' });
+  assert.equal(out.status, 0, out.stderr);
+  const conv = new Conversation('claude'); conv.feed(records(out.stdout).records);
+  assert.equal(conv.bg.map(j => j.id).join(), 'toolu_c');
+});
+
 test('the host log reader retains async question metadata and its immediate tool result', t => {
   const { spawnSync } = require('node:child_process');
   const folder = fs.mkdtempSync('/tmp/herdr-async-log-'); t.after(() => fs.rmSync(folder, { recursive: true, force: true }));

@@ -2997,7 +2997,9 @@ export default class Chat extends View {
     const row = (h, i) => h_flex().id(`helper-${i}`).w_full().h(24).flex_none().px(6).gap(8).items_center().text_size(12).rounded(6)
       .when(!h.job, (el) => el.cursor_pointer().hover((s) => s.bg(t.hover)).on_click((_e, cx) => { cx.stop_propagation(); this.openHelper(h); }))
       .when(Boolean(h.job && h.cmd), (el) => el.tooltip(h.cmd.length > 300 ? `${h.cmd.slice(0, 299)}…` : h.cmd))
+      // A monitor waits for what it watches: a clock, not a spinner.
       .child(h.status === "waiting" ? div().size(8).mx(2).flex_none().rounded(4).bg(t.blocked)
+        : h.job === "monitor" ? svg("mods/chat/clock.svg").size(12).flex_none().text_color(t.dim)
         : svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
       .child(div().flex_1().min_w(0).truncate().font_medium().text_color(t.foreground).child(h.label))
       .when(Boolean(h.spec || h.job), (el) => el.child(div().flex_none().text_size(11.5).text_color(t.dim).child(h.spec || (h.job === "monitor" ? "Monitor" : "In background"))))

@@ -87,6 +87,9 @@ BEGIN { pos = base; first = base; msgs = 0; mine = side ? "\"isSidechain\":true"
     # A helper (or job) launched to run on its own: its result came at once, it is not done yet.
     if (index(line, "Async agent launched") || index(line, "running in background")) ids = ids " ASYNC"
     print off "\tR\t" ids
+    # A monitor or background command: its task id, which its expiry and TaskStop name instead
+    # of the call (B: the task id, then the call ids).
+    if (claude && match(line, /(Monitor started \(task |running in background with ID: )[a-z0-9]+/)) { tk = substr(line, RSTART, RLENGTH); sub(/.* /, "", tk); print off "\tB\t" tk ids }
     # show-your-work names what it kept in its result ("show-your-work:#<id>"): the kept copy,
     # and the id a later version names as the one it revises (S: the id, then the call ids).
     if (claude && match(line, /show-your-work:#[0-9a-f]+/)) print off "\tS\t" substr(line, RSTART + 16, RLENGTH - 16) ids
@@ -578,6 +581,8 @@ export class Conversation {
     this.waits = new Set();
     this.waiting = false;
     this.bg = [];
+    // Their task ids (a monitor's "task b5ds3wabl"): task id -> call id.
+    this.tasks = new Map();
     // Claude Code's own helpers (Agent/Task calls) by call id: { desc, done }. One launched to
     // run on its own is done when its task-notification comes.
     this.helpers = new Map();
@@ -742,9 +747,11 @@ export class Conversation {
     if (compact) { this.compacting = true; this.doing = "Compacting conversation"; }
   }
 
-  // A task-notification: the helper (or background job) its tool-use-id names is done.
+  // A task-notification: the helper (or background job) its tool-use-id names is done. A monitor
+  // that expired names only its task id.
   finished(text) {
-    const id = /<tool-use-id>([^<]+)<\/tool-use-id>/.exec(text)?.[1];
+    const id = text.match(/<tool-use-id>([^<]+)<\/tool-use-id>/)?.[1]
+      ?? (/<event>\[Monitor expired\b/.test(text) ? this.tasks.get(text.match(/<task-id>([^<]+)<\/task-id>/)?.[1]) : null);
     if (!id) return;
     const h = this.helpers.get(id);
     if (h) h.done = true;
@@ -852,6 +859,12 @@ export class Conversation {
       if (r.kind === "S") { const [mark, ...ids] = r.data.split(" ").filter(Boolean); for (const id of ids) this.kept(id.replace(/!$/, ""), mark); continue; }
       // Pictures a tool returned: a strip under its step (main.js "gallery").
       // (A path can come as $HOME/… or ~/…, as the tool's output put it.)
+      if (r.kind === "B") {
+        const [task, id] = r.data.split(" ").filter(Boolean);
+        if (id) this.tasks.set(task, id.replace(/!$/, ""));
+        if (this.tasks.size > 50) this.tasks.delete(this.tasks.keys().next().value);
+        continue;
+      }
       if (r.kind === "I") { this.push({ kind: "gallery", id: `g${r.off}`, paths: r.data.split("\x1f").filter(Boolean).map((p) => p.replace(/^(\$HOME|~)(?=\/)/, home())) }); continue; }
       if (r.kind === "M") {
         const item = Object.fromEntries(r.data.split("\x1f").filter(Boolean).map((f) => { const i = f.indexOf("="); return [f.slice(0, i), f.slice(i + 1)]; }));
@@ -1003,6 +1016,11 @@ export class Conversation {
             // show-your-work's picture or recording: shown in the chat itself, not as a step.
             const s = showOf(String(b.name), b.input, typeof l.cwd === "string" ? l.cwd : null);
             this.shown(String(b.id), { kind: "shots", id: `s${off}`, ...s, paths: [s.path, ...(s.compare ? [s.compare] : [])], at: time(l.timestamp) });
+          } else if (b.name === "TaskStop" || b.name === "KillShell") {
+            // It stopped a monitor or background command: off the panel (still a step).
+            const job = this.tasks.get(String(b.input?.task_id ?? b.input?.shell_id ?? ""));
+            if (job) this.bg = this.bg.filter((j) => j.id !== job);
+            this.step(String(b.id), off, claudeStep(String(b.name), b.input ?? {}));
           } else if (b.name === "TodoWrite" && Array.isArray(b.input?.todos)) {
             // Its todo list: the turn's checklist, not a step. (TaskCreate and TaskUpdate say
             // one task at a time, by ids only their results give: they stay steps.)

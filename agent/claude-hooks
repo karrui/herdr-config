@@ -1,0 +1,15 @@
+#!/bin/sh
+# The chat's Claude Code hooks, as settings JSON: agent/launch passes them with --settings, and
+# install.sh adds the same to ~/.claude/settings.json, so a `claude` typed in a Herdr terminal
+# gets them too. Claude Code runs a handler defined in both only once. Outside a Herdr terminal,
+# or with its chat closed, each hook exits at once.
+# mods/chat/ask-hook.sh: permissions and questions as cards in the chat when it shows this
+# agent; else Claude asks in the terminal as usual.
+# mods/chat/event-hook.sh: what the log can't say yet (compacting, the reply as it streams, API
+# errors) as live events for the chat. Async, so Claude never waits on it.
+dir="$(cd "$(dirname "$0")" && pwd)"
+exec jq -nc --arg c "sh '$dir/../mods/chat/ask-hook.sh'" --arg e "sh '$dir/../mods/chat/event-hook.sh'" '{hooks: (
+  {PermissionRequest: [{hooks: [{type: "command", command: $c, timeout: 1800}]}]}
+  + ([("PreCompact", "PostCompact", "MessageDisplay", "StopFailure", "PostToolUseFailure", "PermissionDenied", "Stop", "UserPromptSubmit", "SessionEnd", "SubagentStart", "SubagentStop")
+      | {(.): [{hooks: [{type: "command", command: $e, async: true}]}]}] | add)
+  + {PostToolUse: [{matcher: "SubagentHandback", hooks: [{type: "command", command: $e, async: true}]}]})}'

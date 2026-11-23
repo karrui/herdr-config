@@ -61,6 +61,7 @@ git clone https://github.com/karrui/herdr-config.git
 
 The script copies everything into `~/.config/herdr-app` and switches the window to the **main-sandbox** layout.
 Any file it replaces is kept beside it as `<file>~`, including your `keys.json` and `programs.json`.
+It also adds the chat's hooks to `~/.claude/settings.json`, kept as `settings.json~`, and leaves your own hooks there as they are.
 If Herdr wasn't open, press `cmd-shift-l` until the window shows main-sandbox.
 
 The files are copied rather than symlinked on purpose.
@@ -234,7 +235,7 @@ The chat and the Artifacts panel come from [Shepherdr](https://github.com/eliass
   A show-your-work card has its title, a PR or page link, "What changed" and its checks beside the picture, and Original | Updated | Compare when it has a before.
   A newer version of the same picture marks the earlier card, and History steps back through them.
   A recording shows its first frame, its length and its timestamped changes and checks; play opens it full-pane with pause, a scrub bar and change markers.
-- Questions (AskUserQuestion) and permission prompts come as cards to answer, for sandboxed agents too: `agent/launch` adds the hook for agents Herdr starts, and a sandboxed agent's hook talks to the chat through its own broker folder, so it can't answer another agent's prompt.
+- Questions (AskUserQuestion) and permission prompts come as cards to answer, for sandboxed agents too: `agent/launch` adds the hook for agents Herdr starts, `~/.claude/settings.json` has it for a `claude` typed in a Herdr terminal (it does nothing outside one), and a sandboxed agent's hook talks to the chat through its own broker folder, so it can't answer another agent's prompt.
   Codex's approvals and questions come as the same cards, answered in the chat or its terminal, whichever is first.
 - Live events fill in what the session log can't say yet, after its last record, until the log says the same or the turn ends.
   A reply streams in as it will look once logged, and the logged one takes its place without moving the list.

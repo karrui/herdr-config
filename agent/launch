@@ -26,17 +26,9 @@ case "$program" in
   claude)
     export CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1
     export SSH_CONNECTION="${SSH_CONNECTION:-127.0.0.1 0 127.0.0.1 0}"
-    # The chat's hook (mods/chat/ask-hook.sh): permissions and questions as cards in the chat
-    # when it shows this agent; else Claude asks in the terminal as usual. Only for agents
-    # started here, so your own settings.json stays as it is. Claude takes one --settings, and
-    # the chat passes its own (fast mode), so ours is merged into that.
-    # And mods/chat/event-hook.sh: what the log can't say yet (compacting, the reply as it
-    # streams, API errors) as live events for the chat. Async, so Claude never waits on it.
-    hook="$(jq -nc --arg c "sh '$dir/../mods/chat/ask-hook.sh'" --arg e "sh '$dir/../mods/chat/event-hook.sh'" '{hooks: (
-      {PermissionRequest: [{hooks: [{type: "command", command: $c, timeout: 1800}]}]}
-      + ([("PreCompact", "PostCompact", "MessageDisplay", "StopFailure", "PostToolUseFailure", "PermissionDenied", "Stop", "UserPromptSubmit", "SessionEnd", "SubagentStart", "SubagentStop")
-          | {(.): [{hooks: [{type: "command", command: $e, async: true}]}]}] | add)
-      + {PostToolUse: [{matcher: "SubagentHandback", hooks: [{type: "command", command: $e, async: true}]}]})}')"
+    # The chat's hooks (claude-hooks), also here for a settings.json without them. Claude takes
+    # one --settings, and the chat passes its own (fast mode), so ours is merged into that.
+    hook="$("$dir/claude-hooks")"
     args=() merged=""
     while [ $# -gt 0 ]; do
       if [ "$1" = --settings ] && [ $# -gt 1 ]; then

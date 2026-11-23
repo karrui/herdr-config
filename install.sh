@@ -17,6 +17,18 @@ for list in allow deny; do
 done
 # herdr-artifact on the PATH, for agents (agent/instructions.md): the artifacts mod's.
 mkdir -p "$HOME/.local/bin" && ln -sfn "$app/mods/artifacts/bin/herdr-artifact" "$HOME/.local/bin/herdr-artifact"
+# The chat's hooks in Claude Code's own settings, for a `claude` typed in a Herdr terminal
+# (agent/claude-hooks): ours from an earlier install are replaced, the rest kept as they are.
+claude_settings="$HOME/.claude/settings.json"
+if [ -d "$HOME/.claude" ]; then
+  [ -f "$claude_settings" ] && cp "$claude_settings" "$claude_settings~"
+  merged="$({ cat "$claude_settings" 2>/dev/null || echo '{}'; } | jq --argjson h "$("$app/agent/claude-hooks")" '
+    .hooks = reduce ($h.hooks | to_entries[]) as $e (
+      (.hooks // {}) | map_values(map(select(any(.hooks[]?; (.command // "") | test("/mods/chat/(ask|event)-hook\\.sh")) | not)) | select(length > 0));
+      .[$e.key] += $e.value)')"
+  # In place, so a settings.json that links elsewhere (dotfiles) stays a link.
+  printf '%s\n' "$merged" > "$claude_settings"
+fi
 [ -f "$app/programs.json" ] && cp "$app/programs.json" "$app/programs.json~"
 sed "s|__HOME__|$HOME|g" programs.json > "$app/programs.json"
 

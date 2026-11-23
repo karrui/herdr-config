@@ -107,6 +107,11 @@ test("Claude history distinguishes a delivered report, an ended handback, and an
   info = await read(); assert.equal(info.status, 'waiting'); assert.equal(info.waitingReason, 'api_limit');
   rows.push({ type: 'api-request', timestamp: '2026-11-06T00:00:03Z' });
   info = await read(); assert.equal(info.status, 'running'); assert.equal(info.waitingReason, null);
+  // Its parent's TaskStop: the log ends on an interruption, the meta never says finished.
+  rows.push({ type: 'user', timestamp: '2026-11-06T00:00:04Z', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } });
+  info = await read(); assert.equal(info.status, 'stopped');
+  rows.push({ type: 'api-request', timestamp: '2026-11-06T00:00:05Z' });
+  info = await read(); assert.equal(info.status, 'running');
 });
 
 test("Claude trees match each spawning call to its actual parent, including calls before long outputs", async t => {

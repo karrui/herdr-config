@@ -191,6 +191,8 @@ function describe(file, kind, meta = {}) {
       }
       if (r.type === "user" && r.toolEndsTurn === true) Object.assign(child, {
         status: r.toolUseResult?.success === false ? "failed" : "completed", waitingReason: null, updated: Date.parse(r.timestamp) || 0 });
+      // Stopped (its parent's TaskStop, or Esc): Claude Code ends its log here, its meta unfinished.
+      if (r.type === "user" && /^\s*\[Request interrupted by user/.test(text)) Object.assign(child, { status: "stopped", waitingReason: null, updated: Date.parse(r.timestamp) || 0 });
     } else {
       const p = r.payload ?? {};
       if (r.type === "session_meta") {

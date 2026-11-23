@@ -1307,8 +1307,25 @@ export default class Chat extends View {
   stop(cx) {
     if (this.status() !== "working") return;
     this.stopping = true;
-    hc(["interrupt", this.addr]);
+    cx.spawn(async (cx) => {
+      await hc(["interrupt", this.addr]).catch(() => null);
+      if (this.kind === "claude") await this.clearDraft(cx);
+    });
     cx.notify();
+  }
+
+  // Claude Code puts a message it was stopped on before answering back in its prompt, unseen
+  // here: the next message would be added to it. Ctrl+C empties the prompt (only when it has
+  // words: on an empty one it starts "press again to exit"). Up in the box recalls the words.
+  async clearDraft(cx) {
+    for (let i = 0; i < 4; i++) {
+      await cx.sleep(i ? 300 : 150);
+      const lines = String((await hc(["read", this.addr, "--lines", "40"]).catch(() => null))?.stdout ?? "").split("\n");
+      const rules = lines.flatMap((l, k) => (/^─{10,}/.test(l) ? [k] : []));
+      if (rules.length < 2) continue;
+      const box = lines.slice(rules.at(-2) + 1, rules.at(-1));
+      if (box.some((l) => /^❯\s*\S/.test(l))) { await hc(["keys", this.addr, "ctrl+c"]); return; }
+    }
   }
 
   // A held message back into the box, to change it before it goes.

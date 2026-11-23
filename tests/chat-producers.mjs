@@ -96,6 +96,17 @@ test("Claude child metadata correlates its own model and spawning call", async t
   assert.equal(found[0].call, "call"); assert.equal(found[0].model, "actual-model"); assert.equal(found[0].result, "Result");
 });
 
+test("a Claude child stuck on an API limit settles once its meta says finished", async t => {
+  const folder = temp(t), dir = path.join(folder, "parent/subagents"); fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'parent.jsonl'), JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'call', name: 'Agent' }] } }) + '\n');
+  fs.writeFileSync(path.join(dir, "agent-child.jsonl"), JSON.stringify({ type: "assistant", timestamp: '2026-11-06T03:30:01Z', isApiErrorMessage: true, error: 'rate_limit', message: { content: [{ type: "text", text: "You've hit your weekly limit" }] } }) + "\n");
+  fs.writeFileSync(path.join(dir, "agent-child.meta.json"), JSON.stringify({ toolUseId: "call" }));
+  assert.equal((await children(path.join(folder, "parent.jsonl"), "claude", []))[0].status, "waiting");
+  fs.writeFileSync(path.join(dir, "agent-child.meta.json"), JSON.stringify({ toolUseId: "call", finished: true }));
+  const [child] = await children(path.join(folder, "parent.jsonl"), "claude", []);
+  assert.equal(child.status, "failed"); assert.equal(child.waitingReason, null);
+});
+
 test("Claude history distinguishes a delivered report, an ended handback, and an API limit", async t => {
   const folder = temp(t), file = path.join(folder, 'child.jsonl');
   const rows = [{ type: 'assistant', timestamp: '2026-11-06T00:00:00Z', message: { content: [{ type: 'tool_use', id: 'report', name: 'SubagentHandback', input: { message: 'Finished the implementation' } }] } }];

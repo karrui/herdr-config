@@ -230,7 +230,10 @@ export async function children(file, kind, ids, root = file) {
         const child = describe(path.join(dir, name.replace(/\.meta\.json$/, ".jsonl")), kind, { id: name.replace(/^agent-|\.meta\.json$/g, ""), call: meta.toolUseId, parent });
         if (child) {
           child.label = meta.description;
-          if (meta.finished && child.status === "running") { child.status = "completed"; child.updated = fs.statSync(path.join(dir, name)).mtimeMs; }
+          // Finished while still at work, or stuck on an API limit (it failed there; later stopped).
+          if (meta.finished && ["running", "waiting"].includes(child.status)) {
+            Object.assign(child, { status: child.status === "waiting" ? "failed" : "completed", waitingReason: null, updated: fs.statSync(path.join(dir, name)).mtimeMs });
+          }
           found.push(child);
         }
       } catch {}

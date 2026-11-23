@@ -19,7 +19,9 @@ export function codexEvent(e) {
 export function claudeEvent(e) {
   const base = { ...e, session: e.sid, at: Number(e.t) || 0, provider: "claude" };
   if (e.ev === "SubagentStart" || e.ev === "SubagentStop" || e.ev === "SubagentHandback") {
-    return [{ ...base, kind: "child", child: e.agent, status: e.ev === "SubagentStart" ? "running" : e.ev === "SubagentStop" ? "completed" : undefined }];
+    // A handback alone says nothing of its status; restored from the journal's snapshot, it
+    // carries the Stop's before it.
+    return [{ ...base, kind: "child", child: e.agent, status: e.ev === "SubagentStart" ? "running" : e.ev === "SubagentStop" ? "completed" : e.status }];
   }
   if (e.agent) return []; // A child's ordinary hooks are not its parent's activity.
   if (e.ev === "UserPromptSubmit" || e.ev === "Stop" || e.ev === "StopFailure" || e.ev === "SessionEnd") {

@@ -66,6 +66,22 @@ test('same prefixes do not reconcile distinct messages; native identity does', (
   assert.equal(live.logged([{ kind: 'agent', mids: ['new'], text: 'Authoritative text' }], 'Partial text'), true);
 });
 
+test('a helper restored from the journal snapshot keeps the Stop status merged under its handback', () => {
+  const live = new Live('root');
+  // The writer's snapshot keeps one record per helper: the Stop, then the handback 21 ms later over it.
+  live.apply({ src: 'claude-hook', ev: 'SubagentHandback', sid: 'root', agent: 'child', status: 'completed', label: 'general-purpose', delivery: 'reported', t: 200 });
+  assert.equal(live.children.get('child').status, 'completed');
+  const fresh = new Live('root');
+  feed(fresh, { src: 'claude-hook', ev: 'SubagentStart', sid: 'root', agent: 'child', label: 'general-purpose', t: 100 },
+    { src: 'claude-hook', ev: 'SubagentHandback', sid: 'root', agent: 'child', delivery: 'reported', t: 150 });
+  assert.equal(fresh.children.get('child').status, 'running');
+  // A handback with no Stop (a foreground helper) knows no status: the transcript's completion stands.
+  const late = new Live('root');
+  feed(late, { src: 'claude-hook', ev: 'SubagentHandback', sid: 'root', agent: 'web', delivery: 'reported', t: 300 });
+  const [web] = state.childrenOf(null, late, [{ id: 'web', status: 'completed', updated: 250 }]);
+  assert.equal(web.status, 'completed');
+});
+
 test('a logged Claude reply settles its live words though the hook id is not in the log', () => {
   const conv = new Conversation('claude');
   conv.claude({ type: 'user', isSidechain: false, message: { role: 'user', content: 'Go' }, timestamp: '2026-11-23T05:00:00Z' }, 0);

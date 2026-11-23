@@ -119,6 +119,8 @@ export function childrenOf(conv, live, discovered = []) {
     const old = out.get(child.call) ?? out.get(child.id);
     if (child.call && child.call !== child.id) out.delete(child.call);
     const merged = old?.updated > (child.updated ?? 0) ? { ...child, ...old } : { ...old, ...child };
+    // "unavailable" knows nothing (a handback with no Stop after it): it never hides a status the other knows.
+    if (merged.status === "unavailable") merged.status = [child.status, old?.status].find(s => s && s !== "unavailable") ?? "unavailable";
     if (old?.children || child.children) merged.children = childrenOf(null, null, [...(old?.children ?? []), ...(child.children ?? [])]);
     out.set(child.id, { ...merged, id: child.id, label: merged.label || old?.label || "Subagent" });
   }

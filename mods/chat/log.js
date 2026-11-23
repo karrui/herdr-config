@@ -1365,12 +1365,15 @@ export class Live {
   // Is the streaming reply in the log now? Codex's by its message id. Claude Code's lines carry
   // no id the log has: a reply of this turn with the same words so far. (Not by time: with
   // thinking on, Claude Code shows a reply's lines only after the log has it, seconds later.)
-  logged(items, text, tail = this.tail) {
+  // Claude Code's MessageDisplay message_id is in none of its log's lines (byText): a reply of the
+  // turn that has all the words streamed so far settles it.
+  logged(items, text, tail = this.tail, byText = false) {
     for (let i = items.length - 1; i >= 0 && i >= items.length - 80; i--) {
       const x = items[i];
       if (x.kind !== "agent" && !(x.kind === "ask" && x.async)) continue;
       if (x.mid != null || x.mids?.length) {
         if (x.mid === tail.id || x.mids?.includes(tail.id)) return true;
+        if (byText && x.kind === "agent" && norm(x.text).includes(norm(text))) return true;
         continue;
       }
       // Older records lack identity: only a complete, equal reply can settle a live row.
@@ -1403,7 +1406,7 @@ export class Live {
     for (const t of this.messages.values()) {
       if (t.discarded) continue;
       const text = t.whole && t.start >= since ? streamed(t.parts.join("")) : "";
-      if (text && (working || t.done) && !this.logged(turn, text, t)) add.push({ kind: "agent", id: `live:${t.id}`, mid: t.id, phase: t.phase, text, at: t.start, live: !t.done });
+      if (text && (working || t.done) && !this.logged(turn, text, t, conv.kind === "claude")) add.push({ kind: "agent", id: `live:${t.id}`, mid: t.id, phase: t.phase, text, at: t.start, live: !t.done });
     }
     const thought = this.thought;
     if (working && thought?.parts.some(Boolean) && !turn.some(x => x.kind === "thought" && (x.mid === thought.id || norm(x.text) === norm(thought.parts.join("\n\n"))))) {

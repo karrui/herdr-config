@@ -66,6 +66,19 @@ test('same prefixes do not reconcile distinct messages; native identity does', (
   assert.equal(live.logged([{ kind: 'agent', mids: ['new'], text: 'Authoritative text' }], 'Partial text'), true);
 });
 
+test('a logged Claude reply settles its live words though the hook id is not in the log', () => {
+  const conv = new Conversation('claude');
+  conv.claude({ type: 'user', isSidechain: false, message: { role: 'user', content: 'Go' }, timestamp: '2026-11-23T05:00:00Z' }, 0);
+  conv.claude({ type: 'assistant', isSidechain: false, uuid: 'u1', timestamp: '2026-11-23T05:00:01Z',
+    message: { id: 'msg_1', model: 'm', content: [{ type: 'text', text: 'Fix 1 next: the loop.' }] } }, 1);
+  const live = new Live('root');
+  const md = (msg, delta, t, final = true) => ({ src: 'claude-hook', ev: 'MessageDisplay', sid: 'root', msg, i: 0, final, delta, t });
+  feed(live, { src: 'claude-hook', ev: 'UserPromptSubmit', sid: 'root', t: Date.parse('2026-11-23T05:00:00Z') },
+    md('hook-id', 'Fix 1 next: the loop.', Date.parse('2026-11-23T05:00:02Z')),
+    md('streaming', 'Not in the log', Date.parse('2026-11-23T05:00:03Z'), false));
+  assert.equal(JSON.stringify(live.over(conv, true).filter(x => x.live !== undefined).map(x => x.text)), '["Not in the log"]');
+});
+
 test('a steering message retires the interrupted draft and completed legacy items settle', () => {
   const live = new Live('root');
   feed(live, codex('turn/started', { turn: 't1' }),

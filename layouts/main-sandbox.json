@@ -272,5 +272,6 @@
     12,
     16
   ],
-  "terminal_menu": "menu-hooks"
+  "terminal_menu": "menu-hooks",
+  "link_handlers": ["viewer"]
 }

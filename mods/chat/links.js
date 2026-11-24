@@ -1,4 +1,5 @@
 import { exec, home, window } from "herdr";
+import { openInViewer } from "./viewer-open.js";
 
 export function codeTarget(link, cwd) {
   let value = String(link);
@@ -29,9 +30,11 @@ async function external(url) {
   return result;
 }
 
-export async function openCodeLink(link, { cwd, machine }) {
+// A file opens in the viewer beside the chat (`pane`), when it is text.
+export async function openCodeLink(link, { cwd, machine, pane }) {
   const target = codeTarget(link, cwd);
   if (!target) return external(link);
+  if (pane && await openInViewer({ ...target, on: machine, pane })) return;
   if (machine) throw new Error("Remote files must be opened on their own machine.");
   return external(target.path);
 }

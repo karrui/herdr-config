@@ -2322,7 +2322,7 @@ export default class Chat extends View {
 
   openLink(url, cx) {
     const owner = this.t ?? terminals().find(t => t.address === this.eventTerminal);
-    const context = { cwd: owner?.foreground?.cwd ?? owner?.cwd, machine: this.machine,
+    const context = { cwd: owner?.foreground?.cwd ?? owner?.cwd, machine: this.machine, pane: this.myPane(),
       tab: panes().find(p => p.pane === this.myPane())?.tab ?? focused()?.tab };
     cx.spawn(async () => {
       try { await openCodeLink(url, context); }

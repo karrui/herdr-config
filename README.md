@@ -225,6 +225,13 @@ Several show as `Run (3)`; hover it for the list.
 Commands with a placeholder to fill in, like `<path>`, are left out.
 It needs the status line set up above.
 
+### Viewer
+
+Cmd-click a file path in a terminal, or a file in the chat, and it opens in a viewer pane to the right of it.
+Markdown is rendered; other text is read-only with syntax colors, at the clicked line.
+Each file gets a tab in that pane, and the button at the end of the tabs turns line wrapping off and on.
+Pictures, PDFs, archives and folders open in the system's app as before.
+
 ### Chat and artifacts
 
 Claude Code and Codex panes have a Chat | Terminal switch in their header.
@@ -366,8 +373,9 @@ To restore a file the install replaced, rename its `<file>~` copy back.
 | `mods/pane-sandbox` | Herdr's pane header, with Run for the `!` commands Claude Code asks you to run, and Chat \| Terminal. |
 | `mods/chat`, `chat-image`, `chat-models`, `chat-react` | The chat view (from Shepherdr): its image viewer, model picker and reactions. |
 | `mods/artifacts` | The Artifacts panel, the approval dialog and `herdr-artifact` (from Shepherdr). |
+| `mods/viewer` | Text files in a pane beside the terminals, a tab per file: chat file links and Cmd-clicked terminal paths open there. |
 | `mods/brand-sandbox` | The sidebar's top bar: only search. |
 | `mods/agents-sandbox`, `new-menu-sandbox`, `status-sandbox`, `sandbox-lists` | Herdr's agents list, + menu, status bar and a sandbox lists editor, adapted to the sandbox. |
 
-Mods can't import each other, so `mods/tabs-sandbox/linear-resolve.js` is a copy of `mods/linear/resolve.js`, and `mods/worktree-hooks/fresh-worktree.js` of `mods/space-folders/fresh-worktree.js`.
+Mods can't import each other, so `mods/tabs-sandbox/linear-resolve.js` is a copy of `mods/linear/resolve.js`, `mods/worktree-hooks/fresh-worktree.js` of `mods/space-folders/fresh-worktree.js`, and `mods/chat/viewer-open.js` of `mods/viewer/open.js`.
 Change both together.

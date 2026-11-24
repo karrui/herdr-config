@@ -1,0 +1,1 @@
+{ "place": "none", "title": "Viewer", "link_handlers": [{ "kind": "file", "pattern": "." }] }

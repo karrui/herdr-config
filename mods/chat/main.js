@@ -2617,7 +2617,11 @@ export default class Chat extends View {
             .child(svg(`mods/chat/${done ? "check" : "copy"}.svg`).size(12).flex_none()).child(done ? "Copied" : "Copy")), 18, 0).pt(x.top0 ? 0 : 6);
       }
       case "code": {
-        const lines = v_flex().w_full().flex_none().children(x.code.split("\n").map((l) => div().min_h(19).child(l || " ")));
+        // A text view, so it can be selected: its lines as markdown text, each ending in a hard
+        // break. Markdown drops a line's leading spaces, so those are non-breaking ones.
+        const md = x.code.split("\n").map((l) => l.replace(/\t/g, "    ").replace(/[\\`*_{}[\]()#+\-.!|<>~&]/g, "\\$&")
+          .replace(/^ +/, (s) => " ".repeat(s.length)) || " ").join("\\\n");
+        const lines = div().w_full().flex_none().child(TextView.markdown(`${pre}chat-code-${x.id}`, md).selectable(true));
         return col(div().w_full().px(12).py(8).rounded_b(8).bg(t.surface).border_1().border_color(t.border).overflow_hidden()
           .font_family(settings().font_family ?? "JetBrains Mono").text_size(12.5).text_color(t.foreground)
           .child(x.clip ? this.clipped(t.surface, x.clip, lines) : lines), 18, 0).pb(x.bot0 ? 0 : 6);

@@ -242,7 +242,7 @@ export default class Pane extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        run(command, args);
+        if (typeof command === "function") command(); else run(command, args);
       })
       .child(svg(`mods/pane/${icon}.svg`).size(14));
   }
@@ -294,8 +294,9 @@ export default class Pane extends View {
         .child(this.button(t, `ph-r-${pane}`, "split-right", "pane.split", { direction: "right", pane }))
         .child(this.button(t, `ph-d-${pane}`, "split-down", "pane.split", { direction: "down", pane }))
         .child(this.button(t, `ph-z-${pane}`, p.zoomed ? "unzoom" : "zoom", "pane.zoom", { pane }))
-        // A chat pane's agent is parked behind it: Terminal brings it back, so no close here.
-        .when(!p.chat, (el) => el.child(this.button(t, `ph-x-${pane}`, "close", "pane.close", { pane }))))
+        // Closing a terminal pane ends its agent; a chat pane's agent is parked behind it, so it
+        // ends that too.
+        .child(this.button(t, `ph-x-${pane}`, "close", () => { if (p.chat && p.terminal) run("terminal.kill", { terminal: p.terminal }); run("pane.close", { pane }); })))
       .when(chatty(p) || (p.chat && Boolean(p.terminal)), (el) => el.child(this.switcher(t, p)));
   }
 }

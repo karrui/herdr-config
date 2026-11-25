@@ -99,13 +99,12 @@ export default class Tabs extends View {
 
   // The focused pane's branch; the ticket for it is asked again when its links or the API
   // key change, and every 5 minutes while the window is in front (a ticket can be renamed).
-  linearPlace() {
-    const where = linearLocation();
+  linearPlace(where = linearLocation()) {
     return where.cwd ? { where, id: JSON.stringify(where) } : null;
   }
 
-  findLinear(cx, force = false) {
-    const at = this.linearPlace();
+  findLinear(cx, force = false, where = linearLocation()) {
+    const at = this.linearPlace(where);
     if (!at) return;
     this.look(`linear|${at.id}`, JSON.stringify([shared(LINKS) ?? null, shared(KEY_CHANGED) ?? null]), force, cx, async () => {
       const apiKey = await readKey();
@@ -114,8 +113,7 @@ export default class Tabs extends View {
   }
 
   // Asked again when the popup acted, and every 15 seconds while the window is in front.
-  countResources(cx, force = false) {
-    const at = this.spaceFolder();
+  countResources(cx, force = false, at = this.spaceFolder()) {
     if (!at) return;
     this.look(`resources|${at.id}`, String(shared("resources.changed") ?? 0), force, cx, async () => {
       const r = await worktreeExec("resources", at.folder, [], at.on);
@@ -126,8 +124,7 @@ export default class Tabs extends View {
     });
   }
 
-  countChanges(cx, force = false) {
-    const where = linearLocation();
+  countChanges(cx, force = false, where = linearLocation()) {
     if (!where.cwd) return;
     const id = JSON.stringify(where);
     this.look(`changes|${id}`, "", force, cx, async () => {
@@ -177,18 +174,21 @@ export default class Tabs extends View {
   render(cx) {
     const t = theme();
     const space = spaces().find(p => p.active);
-    this.countResources(cx);
-    this.countChanges(cx);
-    this.findLinear(cx);
-    const place = this.spaceFolder(), res = place ? this.resources[place.id] : null;
-    const changes = this.changes[JSON.stringify(linearLocation())];
+    // Where the focused pane and the space are: read once per draw (each read copies every
+    // pane or terminal).
+    const where = linearLocation(), place = this.spaceFolder();
+    this.countResources(cx, false, place);
+    this.countChanges(cx, false, where);
+    this.findLinear(cx, false, where);
+    const res = place ? this.resources[place.id] : null;
+    const changes = this.changes[JSON.stringify(where)];
     const shown = space?.tabs ?? [];
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
-    const chats = chatAgents();
+    const chats = chatAgents(), ps = panes();
     const item = (c, i) => {
-      const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? chats.find(a => a.tab === c.id)?.program ?? panes().find(p => p.tab === c.id)?.program;
+      const program = ps.find(p => p.tab === c.id && p.program?.agent)?.program ?? chats.find(a => a.tab === c.id)?.program ?? ps.find(p => p.tab === c.id)?.program;
       const status = tabStatus(c, chats);
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
@@ -250,7 +250,7 @@ export default class Tabs extends View {
       .child(panelButton("graph", null, "mods/git-graph/icons/graph.svg", "Git graph"))
       .child((() => {
         // The ticket's id once found for this branch; just the icon otherwise.
-        const lp = this.linearPlace(), found = lp ? this.ticket[lp.id] : null, issue = found?.issue ?? null;
+        const lp = this.linearPlace(where), found = lp ? this.ticket[lp.id] : null, issue = found?.issue ?? null;
         // Linking and the API key: the menu is the `linear` mod as a popup.
         const menu = () => openOverlay({ mod: "linear", kind: "popup", width: 220, props: {
           view: "menu", repo: found?.repo ?? null, branch: found?.branch ?? null, source: found?.source ?? null,

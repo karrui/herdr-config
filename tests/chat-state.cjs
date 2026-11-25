@@ -12,6 +12,13 @@ const state = load('mods/chat/state.js', ['applyEvent', 'childrenOf', 'active', 
 Object.assign(state, load('mods/chat/lineage.js', ['storedTerminals', 'descendantTerminals', 'withLineage', 'conversationTitle'], { modelName: x => x, levelName: x => x }));
 const { Live, Conversation, eventLines } = load('mods/chat/log.js', ['Live', 'Conversation', 'eventLines'], { ...adapters, ...state });
 const feed = (live, ...events) => live.feed(events.map(e => JSON.stringify(e)));
+// parked.js with shared "chat.subagents" written as its writers write it (setSubagents()).
+function parkedWith(globals, subagents) {
+  const store = {};
+  const parked = load('mods/chat/parked.js', ['chatAgents', 'setSubagents'], { ...globals, shared: k => store[k] ?? null, setShared: (k, v) => { store[k] = v; } });
+  parked.setSubagents(subagents);
+  return parked;
+}
 const codex = (ev, fields = {}) => ({ src: 'codex', thread: 'root', t: 100, ev, ...fields });
 
 test('both adapters isolate a child lifecycle from parent completion and retain its report', () => {
@@ -212,12 +219,9 @@ test('handoffs retain roles and recent work with explicit history limits', () =>
 
 test('child approval urgency reaches parked agents without changing their completed history', () => {
   const globals = { panes: () => [{ mod: 'chat', pane: 'p', tab: 'tb' }], spaces: () => [], focused: () => ({ pane: 'p' }),
-    terminals: () => [{ address: 'vps/t1', state: 'live', status: 'idle', labels: { 'herdr.chat': 'p' } }],
-    shared: key => key === 'chat.subagents' ? { 'vps/t1': { list: [{ status: 'waiting' }] } } : null };
-  const { chatAgents } = load('mods/chat/parked.js', ['chatAgents'], globals);
-  assert.equal(chatAgents()[0].status, 'blocked');
-  globals.shared = key => key === 'chat.subagents' ? { 'vps/t1': { list: [{ status: 'completed' }] } } : null;
-  assert.equal(load('mods/chat/parked.js', ['chatAgents'], globals).chatAgents()[0].status, 'idle');
+    terminals: () => [{ address: 'vps/t1', state: 'live', status: 'idle', labels: { 'herdr.chat': 'p' } }] };
+  assert.equal(parkedWith(globals, { 'vps/t1': { list: [{ status: 'waiting' }] } }).chatAgents()[0].status, 'blocked');
+  assert.equal(parkedWith(globals, { 'vps/t1': { list: [{ status: 'completed' }] } }).chatAgents()[0].status, 'idle');
 });
 
 test('remote launches resolve the remote home and preserve native sandbox policy', () => {
@@ -290,8 +294,9 @@ test('event reads check the producer on its own host and never truncate shared h
 
 test('sidebar refresh preserves concurrent entries, replaced sessions, and newer child state', async () => {
   let store = { t1: { spool: '/events', session: 'root', list: [{ id: 'child', provider: 'codex', status: 'completed', updated: 300 }] }, t2: { spool: '/events', session: 'old', list: [] } };
-  const { Agents } = load('mods/agents-sandbox/main.js', ['Agents'], { ...state,
-    shared: () => store, setShared: (_key, value) => { store = value; },
+  const io = { shared: key => (key === 'chat.subagents' ? store : null), setShared: (key, value) => { if (key === 'chat.subagents') store = value; } };
+  const { setSubagents } = load('mods/agents-sandbox/parked.js', ['setSubagents'], io);
+  const { Agents } = load('mods/agents-sandbox/main.js', ['Agents'], { ...state, ...io, setSubagents,
     terminals: () => [{ address: 't1', state: 'live' }, { address: 't2', state: 'live' }],
     readTextFile: async file => {
       if (file.includes('t1.')) store = { ...store, t3: { session: 'new-agent', list: [] } };
@@ -432,11 +437,10 @@ test('API-limit waits use a calm label and keep the parked agent blocked', () =>
   const view = Object.assign(Object.create(Chat.prototype), { helpers: () => [{ id: 'quota', label: 'Review', status: 'waiting', waitingReason: 'api_limit' }], jobs: () => [] });
   view.background({}, 'blocked');
   assert.ok(ui.text.includes('Waiting · API limit')); assert.equal(ui.animations.length, 0);
-  const { chatAgents } = load('mods/chat/parked.js', ['chatAgents'], {
+  const { chatAgents } = parkedWith({
     panes: () => [{ pane: 'p', mod: 'chat', tab: 'tb' }], spaces: () => [], focused: () => ({}),
     terminals: () => [{ address: 't1', state: 'live', status: 'error', labels: { 'herdr.chat': 'p' } }],
-    shared: key => key === 'chat.subagents' ? { t1: { waitingReason: 'api_limit', list: [] } } : null,
-  });
+  }, { t1: { waitingReason: 'api_limit', list: [] } });
   assert.equal(chatAgents()[0].status, 'blocked');
 });
 
@@ -497,13 +501,12 @@ test('hc descendants retain terminal ancestry and deep waiting states reach navi
   const roots = [{ id: 't2', terminal: 't2', status: 'completed', children: [{ id: 't3', terminal: 't3', status: 'completed', children: [nested] }] }];
   const stored = state.storedTerminals(roots, 't1');
   assert.equal(stored.get('t3').parentTerminal, 't2');
-  const { chatAgents } = load('mods/chat/parked.js', ['chatAgents'], {
+  const { chatAgents, setSubagents } = parkedWith({
     panes: () => [{ pane: 'p', mod: 'chat', tab: 'tb' }], spaces: () => [], focused: () => ({}),
     terminals: () => [{ address: 't1', state: 'live', status: 'idle', labels: { 'herdr.chat': 'p' } }],
-    shared: key => key === 'chat.subagents' ? { t1: { list: roots } } : null,
-  });
+  }, { t1: { list: roots } });
   assert.equal(chatAgents()[0].status, 'blocked'); assert.equal(roots[0].status, 'completed');
-  nested.status = 'completed'; assert.equal(chatAgents()[0].status, 'idle');
+  nested.status = 'completed'; setSubagents({ t1: { list: roots } }); assert.equal(chatAgents()[0].status, 'idle');
 });
 
 test('parent labels prefer the named tab over an obsolete terminal title', () => {

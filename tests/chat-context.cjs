@@ -224,7 +224,7 @@ test('tab bar renders while resources, change counts and tickets are still loadi
   } });
   const { Tabs } = load('mods/tabs-sandbox/main.js', ['Tabs'], {
     theme: () => ({}), spaces: () => [{ active: true, tabs: [] }],
-    chatAgents: () => [], layout: () => null, window: () => null, shared: () => null,
+    chatAgents: () => [], panes: () => [], layout: () => null, window: () => null, shared: () => null,
     linearLocation: () => ({}),
     div: () => element, h_flex: () => element, svg: () => element,
   });

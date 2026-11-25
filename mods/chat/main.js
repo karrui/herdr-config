@@ -38,6 +38,7 @@ import * as slash from "./slash.js";
 import * as agent from "./agent.js";
 import { ScreenWatch, screenStrips, openCard, cardsOf, starting, cliOf } from "./screens.js";
 import { dayLabel, dayOf } from "./days.js";
+import { setSubagents } from "./parked.js";
 
 // Messages a page of history holds: the newest page first, earlier ones as the person scrolls up.
 const PAGE = 200;
@@ -2973,10 +2974,15 @@ export default class Chat extends View {
     const all = shared("chat.subagents") ?? {};
     const list = this.helpers().map(h => ({ ...h, path: h.path ?? null }));
     const mine = this.path ? { log: this.path, kind: this.kind, machine: this.machine, list, owner: this.addr, session: this.own(), calls: [...this.conv?.helpers.keys() ?? []], spool: this.spool, waitingReason: this.apiLimit() ? "api_limit" : null, connection: this.remoteError || this.producerGone ? "unavailable" : this.live?.connection } : null;
-    if (JSON.stringify(mine) === JSON.stringify(all[this.addr] ?? null)) return;
+    // Agents that ended go too (this computer's: another machine's may only be away). Every
+    // mod that lists agents reads all of it on each draw.
+    const live = new Set(terminals().filter(k => k.state === "live").map(k => k.address));
+    const gone = Object.keys(all).filter(a => !a.includes("/") && !live.has(a));
+    if (!gone.length && JSON.stringify(mine) === JSON.stringify(all[this.addr] ?? null)) return;
     const next = { ...all };
+    for (const a of gone) delete next[a];
     if (mine) next[this.addr] = mine; else delete next[this.addr];
-    setShared("chat.subagents", next);
+    setSubagents(next);
   }
 
   openHelper(h) {

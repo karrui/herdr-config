@@ -124,12 +124,24 @@ function find(node, id) {
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
+// The live terminal behind each chat pane, read once per `ps` (each terminals() read copies
+// every terminal, and a render asks for every space).
+const chatTerminals = new WeakMap();
+function chatTerminal(ps, pane) {
+  let by = chatTerminals.get(ps);
+  if (!by) {
+    by = new Map();
+    for (const t of terminals()) if (t.state === "live" && t.labels?.["herdr.chat"] && !by.has(t.labels["herdr.chat"])) by.set(t.labels["herdr.chat"], t);
+    chatTerminals.set(ps, by);
+  }
+  return by.get(pane);
+}
+
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
 function place(s, ps) {
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
-  const chats = new Set(ps.filter((p) => tabs.has(p.tab) && p.mod === "chat").map((p) => p.pane));
-  const terminal = chats.size && terminals().find((t) => t.state === "live" && chats.has(t.labels?.["herdr.chat"]));
+  const terminal = ps.filter((p) => tabs.has(p.tab) && p.mod === "chat").map((p) => chatTerminal(ps, p.pane)).find(Boolean);
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || terminal?.foreground?.cwd || terminal?.cwd || s.folder;
 }
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
@@ -960,7 +972,7 @@ export default class Spaces extends View {
     ];
   }
 
-  // What a space's row says, from its terminals (read once per render into this.now):
+  // What a space's row says, from its terminals and panes (read once per render into this.now):
   // its most urgent agent, its working sub-agents, and whether one runs in the sandbox.
   facts(w) {
     const id = localId(w);
@@ -983,7 +995,7 @@ export default class Spaces extends View {
     const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
     const { lead, subs, sandboxed } = this.facts(w);
     // Not a repo: where it is now (not where it was made) names it.
-    const here = place(w, panes());
+    const here = place(w, this.now.panes);
     const repo = g?.name ?? (here && here !== home() ? base(here) : "~");
     const branch = g?.branch ?? (g ? "detached" : null);
     const prs = this.prsOf(w);
@@ -1227,7 +1239,7 @@ export default class Spaces extends View {
     const leaving = Boolean(dragged && folderOf(dragged, folders(dragged.machine ?? null), panes(), this.git[where(dragged, panes())]));
     const button = (id, icon, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6)
       .hover(s => s.bg(t.hover).text_color(t.foreground)).on_click(action).child(svg(`mods/workspace-chrome/${icon}.svg`).size(14));
-    this.now = { terminals: terminals(), agents: [...agents(), ...chatAgents()] };
+    this.now = { terminals: terminals(), panes: panes(), agents: [...agents(), ...chatAgents()] };
     const seen = [], rows = this.grouped(t, collapsed, seen);
     this.seen = seen;
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)

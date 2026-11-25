@@ -5,16 +5,17 @@
 // The same file is in mods/chat, agents-sandbox, status-sandbox, agent-bar, tabs-sandbox,
 // space-folders and menu-hooks (a mod imports only its own files): change them all together.
 
-import { panes, terminals, spaces, focused, shared, machines, run, exec, hc, appHome } from "herdr";
+import { panes, terminals, spaces, focused, shared, setShared, machines, run, exec, hc, appHome } from "herdr";
 
 export const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 const STATES = ["working", "blocked", "done", "idle"];
 
 // Shaped like agents()'s entries; `pane` is the chat pane.
 export function chatAgents() {
-  const seen = shared("chat.seen") ?? {};
-  const chats = new Map(panes().filter((p) => p.mod === "chat").map((p) => [p.pane, p]));
-  const own = new Set(panes().map((p) => p.terminal).filter(Boolean));
+  // Each read of these copies all of it: once per call.
+  const seen = shared("chat.seen") ?? {}, helpers = shared("chat.helperState") ?? {}, ps = panes();
+  const chats = new Map(ps.filter((p) => p.mod === "chat").map((p) => [p.pane, p]));
+  const own = new Set(ps.map((p) => p.terminal).filter(Boolean));
   const where = new Map(spaces().flatMap((s) => s.tabs.map((t) => [t.id, { s, t }])));
   const now = focused()?.pane;
   const out = [];
@@ -26,17 +27,8 @@ export function chatAgents() {
     let status = STATES.includes(k.status) ? k.status : "idle";
     // Done means finished while nobody looked; looking at its chat makes it idle, as Herdr does.
     if (status === "done" && (now === pane || (seen[e.terminal] ?? -1) >= (k.turn ?? 0))) status = "idle";
-    const entry = shared("chat.subagents")?.[k.address], children = entry?.list ?? [];
-    const pending = [...children], seenChildren = new Set();
-    let waiting = false, working = false;
-    for (const child of pending) {
-      if (seenChildren.has(child)) continue;
-      seenChildren.add(child); pending.push(...(child.children ?? []));
-      waiting ||= child.status === "waiting";
-      working ||= ["running", "starting", "pending"].includes(child.status);
-    }
-    if (entry?.waitingReason === "api_limit" || waiting) status = "blocked";
-    else if (status === "idle" && working) status = "working";
+    if (helpers[k.address] === "blocked") status = "blocked";
+    else if (status === "idle" && helpers[k.address] === "working") status = "working";
     const w = where.get(p.tab);
     out.push({
       address: e.terminal, pane, space: w?.s.id ?? null, space_name: w?.s.name ?? "", tab: p.tab,
@@ -45,6 +37,29 @@ export function chatAgents() {
     });
   }
   return out;
+}
+
+// Shared "chat.subagents" (each agent's helpers, from its chat: mods/chat publishHelpers(),
+// agents-sandbox refreshHelpers()) runs to megabytes, and every list of agents reads it on
+// each draw. What chatAgents() needs of it goes beside it in "chat.helperState":
+// { <agent address>: "blocked" (a helper waits on you, or the agent hit its API limit) |
+// "working" (a helper runs) }. Write chat.subagents only through here.
+export function setSubagents(all) {
+  setShared("chat.subagents", all);
+  const state = {};
+  for (const [addr, entry] of Object.entries(all)) {
+    const pending = [...(entry?.list ?? [])], seen = new Set();
+    let waiting = false, working = false;
+    for (const child of pending) {
+      if (seen.has(child)) continue;
+      seen.add(child); pending.push(...(child.children ?? []));
+      waiting ||= child.status === "waiting";
+      working ||= ["running", "starting", "pending"].includes(child.status);
+    }
+    if (entry?.waitingReason === "api_limit" || waiting) state[addr] = "blocked";
+    else if (working) state[addr] = "working";
+  }
+  if (JSON.stringify(state) !== JSON.stringify(shared("chat.helperState") ?? {})) setShared("chat.helperState", state);
 }
 
 // The more urgent of two statuses (null: none).
@@ -81,8 +96,8 @@ async function keepOn(address) {
 }
 export function sweep() {
   const ready = new Set(machines().filter((m) => m.layout === "ready").map((m) => m.name ?? ""));
-  const have = new Set(panes().map((p) => p.pane));
-  const own = new Set(panes().map((p) => p.terminal).filter(Boolean));
+  const ps = panes(), have = new Set(ps.map((p) => p.pane));
+  const own = new Set(ps.map((p) => p.terminal).filter(Boolean));
   for (const k of terminals()) {
     const chat = k.labels?.["herdr.chat"];
     if (!chat || k.state !== "live") { kept.delete(k.address); continue; }

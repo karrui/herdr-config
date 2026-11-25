@@ -4,7 +4,7 @@
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, notify, readTextFile } from "herdr";
-import { chatAgents, sweep } from "./parked.js";
+import { chatAgents, sweep, setSubagents } from "./parked.js";
 import { projectChildren } from "./state.js";
 
 function find(node, id) {
@@ -130,7 +130,7 @@ export default class Agents extends View {
         const entry = latest[addr];
         if (entry?.session === session) next[addr] = { ...entry, list: projectChildren(events, session, entry.list, entry.calls) };
       }
-      if (JSON.stringify(latest) !== JSON.stringify(next)) setShared("chat.subagents", next);
+      if (JSON.stringify(latest) !== JSON.stringify(next)) setSubagents(next);
     } finally { this.refreshingHelpers = false; }
   }
 
@@ -252,7 +252,7 @@ export default class Agents extends View {
   tree(all, addr, lead = [], seen = new Set()) {
     if (seen.has(addr)) return [];
     seen = new Set([...seen, addr]);
-    const own = shared("chat.subagents")?.[addr];
+    const own = this.helpersNow?.[addr];
     const helpers = (own?.list ?? []).filter(h => !h.terminal && !["completed", "failed", "interrupted", "cancelled", "stopped"].includes(h.status))
       .map(h => ({ address: `helper:${addr}:${h.id}`, name: h.label,
         status: ({ running: "working", starting: "working", waiting: "blocked", unavailable: "idle" }[h.status] ?? "idle"),
@@ -322,6 +322,8 @@ export default class Agents extends View {
     let list = [...agents(), ...chatAgents()];
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
+    // Read once per draw: it runs to megabytes, and tree() looks in it for every agent.
+    this.helpersNow = shared("chat.subagents") ?? {};
     this.migratePins(all);
     // Agents running in agent-sandbox (it labels their terminal while it runs).
     const sandboxed = new Set(all.filter((x) => x.labels?.["herdr.sandbox"]).map((x) => x.address));

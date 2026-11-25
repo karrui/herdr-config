@@ -47,12 +47,16 @@ export default class AgentBar extends View {
     const f = focused();
     return f?.terminal ?? (f?.pane && terminals().find((k) => k.labels?.["herdr.chat"] === f.pane && k.state === "live")?.address) ?? null;
   }
-  run() { return this.view === "blocked" ? props().run : runOf(this.address()); }
-  // Changes when you switch tabs or come back to the window, which reloads the numbers.
-  key() { return `${usageKey(agentAt(this.address()))}|${this.run()}|${window()?.active}`; }
+  // The agent shown, its sandbox run, and the key its numbers load by, which changes when you
+  // switch tabs or come back to the window. Read once per draw: each read copies every
+  // terminal or agent.
+  now() {
+    const address = this.address(), agent = agentAt(address);
+    const run = this.view === "blocked" ? props().run : runOf(address);
+    return { agent, run, key: `${usageKey(agent)}|${run}|${window()?.active}` };
+  }
 
-  refresh(cx) {
-    const key = this.key(), agent = agentAt(this.address()), run = this.run();
+  refresh(cx, { key, agent, run } = this.now()) {
     this.loaded = key;
     cx.spawn(async cx => {
       const [usage, entries, rules] = await Promise.all([
@@ -67,11 +71,12 @@ export default class AgentBar extends View {
   }
 
   render(cx) {
-    if (this.key() !== this.loaded) this.refresh(cx);
-    if (this.view === "usage") return this.popover();
+    const now = this.now();
+    if (now.key !== this.loaded) this.refresh(cx, now);
+    if (this.view === "usage") return this.popover(now);
     if (this.view === "blocked") return this.list();
     if (this.view === "confirm") return this.confirm();
-    return this.footer();
+    return this.footer(now);
   }
 
   // Footer
@@ -88,11 +93,9 @@ export default class AgentBar extends View {
         .child(div().text_color(t.muted).child(label)));
   }
 
-  footer() {
+  footer({ agent, run }) {
     const t = theme();
-    const agent = agentAt(this.address());
     const u = agent ? this.usage : null;
-    const run = this.run();
     const total = this.entries.reduce((n, e) => n + e.count, 0);
     const chips = [
       u?.ctx != null && this.chip("ctx", u.ctx, "ctx", 72),
@@ -182,9 +185,8 @@ export default class AgentBar extends View {
       .child(h_flex().justify_between().text_size(12).text_color(t.dim).child(left).child(right));
   }
 
-  popover() {
+  popover({ agent }) {
     const t = theme();
-    const agent = agentAt(this.address());
     const u = this.usage;
     const p = agent?.program;
     const rule = () => div().h(1).mx(18).bg(t.border);

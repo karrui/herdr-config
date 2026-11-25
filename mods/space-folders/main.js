@@ -13,7 +13,8 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, HoverCard } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, appHome, readTextFile, agents, terminals, notify } from "herdr";
+import { machines, run, openOverlay, closeOverlay, props, exec, hc, theme, shared, setShared, watchFolder, window, layout, pickFolder, home, nextCommand, appHome, readTextFile, notify } from "herdr";
+import { spaces, panes, agents, terminals, inRender } from "./live.js";
 import { chatAgents } from "./parked.js";
 import { freshWorktree } from "./fresh-worktree.js";
 import { availableAgents } from "./launch.js";
@@ -1216,7 +1217,12 @@ export default class Spaces extends View {
       .child(div().text_color(tone(t, w.status)).child(glyph(w.status)));
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render() {
+    return inRender(() => this.draw());
+  }
+
+  draw() {
     const t = theme();
     if (this.folderMenu) return this.folderMenuView(t);
     if (this.launching) return this.newSpaceView(t);

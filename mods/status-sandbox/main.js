@@ -1,6 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Popover } from "gpui-base";
-import { spaces, agents, terminals, focused, exec, theme, window, notify } from "herdr";
+import { focused, exec, theme, window, notify } from "herdr";
+import { spaces, agents, terminals, inRender } from "./live.js";
 import { chatAgents } from "./parked.js";
 import { scanApps, openApp, appURLs } from "./apps.js";
 
@@ -87,7 +88,12 @@ export default class WorkspaceStatus extends View {
       .when(Boolean(this.menuError), el => el.child(div().px(14).pb(10).text_color(t.blocked).child(this.menuError)));
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render(cx) {
+    return inRender(() => this.draw(cx));
+  }
+
+  draw(cx) {
     const context = this.context(), key = JSON.stringify(context);
     if (key !== this.appKey) {
       this.appKey = key;

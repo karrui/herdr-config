@@ -295,8 +295,8 @@ test('event reads check the producer on its own host and never truncate shared h
 test('sidebar refresh preserves concurrent entries, replaced sessions, and newer child state', async () => {
   let store = { t1: { spool: '/events', session: 'root', list: [{ id: 'child', provider: 'codex', status: 'completed', updated: 300 }] }, t2: { spool: '/events', session: 'old', list: [] } };
   const io = { shared: key => (key === 'chat.subagents' ? store : null), setShared: (key, value) => { if (key === 'chat.subagents') store = value; } };
-  const { setSubagents } = load('mods/agents-sandbox/parked.js', ['setSubagents'], io);
-  const { Agents } = load('mods/agents-sandbox/main.js', ['Agents'], { ...state, ...io, setSubagents,
+  const { setSubagents, slimEntry } = load('mods/agents-sandbox/parked.js', ['setSubagents', 'slimEntry'], io);
+  const { Agents } = load('mods/agents-sandbox/main.js', ['Agents'], { ...state, ...io, setSubagents, slimEntry,
     terminals: () => [{ address: 't1', state: 'live' }, { address: 't2', state: 'live' }],
     readTextFile: async file => {
       if (file.includes('t1.')) store = { ...store, t3: { session: 'new-agent', list: [] } };
@@ -744,4 +744,15 @@ test('a queued message with a picture leaves the queue once the log takes it in'
   conv.claude({ type: 'user', isSidechain: false, timestamp: '2026-11-25T10:12:28Z',
     message: { role: 'user', content: [{ type: 'text', text }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } }] } }, 1);
   assert.equal(conv.queued.length, 0);
+});
+
+test('chat.subagents keeps no helper reports, nor the prompts of finished helpers', () => {
+  const store = {};
+  const { setSubagents } = load('mods/chat/parked.js', ['setSubagents'], { shared: k => store[k] ?? null, setShared: (k, v) => { store[k] = v; } });
+  setSubagents({ t1: { log: '/s.jsonl', list: [
+    { id: 'a', status: 'completed', prompt: 'Review', result: 'Fine', children: [{ id: 'b', status: 'running', prompt: 'Dig', result: 'x' }] },
+  ] } });
+  const [a] = store['chat.subagents'].t1.list;
+  assert.deepEqual(JSON.parse(JSON.stringify(a)), { id: 'a', status: 'completed', children: [{ id: 'b', status: 'running', prompt: 'Dig' }] });
+  assert.deepEqual(JSON.parse(JSON.stringify(store['chat.helperState'])), { t1: 'working' });
 });

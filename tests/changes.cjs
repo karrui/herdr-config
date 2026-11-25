@@ -11,7 +11,7 @@ const { promisify } = require('node:util');
 const gitSource = fs.readFileSync(path.join(__dirname, '../mods/changes-sandbox/git.js'), 'utf8').replace(/^import .*;$/gm, '').replace(/^export /gm, '');
 const source = gitSource + '\n' + fs.readFileSync(path.join(__dirname, '../mods/changes-sandbox/main.js'), 'utf8')
   .replace(/^import .*;$/gm, '').replace('export default class ', 'class ');
-function load(globals) { return vm.runInNewContext(`${source}\n;({Changes, diffRows, WORKTREE_DIFF, readCounts})`, { View: class {}, ...globals }); }
+function load(globals) { return vm.runInNewContext(`${source}\n;({Changes, diffRows, WORKTREE_DIFF, readCounts})`, { View: class {}, inRender: (fn) => fn(), ...globals }); }
 function repo(t) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'herdr changes ')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

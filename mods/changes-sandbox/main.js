@@ -2,7 +2,8 @@ import { View, div, svg, list } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
 import { EMPTY_TREE, WORKTREE_DIFF } from "./git.js";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, terminals, focused, agents, exec as execFile, readTextFile, watchFolder, theme, settings, props, openOverlay, closeOverlay } from "herdr";
+import { focused, exec as execFile, readTextFile, watchFolder, theme, settings, props, openOverlay, closeOverlay } from "herdr";
+import { spaces, panes, terminals, agents, inRender } from "./live.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -360,7 +361,12 @@ export default class Changes extends View {
       .children(body);
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render(cx) {
+    return inRender(() => this.draw(cx));
+  }
+
+  draw(cx) {
     if (this.openTarget) return this.openInView(theme());
     if (key() !== this.context) this.refresh(cx);
     const t = theme(), { add, del } = this.totals ?? { add: 0, del: 0 };

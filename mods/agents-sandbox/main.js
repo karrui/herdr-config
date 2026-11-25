@@ -3,8 +3,9 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, notify, readTextFile } from "herdr";
-import { chatAgents, sweep, setSubagents } from "./parked.js";
+import { focused, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, notify, readTextFile } from "herdr";
+import { agents, terminals, panes, spaces, inRender } from "./live.js";
+import { chatAgents, sweep, setSubagents, slimEntry } from "./parked.js";
 import { projectChildren } from "./state.js";
 
 function find(node, id) {
@@ -128,7 +129,7 @@ export default class Agents extends View {
       const latest = shared("chat.subagents") ?? {}, next = { ...latest };
       for (const { addr, session, events } of snapshots) {
         const entry = latest[addr];
-        if (entry?.session === session) next[addr] = { ...entry, list: projectChildren(events, session, entry.list, entry.calls) };
+        if (entry?.session === session) next[addr] = slimEntry({ ...entry, list: projectChildren(events, session, entry.list, entry.calls) });
       }
       if (JSON.stringify(latest) !== JSON.stringify(next)) setSubagents(next);
     } finally { this.refreshingHelpers = false; }
@@ -313,7 +314,12 @@ export default class Agents extends View {
     return div().size(7).mx(3).flex_none().rounded(4).bg(a.status === "done" ? color : t.dim + "00");
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render(cx) {
+    return inRender(() => this.draw(cx));
+  }
+
+  draw(cx) {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
     const collapsed = narrow();

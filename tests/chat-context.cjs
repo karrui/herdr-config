@@ -10,7 +10,7 @@ function load(file, names, globals) {
     .replace(/^import .*;$/gm, '')
     .replace(/export default class /g, 'class ')
     .replace(/^export /gm, '');
-  return vm.runInNewContext(`${source}\n;({${names.join(',')}})`, { View: class {}, ...globals });
+  return vm.runInNewContext(`${source}\n;({${names.join(',')}})`, { View: class {}, inRender: (fn) => fn(), ...globals });
 }
 
 test('Claude footer and panel share API limits before a first turn, preserving session context and cost', async () => {

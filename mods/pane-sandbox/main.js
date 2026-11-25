@@ -11,7 +11,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { panes, terminals, props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, notify, nextCommand, setShared, exec as execFile } from "herdr";
+import { props, run, theme, home, hc, appHome, readTextFile, settings, watchFolder, notify, nextCommand, setShared, exec as execFile } from "herdr";
+import { panes, terminals, inRender } from "./live.js";
 
 const CHAT = "chat", LABEL = "herdr.chat";
 // When a toggle last swapped a pane (every copy of this build shares it).
@@ -247,7 +248,12 @@ export default class Pane extends View {
       .child(svg(`mods/pane/${icon}.svg`).size(14));
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render(cx) {
+    return inRender(() => this.draw(cx));
+  }
+
+  draw(cx) {
     const t = theme();
     const p = this.me();
     if (!p) return div();

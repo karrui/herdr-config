@@ -1,7 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { exec as execFile, theme, focused, terminals, window, watchFolder, openOverlay, closeOverlay, props, settings } from "herdr";
+import { exec as execFile, theme, focused, window, watchFolder, openOverlay, closeOverlay, props, settings } from "herdr";
+import { terminals, inRender } from "./live.js";
 import * as fs from "fs/promises";
 import { DIR as SANDBOX_DIR, BLOCKED, runOf, loadBlocked, loadRules, allowed, denied, needsWrite, splitPath, allowUpTo, openSandboxLists } from "./sandbox.js";
 import { CLAUDE, agentAt, loadUsage, usageKey, tokens, resetAt, level, limitShown } from "./usage.js";
@@ -70,7 +71,12 @@ export default class AgentBar extends View {
     });
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render(cx) {
+    return inRender(() => this.draw(cx));
+  }
+
+  draw(cx) {
     const now = this.now();
     if (now.key !== this.loaded) this.refresh(cx, now);
     if (this.view === "usage") return this.popover(now);

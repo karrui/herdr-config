@@ -12,7 +12,7 @@ const { once } = require('node:events');
 function load(file, names, globals = {}) {
   const code = fs.readFileSync(path.join(__dirname, '..', file), 'utf8').replace(/^import .*;$/gm, '')
     .replace(/^export /gm, '').replace('default class ', 'class ');
-  return vm.runInNewContext(`${code}\n;({${names.join(',')}})`, { View: class {}, ...globals });
+  return vm.runInNewContext(`${code}\n;({${names.join(',')}})`, { View: class {}, inRender: (fn) => fn(), ...globals });
 }
 const modulePath = 'mods/status-sandbox/apps.js';
 const result = stdout => ({ code: 0, stdout, stderr: '' });

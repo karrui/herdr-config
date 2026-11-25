@@ -9,7 +9,8 @@
 
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { theme, shared, setShared, props, exec, appHome, home, agents } from "herdr";
+import { theme, shared, setShared, props, exec, appHome, home } from "herdr";
+import { agents } from "./live.js";
 import * as A from "./artifact.js";
 
 const KEY = "artifacts.markup";

@@ -1,7 +1,8 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, terminals, run, openOverlay, theme, window, shared, layout, settings, home, hc, nextCommand, notify, focused } from "herdr";
+import { run, openOverlay, theme, window, shared, layout, settings, home, hc, nextCommand, notify, focused } from "herdr";
+import { spaces, panes, terminals, inRender } from "./live.js";
 import { KEY_CHANGED, LINKS, linearLocation, readKey, findTicket } from "./linear-resolve.js";
 import { chatAgents, tabStatus } from "./parked.js";
 import { worktreeExec } from "./worktree-runtime.js";
@@ -171,7 +172,12 @@ export default class Tabs extends View {
     localStorage.setItem("panels", JSON.stringify(this.panels));
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render(cx) {
+    return inRender(() => this.draw(cx));
+  }
+
+  draw(cx) {
     const t = theme();
     const space = spaces().find(p => p.active);
     // Where the focused pane and the space are: read once per draw (each read copies every

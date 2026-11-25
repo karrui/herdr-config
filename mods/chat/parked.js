@@ -5,7 +5,8 @@
 // The same file is in mods/chat, agents-sandbox, status-sandbox, agent-bar, tabs-sandbox,
 // space-folders and menu-hooks (a mod imports only its own files): change them all together.
 
-import { panes, terminals, spaces, focused, shared, setShared, machines, run, exec, hc, appHome } from "herdr";
+import { focused, shared, setShared, machines, run, exec, hc, appHome } from "herdr";
+import { panes, terminals, spaces } from "./live.js";
 
 export const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 const STATES = ["working", "blocked", "done", "idle"];
@@ -39,12 +40,23 @@ export function chatAgents() {
   return out;
 }
 
+// A helper as shared "chat.subagents" keeps it: without its report (nothing reads it there)
+// and, once it has finished, its prompt (the agents list opens only running helpers, with it).
+const FINISHED = ["completed", "failed", "interrupted", "cancelled", "stopped"];
+function slimHelper({ result, ...h }) {
+  if (FINISHED.includes(h.status)) delete h.prompt;
+  if (h.children) h.children = h.children.map(slimHelper);
+  return h;
+}
+export const slimEntry = (entry) => entry && { ...entry, list: (entry.list ?? []).map(slimHelper) };
+
 // Shared "chat.subagents" (each agent's helpers, from its chat: mods/chat publishHelpers(),
-// agents-sandbox refreshHelpers()) runs to megabytes, and every list of agents reads it on
-// each draw. What chatAgents() needs of it goes beside it in "chat.helperState":
+// agents-sandbox refreshHelpers()) is read whole by every list of agents. Slimmed
+// (slimEntry), and what chatAgents() needs of it goes beside it in "chat.helperState":
 // { <agent address>: "blocked" (a helper waits on you, or the agent hit its API limit) |
 // "working" (a helper runs) }. Write chat.subagents only through here.
 export function setSubagents(all) {
+  all = Object.fromEntries(Object.entries(all).map(([addr, entry]) => [addr, slimEntry(entry)]));
   setShared("chat.subagents", all);
   const state = {};
   for (const [addr, entry] of Object.entries(all)) {

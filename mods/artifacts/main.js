@@ -12,7 +12,8 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, terminals, agents, readTextFile, watchFolder, home, theme, openOverlay, closeOverlay, exec, props, shared, setShared } from "herdr";
+import { readTextFile, watchFolder, home, theme, openOverlay, closeOverlay, exec, props, shared, setShared } from "herdr";
+import { spaces, panes, terminals, agents, inRender } from "./live.js";
 import { showInSidebar, backToList, forget } from "./sidebar.js";
 import { artifactCli as cli, showViewer, openViewer, needsApproval, openReview } from "./artview.js";
 import { Review } from "./review.js";
@@ -160,7 +161,12 @@ export default class Artifacts extends View {
     if (!showInSidebar(view)) showViewer(view);
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render(cx) {
+    return inRender(() => this.draw(cx));
+  }
+
+  draw(cx) {
     if (this.review) return this.review.render(cx);
     if (this.menu) return this.menuView();
     const bar = props()?.bar;

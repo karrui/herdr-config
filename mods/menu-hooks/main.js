@@ -6,7 +6,8 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, agents, exec as execFile, appHome, notify, home, setShared } from "herdr";
+import { run, props, closeOverlay, openOverlay, theme, keys, exec as execFile, appHome, notify, home, setShared } from "herdr";
+import { terminals, spaces, panes, agents, inRender } from "./live.js";
 import { chatAgents } from "./parked.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
@@ -157,7 +158,12 @@ export default class Menu extends View {
     else run(it[1], it[2]);
   }
 
+  // One copy of Herdr's lists for the whole draw (live.js).
   render(cx) {
+    return inRender(() => this.draw(cx));
+  }
+
+  draw(cx) {
     const t = theme();
     const list = items(props(), this.git);
     return v_flex()

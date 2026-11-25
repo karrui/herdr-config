@@ -1,7 +1,8 @@
 // Sandbox data: sandbox/agent-sandbox writes one blocked/<run>.tsv per sandboxed launch
 // (time, process(pid), operation, path) and reads allow.txt, the whitelist, and deny.txt.
 // herdr's exec takes an argv list and never goes through a shell.
-import { exec as execFile, terminals, home, appHome, readTextFile, writeTextFile, openOverlay } from "herdr";
+import { exec as execFile, home, appHome, readTextFile, writeTextFile, openOverlay } from "herdr";
+import { terminals } from "./live.js";
 
 export const DIR = `${appHome()}/sandbox`;
 export const BLOCKED = `${DIR}/blocked`;

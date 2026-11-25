@@ -2,7 +2,8 @@
 // shared API caches, with session reports as fallback. Both give
 // { model, ctx, ctx_tokens, ctx_size, five, five_reset, week, week_reset, cost? }.
 // herdr's exec takes an argv list and never goes through a shell.
-import { exec as execFile, agents, terminals, appHome, readTextFile } from "herdr";
+import { exec as execFile, appHome, readTextFile } from "herdr";
+import { agents, terminals } from "./live.js";
 import * as fs from "fs/promises";
 import { chatAgents } from "./parked.js";
 

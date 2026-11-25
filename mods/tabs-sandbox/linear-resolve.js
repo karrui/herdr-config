@@ -2,7 +2,8 @@
 // Linear button: mods can't import each other, so mods/tabs-sandbox/linear-resolve.js
 // is a copy of this file. Change both.
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, terminals, focused, exec as execFile, readTextFile, appHome, shared, setShared } from "herdr";
+import { focused, exec as execFile, readTextFile, appHome, shared, setShared } from "herdr";
+import { spaces, panes, terminals } from "./live.js";
 
 // Chat panes park their terminal; its live folder still determines the ticket.
 export function linearLocation() {

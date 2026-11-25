@@ -1,10 +1,13 @@
 // Herdr's live lists, read once per render. Herdr gives a render about 50 ms; past
-// that it stops it and shows "This view could not be re-rendered" over the chat. Each
-// terminals(), panes(), spaces() or agents() call copies the whole list again (terminals() about
-// 1 ms), and the chat's render asked for them dozens of times: a busy chat went past the 50 ms
-// now and then. Inside inRender() these give one copy per render; anywhere else (clicks,
-// timers, spawned work) the live list, as before. The copies are shared by the whole render:
-// never sort or change them in place.
+// that it stops it and shows "This view could not be re-rendered". Each terminals(),
+// panes(), spaces() or agents() call copies the whole list again (terminals() about 1 ms),
+// and a render (with the helpers it calls, like parked.js) can ask for them dozens of times.
+// Inside inRender() these give one copy per render; anywhere else (clicks, timers, spawned
+// work) the live list, as before. The copies are shared by the whole render: never sort or
+// change them in place.
+// The same file is in mods/chat, agent-bar, agents-sandbox, artifacts, changes-sandbox,
+// menu-hooks, pane-sandbox, space-folders, status-sandbox and tabs-sandbox (a mod imports
+// only its own files): change them all together.
 import { agents as liveAgents, panes as livePanes, terminals as liveTerminals, spaces as liveSpaces } from "herdr";
 
 // The render's copies. A render Herdr stops runs no `finally`, so a copy older than any render

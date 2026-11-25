@@ -1,7 +1,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 // herdr's exec takes an argv list and never goes through a shell.
-import { spaces, panes, terminals, run, openOverlay, theme, window, shared, layout, settings, home, hc, nextCommand, notify } from "herdr";
+import { spaces, panes, terminals, run, openOverlay, theme, window, shared, layout, settings, home, hc, nextCommand, notify, focused } from "herdr";
 import { KEY_CHANGED, LINKS, linearLocation, readKey, findTicket } from "./linear-resolve.js";
 import { chatAgents, tabStatus } from "./parked.js";
 import { worktreeExec } from "./worktree-runtime.js";
@@ -37,27 +37,34 @@ export default class Tabs extends View {
     });
   }
 
-  // cmd-w doesn't end agents: a tab running one closes but its agents are parked, still
-  // running with no pane, labeled with their space so the + menu's Resume a session (mods/
-  // resume) can give them a tab again. Other tabs close as the × does. A space's last tab
-  // gets a shell beside it first, so parking never leaves the space empty, which closes it.
+  // cmd-w closes the focused pane when others share its tab, else the tab. It doesn't end
+  // agents: their panes close but the agents are parked, still running with no pane, labeled
+  // with their space so the + menu's Resume a session (mods/resume) can give them a tab again.
+  // Other tabs close as the × does. A space's last tab gets a shell beside it first, so
+  // parking never leaves the space empty, which closes it.
   closeKey() {
     const space = spaces().find((s) => s.active), tab = space?.tabs?.find((c) => c.active);
     if (!tab) return;
-    const mine = panes().filter((p) => p.tab === tab.id && p.terminal);
-    const agents = mine.filter((p) => p.program?.agent);
-    // Agents in Chat mode are parked behind their chat pane already: they only change labels.
-    const chats = chatAgents().filter((a) => a.tab === tab.id);
-    if (!agents.length && !chats.length) return this.closeTab(tab, space);
+    const here = panes().filter((p) => p.tab === tab.id), now = here.find((p) => p.pane === focused()?.pane);
+    if (here.length > 1 && now) return this.park([now], space);
+    if (!here.some((p) => p.terminal && p.program?.agent) && !chatAgents().some((a) => a.tab === tab.id)) return this.closeTab(tab, space);
     if (space.tabs.length === 1) run("tab.new", { space: space.id });
+    this.park(here, space);
+  }
+
+  // Closes `list` (panes), parking the agents in it.
+  park(list, space) {
+    const agents = list.filter((p) => p.terminal && p.program?.agent);
+    // Agents in Chat mode are parked behind their chat pane already: they only change labels.
+    const chats = chatAgents().filter((a) => list.some((p) => p.pane === a.pane));
     for (const p of agents) {
       hc(["label", p.terminal, `parked.space=${space.id}`]);
       run("terminal.park", { terminal: p.terminal });
     }
     for (const a of chats) hc(["label", a.address, `parked.space=${space.id}`, "herdr.chat="]);
-    for (const p of panes().filter((p) => p.tab === tab.id && !p.program?.agent)) run("pane.close", { pane: p.pane });
+    for (const p of list.filter((p) => !agents.includes(p))) run("pane.close", { pane: p.pane });
     const names = [...agents.map((p) => p.program.name), ...chats.map((a) => a.program?.name ?? "agent")];
-    notify({ title: `Parked ${names.length === 1 ? names[0] : `${names.length} agents`}`,
+    if (names.length) notify({ title: `Parked ${names.length === 1 ? names[0] : `${names.length} agents`}`,
       body: "Still running. + \u2192 Resume a session gives it a tab again.", level: "info" });
   }
 

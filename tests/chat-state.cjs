@@ -732,3 +732,13 @@ test('the host log reader retains async question metadata and its immediate tool
   assert.equal(conv.questions.size, 1); assert.equal(conv.questions.get('call-q').closed, undefined);
   assert.equal(conv.items.filter(x => x.kind === 'ask').length, 1);
 });
+
+test('a queued message with a picture leaves the queue once the log takes it in', () => {
+  const conv = new Conversation('claude');
+  const text = '[Image #7]oh, seems to already exist.\nit should also show up';
+  conv.claude({ type: 'queue-operation', operation: 'enqueue', content: text, timestamp: '2026-11-25T10:12:27Z' }, 0);
+  assert.equal(conv.queued[0].text, 'oh, seems to already exist.\nit should also show up');
+  conv.claude({ type: 'user', isSidechain: false, timestamp: '2026-11-25T10:12:28Z',
+    message: { role: 'user', content: [{ type: 'text', text }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } }] } }, 1);
+  assert.equal(conv.queued.length, 0);
+});

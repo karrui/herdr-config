@@ -904,7 +904,8 @@ export class Conversation {
   // log has it (user()), and anything left goes when the turn or the compacting ends.
   queueOp(l, off) {
     const raw = typeof l.content === "string" ? l.content : null;
-    const text = raw === null ? "" : claudeUser(raw)?.text ?? "";
+    // Pictures in it are "[Image #1]" markers here, gone from the message the log takes in.
+    const text = raw === null ? "" : claudeUser(raw.replace(/\[Image #\d+\]\s*/g, ""))?.text ?? "";
     if (l.operation === "enqueue" && text) this.queued.push({ id: `qd${off}`, raw, text, at: time(l.timestamp) });
     else if (l.operation === "remove") this.queued = this.queued.filter((q) => q.raw !== raw);
     else if (l.operation === "popAll") this.queued = [];

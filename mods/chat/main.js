@@ -371,6 +371,18 @@ export default class Chat extends View {
     this.sendReqAt = shared("chat.sendreq")?.at ?? null;
     // The working line's clock, once a second while the agent works.
     cx.timer.every(1000, (cx) => { if (this.status() === "working") cx.notify(); });
+    // Its space or tab shown with this chat focused, or the chat just opened (Terminal → Chat,
+    // which labels and focuses it a moment later): the box takes the keys. A hidden pane doesn't
+    // render, so a timer watches where focus is.
+    const born = Date.now();
+    cx.timer.every(150, () => {
+      const f = focused(), place = f ? `${f.space}/${f.tab}` : null;
+      const opening = !this.boxTaken && Date.now() - born < 3000;
+      if (place === this.place && !opening) return;
+      this.place = place;
+      const mine = this.myPane();
+      if (mine && f.pane === mine && !this.dialog && !this.transcript) { this.box.focus(); this.boxTaken = true; }
+    });
     // Drafts belong to the agent's first address (its origin), so they survive Chat ⇄ Terminal,
     // restarts from here, and app restarts.
     const labels = terminals().find((x) => x.address === this.addr)?.labels ?? {};

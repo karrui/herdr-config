@@ -47,6 +47,14 @@ const KEEP = 2000;
 // The conversation's width at most, in px: lines stay readable in a wide pane.
 const COLUMN = 760;
 const KINDS = { "claude-code": "claude", claude: "claude", codex: "codex" };
+// A strip of the page's background over the list: solid for `solid` px, then fading out over
+// 28 px, away from the edge it sits on ("down": the top edge). In 2 px steps: bg takes colors
+// only, no gradients.
+const fade = (bg, dir, solid = 0) => {
+  const steps = [div().h(solid).flex_none().bg(bg), ...Array.from({ length: 14 }, (_, i) => div().h(2).flex_none()
+    .bg(`${bg.slice(0, 7)}${Math.round(255 * (1 - (i + 1) / 15) ** 1.4).toString(16).padStart(2, "0")}`))];
+  return v_flex().absolute().left(0).right(0).children(dir === "down" ? steps : steps.reverse());
+};
 const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const same = (a, b) => norm(a) === norm(b);
 // "45s", "4m 5s", "1h 2m": how long a turn worked.
@@ -382,6 +390,12 @@ export default class Chat extends View {
       this.place = place;
       const mine = this.myPane();
       if (mine && f.pane === mine && !this.dialog && !this.transcript) { this.box.focus(); this.boxTaken = true; }
+    });
+    // Your last message scrolled off the top: it stays pinned there (draw()). The list says
+    // nothing as it scrolls, so its position is looked at here.
+    cx.timer.every(100, (cx) => {
+      const above = this.mineEnd != null && this.scroll.offset().y > this.mineEnd;
+      if (above !== this.mineAbove) { this.mineAbove = above; cx.notify(); }
     });
     // Drafts belong to the agent's first address (its origin), so they survive Chat ⇄ Terminal,
     // restarts from here, and app restarts.
@@ -3745,6 +3759,9 @@ export default class Chat extends View {
       return Number.isFinite(h) && h > 0 ? Math.min(h, 40000) : 60;
     });
     this.follow_bottom(rows);
+    // Your last message, and where it ends in the list (the timer in init() compares).
+    const last = rows.findLastIndex((r) => r.text && ((r.kind === "user" && !r.from) || (r.kind === "pending" && !r.queued)));
+    this.mineEnd = last >= 0 ? sizes.slice(0, last + 1).reduce((a, b) => a + b, 0) : null;
     // Following the newest, the list sits at its end: the scroll position is exactly that.
     if (this.pinned && this.listH) this.scrollTop = Math.max(0, sizes.reduce((a, b) => a + b, 0) - (this.listH - 8));
     const body = rows.length === 0
@@ -3794,7 +3811,28 @@ export default class Chat extends View {
         })
           .track_scroll(this.scroll).size_full()
           .on_item_click((key, cx) => this.clickRow(key, rows, cx, sizes)))
+        // Fades where the list runs under what sits on it: your pinned message at the top, the
+        // working line at the bottom.
+        .when(this.mineAbove && last >= 0, (el) => el.child(fade(t.background, "down", 52).top(0)))
+        .when(st === "working", (el) => el.child(fade(t.background, "up").bottom(0)))
         .child(Scrollbar.vertical("chat-rows").absolute().inset_0())
+        .when(this.mineAbove && last >= 0, (el) => el.child(h_flex().absolute().top(8).left(0).right(0).justify_center()
+          .child(h_flex().w_full().max_w(COLUMN + 36).px(18).justify_end()
+            // On the page's own background, so the hover's see-through shade darkens it without
+            // the list showing through.
+            .child(div().max_w(Math.max(240, Math.floor(Math.min(this.width, COLUMN) * 0.8))).rounded(16).bg(t.background).shadow_md()
+              .child(div().id("chat-mine").px(14).py(7).rounded(16)
+              .bg(t.raised).border_1().border_color(t.border).cursor_pointer().text_color(t.foreground)
+              .hover((s) => s.bg(t.hover)).tooltip("Go to your message")
+              .on_click((_e, cx) => {
+                this.pinned = false;
+                this.scroll.scroll_to_item(last, "top");
+                this.flash = { id: rows[last].id, on: true };
+                cx.timer.after(80, (cx) => { if (this.flash) { this.flash.on = false; cx.notify(); } });
+                cx.timer.after(1400, (cx) => { this.flash = null; cx.notify(); });
+                cx.notify();
+              })
+              .child(div().truncate().text_size(13).child(norm(rows[last].text))))))))
         .child(this.measurer(rows, keys, t))
         // Cards' controls measured (strips.js hit()), and where question cards' keys come in.
         .child(strips.measure(t, rows.filter((r) => r.kind === "cardstrip").map((r) => r.s), this.cardW, (cx) => cx.notify(), this.unit))

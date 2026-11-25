@@ -391,12 +391,9 @@ export default class Chat extends View {
       const mine = this.myPane();
       if (mine && f.pane === mine && !this.dialog && !this.transcript) { this.box.focus(); this.boxTaken = true; }
     });
-    // Your last message scrolled off the top: it stays pinned there (draw()). The list says
-    // nothing as it scrolls, so its position is looked at here.
-    cx.timer.every(100, (cx) => {
-      const above = this.mineEnd != null && this.scroll.offset().y > this.mineEnd;
-      if (above !== this.mineAbove) { this.mineAbove = above; cx.notify(); }
-    });
+    // Your message last scrolled off the top stays pinned there (draw()). The list says nothing
+    // as it scrolls, so its position is looked at here.
+    cx.timer.every(100, (cx) => { if (this.overhead() !== this.mineAt) cx.notify(); });
     // Drafts belong to the agent's first address (its origin), so they survive Chat ⇄ Terminal,
     // restarts from here, and app restarts.
     const labels = terminals().find((x) => x.address === this.addr)?.labels ?? {};
@@ -3649,6 +3646,12 @@ export default class Chat extends View {
     openViewer({ id: row.art, title: row.title, version: row.line && row.v ? row.v : row.version, latest: row.version, machine: this.machine ?? null }, this.paneArea());
   }
 
+  // The row of your message last scrolled off the top, or -1.
+  overhead() {
+    const y = this.scroll.offset().y;
+    return this.mine?.findLast((m) => m.end < y)?.i ?? -1;
+  }
+
   // This chat's own pane: the agent's core label herdr.chat (set by the pane-sandbox switch).
   myPane() {
     const c = terminals().find((x) => x.address === this.addr)?.labels?.["herdr.chat"] ?? null;
@@ -3759,9 +3762,14 @@ export default class Chat extends View {
       return Number.isFinite(h) && h > 0 ? Math.min(h, 40000) : 60;
     });
     this.follow_bottom(rows);
-    // Your last message, and where it ends in the list (the timer in init() compares).
-    const last = rows.findLastIndex((r) => r.text && ((r.kind === "user" && !r.from) || (r.kind === "pending" && !r.queued)));
-    this.mineEnd = last >= 0 ? sizes.slice(0, last + 1).reduce((a, b) => a + b, 0) : null;
+    // Your messages, and where each ends in the list: the one last scrolled past is pinned.
+    let end = 0;
+    this.mine = [];
+    rows.forEach((r, i) => {
+      end += sizes[i];
+      if (r.text && ((r.kind === "user" && !r.from) || (r.kind === "pending" && !r.queued))) this.mine.push({ i, end });
+    });
+    const last = this.mineAt = this.overhead();
     // Following the newest, the list sits at its end: the scroll position is exactly that.
     if (this.pinned && this.listH) this.scrollTop = Math.max(0, sizes.reduce((a, b) => a + b, 0) - (this.listH - 8));
     const body = rows.length === 0
@@ -3813,10 +3821,10 @@ export default class Chat extends View {
           .on_item_click((key, cx) => this.clickRow(key, rows, cx, sizes)))
         // Fades where the list runs under what sits on it: your pinned message at the top, the
         // working line at the bottom.
-        .when(this.mineAbove && last >= 0, (el) => el.child(fade(t.background, "down", 52).top(0)))
+        .when(last >= 0, (el) => el.child(fade(t.background, "down", 52).top(0)))
         .when(st === "working", (el) => el.child(fade(t.background, "up").bottom(0)))
         .child(Scrollbar.vertical("chat-rows").absolute().inset_0())
-        .when(this.mineAbove && last >= 0, (el) => el.child(h_flex().absolute().top(8).left(0).right(0).justify_center()
+        .when(last >= 0, (el) => el.child(h_flex().absolute().top(8).left(0).right(0).justify_center()
           .child(h_flex().w_full().max_w(COLUMN + 36).px(18).justify_end()
             // On the page's own background, so the hover's see-through shade darkens it without
             // the list showing through.
